@@ -11,17 +11,61 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 커스텀 CSS
+# 커스텀 CSS (시각적 달걀 그래픽 및 모바일 최적화 디자인)
 st.markdown("""
     <style>
     .main-title { font-size: 1.6rem; font-weight: bold; color: #0F172A; margin-bottom: 0.2rem; }
     .card { background-color: #F8FAFC; border-radius: 12px; padding: 16px; border: 1px solid #E2E8F0; margin-bottom: 12px; }
-    .egg-container {
+    
+    /* 코스톨라니 달걀 시각적 그래픽 컨테이너 */
+    .egg-visual-container {
         background: linear-gradient(135deg, #FFFBEB 0%, #FEF3C7 100%);
         border: 2px solid #F59E0B;
         border-radius: 16px;
-        padding: 18px;
+        padding: 20px;
         margin: 14px 0;
+        box-shadow: 0 4px 12px rgba(245, 158, 11, 0.15);
+    }
+    .egg-track {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        position: relative;
+        margin-top: 15px;
+        margin-bottom: 15px;
+    }
+    .egg-node {
+        background: #FFFFFF;
+        border: 2px solid #E2E8F0;
+        border-radius: 10px;
+        padding: 10px 6px;
+        text-align: center;
+        width: 15%;
+        font-size: 0.75rem;
+        color: #64748B;
+        position: relative;
+    }
+    .egg-node.active {
+        background: #D97706;
+        border: 2px solid #92400E;
+        color: #FFFFFF;
+        font-weight: bold;
+        transform: scale(1.08);
+        box-shadow: 0 6px 12px rgba(217, 119, 6, 0.3);
+    }
+    .pin-badge {
+        position: absolute;
+        top: -26px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #DC2626;
+        color: white;
+        padding: 2px 6px;
+        font-size: 0.7rem;
+        border-radius: 6px;
+        font-weight: bold;
+        white-space: nowrap;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
     </style>
 """, unsafe_allow_html=True)
@@ -32,19 +76,19 @@ st.caption("시스템 관점: 기업의 3~5년 미래 가설 + 현재 가격의 
 
 # 3. 종목 정보 매핑
 stocks = {
-    "SK하이닉스": {"ticker": "000660.KS", "tv_symbol": "KRX:000660"},
-    "삼성전자": {"ticker": "005930.KS", "tv_symbol": "KRX:005930"},
-    "NVIDIA (NVDA)": {"ticker": "NVDA", "tv_symbol": "NASDAQ:NVDA"},
-    "Alphabet (GOOGL)": {"ticker": "GOOGL", "tv_symbol": "NASDAQ:GOOGL"},
-    "Palantir (PLTR)": {"ticker": "PLTR", "tv_symbol": "NYSE:PLTR"},
-    "Tesla (TSLA)": {"ticker": "TSLA", "tv_symbol": "NASDAQ:TSLA"},
-    "IonQ (IONQ)": {"ticker": "IONQ", "tv_symbol": "NYSE:IONQ"}
+    "SK하이닉스": {"ticker": "000660.KS", "tv_symbol": "KRX:000660", "default_price": 1277000},
+    "삼성전자": {"ticker": "005930.KS", "tv_symbol": "KRX:005930", "default_price": 215500},
+    "NVIDIA (NVDA)": {"ticker": "NVDA", "tv_symbol": "NASDAQ:NVDA", "default_price": 138.5},
+    "Alphabet (GOOGL)": {"ticker": "GOOGL", "tv_symbol": "NASDAQ:GOOGL", "default_price": 165.2},
+    "Palantir (PLTR)": {"ticker": "PLTR", "tv_symbol": "NYSE:PLTR", "default_price": 42.1},
+    "Tesla (TSLA)": {"ticker": "TSLA", "tv_symbol": "NASDAQ:TSLA", "default_price": 220.0},
+    "IonQ (IONQ)": {"ticker": "IONQ", "tv_symbol": "NYSE:IONQ", "default_price": 11.5}
 }
 
 selected_stock_name = st.selectbox("🔍 분석할 종목 선택", list(stocks.keys()))
 selected_info = stocks[selected_stock_name]
 
-# 4. 야후 파이낸스 실시간 시세 (안전 장치 포함)
+# 4. 야후 파이낸스 실시간 시세 (안전 폴백 장치 포함)
 @st.cache_data(ttl=60)
 def get_live_data(ticker_symbol):
     try:
@@ -60,57 +104,57 @@ def get_live_data(ticker_symbol):
             elif len(df) == 1:
                 return float(df['Close'].iloc[-1]), 0.0, 0.0
     except Exception:
-        return None, None, None
+        pass
     return None, None, None
 
 live_price, change, pct_change = get_live_data(selected_info["ticker"])
 
+# 데이터 수신 실패 시 기본 안전 값 적용
+if live_price is None or pd.isna(live_price):
+    live_price = selected_info["default_price"]
+    change = 0.0
+    pct_change = 0.0
+
 st.divider()
 
-# 5. 실시간 시세 표기 (안전한 조건문)
+# 5. 실시간 시세 표기
 col_price1, col_price2 = st.columns([1, 1])
 
 with col_price1:
     st.subheader(f"📊 {selected_stock_name}")
 
 with col_price2:
-    if live_price is not None and not pd.isna(live_price):
-        currency = "KRW" if ".KS" in selected_info["ticker"] else "USD"
-        symbol_str = "₩" if currency == "KRW" else "$"
-        safe_change = change if (change is not None and not pd.isna(change)) else 0.0
-        safe_pct = pct_change if (pct_change is not None and not pd.isna(pct_change)) else 0.0
-        
-        display_val = f"{symbol_str}{live_price:,.2f}" if currency == "USD" else f"{symbol_str}{int(live_price):,}"
-        st.metric(
-            label="실시간 시세 (Yahoo Finance)",
-            value=display_val,
-            delta=f"{safe_change:+,.2f} ({safe_pct:+.2f}%)"
-        )
-    else:
-        st.warning("실시간 시세 수신 중이거나 데이터가 없습니다.")
+    currency = "KRW" if ".KS" in selected_info["ticker"] else "USD"
+    symbol_str = "₩" if currency == "KRW" else "$"
+    display_val = f"{symbol_str}{live_price:,.2f}" if currency == "USD" else f"{symbol_str}{int(live_price):,}"
+    st.metric(
+        label="실시간 시세 (Yahoo Finance)",
+        value=display_val,
+        delta=f"{change:+,.2f} ({pct_change:+.2f}%)" if change else "0.00 (0.00%)"
+    )
 
-# 6. 시스템 판단 정보
+# 6. 시스템 판단 및 달걀 국면 매핑 데이터
 stock_system_data = {
     "SK하이닉스": {
-        "phase_code": "A",
+        "phase_idx": 0,  # A 국면
         "egg_title": "A 국면: 과매도 / 투매 바닥 구간",
-        "egg_desc": "📍 A1 핀 위치: 공포심 극대화 및 심리적 바닥 다지기 진행 중",
+        "egg_desc": "공포심 극대화 및 심리적 바닥 다지기 진행 중 (A1 구간)",
         "corp": "3~5년 HBM 및 고성능 메모리 독점적 경쟁우위 가설 유지",
         "invest": "10/28 실적 발표 대기 및 외국인 수급 추이 점검",
         "action": "기존 9주 보유 유지 / 실적 발표 후 HBM 공급 계약 확인 시 추가 매수 검토"
     },
     "삼성전자": {
-        "phase_code": "A",
+        "phase_idx": 0,  # A 국면
         "egg_title": "A 국면: 과매도 / 투매 바닥 구간",
-        "egg_desc": "📍 A1 핀 위치: 메모리 가격 회복 기대 및 외국인 매도세 진정 관찰",
+        "egg_desc": "메모리 가격 회복 기대 및 외국인 매도세 진정 관찰 (A1 구간)",
         "corp": "메모리+파운드리+디바이스 종합 생태계 복원 가설",
         "invest": "10/29 확정 실적 및 파운드리 적자 폭 확인 필요",
         "action": "기존 20주 보유 유지 / 저가 매수 서두르지 않고 확실한 수급 전환 확인 후 대응"
     },
     "NVIDIA (NVDA)": {
-        "phase_code": "A",
+        "phase_idx": 0,  # A 국면
         "egg_title": "A 국면: 기술주 조정 구간",
-        "egg_desc": "📍 A2 핀 위치: AI 펀더멘털 견고하나 시장 전체 매도세 반영 중",
+        "egg_desc": "AI 펀더멘털 견고하나 시장 전체 매도세 반영 중 (A2 구간)",
         "corp": "AI 풀스택 컴퓨팅 플랫폼 독점 및 대체 불가능한 소프트웨어 생태계",
         "invest": "빅테크 CapEx 지출 성과 지표 지속 확인",
         "action": "핵심 성장주 분할 적립 유지 / 전체 포트폴리오 비중 관리"
@@ -118,44 +162,50 @@ stock_system_data = {
 }
 
 info = stock_system_data.get(selected_stock_name, {
-    "phase_code": "A",
-    "egg_title": "A~B 경계 구간",
-    "egg_desc": "📍 관망 구간: 추세 전환 및 저점 형성 확인 필요",
+    "phase_idx": 1,
+    "egg_title": "B 국면: 회복기 (보유 구간)",
+    "egg_desc": "거래량 증가 및 추세 전환 모색 구간",
     "corp": "장기 성장 가설 점검 중",
     "invest": "현재 가격 밸류에이션 재평가 진행 중",
     "action": "보유 관점 유지 / 추가 매수 보류 및 신호 확인"
 })
 
-# 7. 코스톨라니 달걀 위젯
-st.markdown(f"""
-<div class='egg-container'>
-    <div style='font-size:0.9rem; color:#92400E; font-weight:bold;'>🍳 코스톨라니 달걀 사이클 판정</div>
-    <div style='font-size:1.2rem; font-weight:bold; color:#78350F; margin-top:2px;'>{info['egg_title']}</div>
-    <div style='font-size:0.95rem; color:#B45309;'>{info['egg_desc']}</div>
-</div>
-""", unsafe_allow_html=True)
+current_idx = info["phase_idx"]
 
-phases = [
-    ("A. 침체기 (매수)", "최저점 / 투매"),
-    ("B. 회복기 (보유)", "거래량 증가"),
-    ("C. 상승기 (매도)", "낙관론 확산"),
-    ("D. 버블기 (관망)", "최고점 / 과열"),
-    ("E. 후퇴기 (보류)", "거래량 감소"),
-    ("F. 하락기 (준비)", "비관론 시작")
+# 7. 시각적 달걀 사이클 그래픽 위젯 렌더링
+phases_info = [
+    ("A. 침체기", "투매/바닥"),
+    ("B. 회복기", "거래증가"),
+    ("C. 상승기", "낙관확산"),
+    ("D. 버블기", "최고과열"),
+    ("E. 후퇴기", "거래감소"),
+    ("F. 하락기", "비관시작")
 ]
 
-cols = st.columns(3)
-for idx, (p_title, p_desc) in enumerate(phases):
-    col = cols[idx % 3]
-    is_active = (idx == 0 and info["phase_code"] == "A")
+nodes_html = ""
+for idx, (p_name, p_desc) in enumerate(phases_info):
+    is_active = (idx == current_idx)
+    active_class = "active" if is_active else ""
+    pin_tag = "<div class='pin-badge'>📍 현재위치</div>" if is_active else ""
     
-    with col:
-        if is_active:
-            st.warning(f"**{p_title}**\n\n{p_desc} *(📍현재)*")
-        else:
-            st.info(f"**{p_title}**\n\n{p_desc}")
+    nodes_html += f"""
+    <div class='egg-node {active_class}'>
+        {pin_tag}
+        <b>{p_name}</b><br>{p_desc}
+    </div>
+    """
 
-st.write("")
+st.markdown(f"""
+<div class='egg-visual-container'>
+    <div style='font-size:0.95rem; color:#92400E; font-weight:bold;'>🍳 코스톨라니 달걀 이론 사이클 (Market Cycle)</div>
+    <div style='font-size:1.25rem; font-weight:bold; color:#78350F; margin-top:4px;'>{info['egg_title']}</div>
+    <div style='font-size:0.9rem; color:#B45309; margin-bottom:10px;'>{info['egg_desc']}</div>
+    
+    <div class='egg-track'>
+        {nodes_html}
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # 8. 2트랙 기업/투자 판단 & 실행 가이드
 col1, col2 = st.columns(2)
@@ -176,7 +226,7 @@ tv_widget_html = f"""
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <script type="text/javascript">
   new TradingView.widget(
-  {{
+  {
   "autosize": true,
   "symbol": "{tv_symbol}",
   "interval": "D",
@@ -188,7 +238,7 @@ tv_widget_html = f"""
   "enable_publishing": false,
   "allow_symbol_change": true,
   "container_id": "tradingview_chart"
-  }}
+  }
   );
   </script>
 </div>
