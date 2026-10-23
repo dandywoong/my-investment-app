@@ -1,5 +1,6 @@
 import streamlit as st
 import yfinance as yf
+import pandas as pd
 import streamlit.components.v1 as components
 
 # 1. 페이지 모바일 최적화 설정
@@ -15,7 +16,6 @@ st.markdown("""
     <style>
     .main-title { font-size: 1.6rem; font-weight: bold; color: #0F172A; margin-bottom: 0.2rem; }
     .card { background-color: #F8FAFC; border-radius: 12px; padding: 16px; border: 1px solid #E2E8F0; margin-bottom: 12px; }
-    
     .egg-container {
         background: linear-gradient(135deg, #FFFBEB 0%, #FEF3C7 100%);
         border: 2px solid #F59E0B;
@@ -30,7 +30,7 @@ st.markdown("""
 st.markdown("<div class='main-title'>🛡️ 개인 투자 시스템 v1.0</div>", unsafe_allow_html=True)
 st.caption("시스템 관점: 기업의 3~5년 미래 가설 + 현재 가격의 냉정함 + 코스톨라니 달걀 이론")
 
-# 3. 종목 정보 매핑 (트레이딩뷰 국제 표준 심볼 호환)
+# 3. 종목 정보 매핑
 stocks = {
     "SK하이닉스": {"ticker": "000660.KS", "tv_symbol": "KRX:000660"},
     "삼성전자": {"ticker": "005930.KS", "tv_symbol": "KRX:005930"},
@@ -44,20 +44,21 @@ stocks = {
 selected_stock_name = st.selectbox("🔍 분석할 종목 선택", list(stocks.keys()))
 selected_info = stocks[selected_stock_name]
 
-# 4. 야후 파이낸스 실시간 시세
+# 4. 야후 파이낸스 실시간 시세 (안전 장치 포함)
 @st.cache_data(ttl=60)
 def get_live_data(ticker_symbol):
     try:
         ticker = yf.Ticker(ticker_symbol)
         df = ticker.history(period="2d")
-        if len(df) >= 2:
-            latest_price = df['Close'].iloc[-1]
-            prev_price = df['Close'].iloc[-2]
-            change = latest_price - prev_price
-            pct_change = (change / prev_price) * 100
-            return latest_price, change, pct_change
-        elif len(df) == 1:
-            return df['Close'].iloc[-1], 0.0, 0.0
+        if df is not None and not df.empty and 'Close' in df.columns:
+            if len(df) >= 2:
+                latest_price = float(df['Close'].iloc[-1])
+                prev_price = float(df['Close'].iloc[-2])
+                change = latest_price - prev_price
+                pct_change = (change / prev_price) * 100
+                return latest_price, change, pct_change
+            elif len(df) == 1:
+                return float(df['Close'].iloc[-1]), 0.0, 0.0
     except Exception:
         return None, None, None
     return None, None, None
@@ -66,23 +67,27 @@ live_price, change, pct_change = get_live_data(selected_info["ticker"])
 
 st.divider()
 
-# 5. 실시간 시세 표기
+# 5. 실시간 시세 표기 (안전한 조건문)
 col_price1, col_price2 = st.columns([1, 1])
 
 with col_price1:
     st.subheader(f"📊 {selected_stock_name}")
 
 with col_price2:
-    if live_price:
+    if live_price is not None and not pd.isna(live_price):
         currency = "KRW" if ".KS" in selected_info["ticker"] else "USD"
         symbol_str = "₩" if currency == "KRW" else "$"
+        safe_change = change if (change is not None and not pd.isna(change)) else 0.0
+        safe_pct = pct_change if (pct_change is not None and not pd.isna(pct_change)) else 0.0
+        
+        display_val = f"{symbol_str}{live_price:,.2f}" if currency == "USD" else f"{symbol_str}{int(live_price):,}"
         st.metric(
             label="실시간 시세 (Yahoo Finance)",
-            value=f"{symbol_str}{live_price:,.2f}" if currency == "USD" else f"{symbol_str}{int(live_price):,}",
-            delta=f"{change:+,.2f} ({pct_change:+.2f}%)"
+            value=display_val,
+            delta=f"{safe_change:+,.2f} ({safe_pct:+.2f}%)"
         )
     else:
-        st.warning("실시간 시세 불러오는 중...")
+        st.warning("실시간 시세 수신 중이거나 데이터가 없습니다.")
 
 # 6. 시스템 판단 정보
 stock_system_data = {
@@ -121,7 +126,7 @@ info = stock_system_data.get(selected_stock_name, {
     "action": "보유 관점 유지 / 추가 매수 보류 및 신호 확인"
 })
 
-# 7. 코스톨라니 달걀 위젯 (Streamlit 네이티브 컬럼으로 안전하게 구현)
+# 7. 코스톨라니 달걀 위젯
 st.markdown(f"""
 <div class='egg-container'>
     <div style='font-size:0.9rem; color:#92400E; font-weight:bold;'>🍳 코스톨라니 달걀 사이클 판정</div>
@@ -142,7 +147,7 @@ phases = [
 cols = st.columns(3)
 for idx, (p_title, p_desc) in enumerate(phases):
     col = cols[idx % 3]
-    is_active = (idx == 0 and info["phase_code"] == "A")  # A국면 표기
+    is_active = (idx == 0 and info["phase_code"] == "A")
     
     with col:
         if is_active:
