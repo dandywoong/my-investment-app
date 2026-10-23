@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import streamlit.components.v1 as components
 
-# 1. 페이지 모바일 최적화 설정
+# 1. 페이지 모바일 최적화 및 기본 설정
 st.set_page_config(
     page_title="개인 투자 시스템 v1.0",
     page_icon="📈",
@@ -11,21 +11,23 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 커스텀 CSS
+# 커스텀 CSS (모바일 앱 스타일링 및 탭 디자인 강화)
 st.markdown("""
     <style>
-    .main-title { font-size: 1.6rem; font-weight: bold; color: #0F172A; margin-bottom: 0.2rem; }
+    .main-title { font-size: 1.5rem; font-weight: bold; color: #0F172A; margin-bottom: 0.2rem; }
     .card { background-color: #F8FAFC; border-radius: 12px; padding: 16px; border: 1px solid #E2E8F0; margin-bottom: 12px; }
-    .egg-header { background: linear-gradient(135deg, #FFFBEB 0%, #FEF3C7 100%); border: 2px solid #F59E0B; border-radius: 14px; padding: 16px; margin-bottom: 10px; }
+    .egg-header { background: linear-gradient(135deg, #FFFBEB 0%, #FEF3C7 100%); border: 2px solid #F59E0B; border-radius: 14px; padding: 16px; margin-bottom: 12px; }
     .news-box { background-color: #F0FDF4; border: 1px solid #BBF7D0; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+    
+    /* 탭 스타일 최적화 */
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] { height: 48px; border-radius: 8px; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
-# 2. 메인 타이틀 헤더
+# 2. 메인 타이틀 헤더 & 종목 선택
 st.markdown("<div class='main-title'>🛡️ 개인 투자 시스템 v1.0</div>", unsafe_allow_html=True)
-st.caption("시스템 관점: 기업의 3~5년 미래 가설 + 현재 가격의 냉정함 + 코스톨라니 달걀 이론")
 
-# 3. 종목 정보 매핑
 stocks = {
     "SK하이닉스": {"ticker": "000660.KS", "tv_symbol": "KRX:000660", "default_price": 1277000},
     "삼성전자": {"ticker": "005930.KS", "tv_symbol": "KRX:005930", "default_price": 215500},
@@ -36,10 +38,10 @@ stocks = {
     "IonQ (IONQ)": {"ticker": "IONQ", "tv_symbol": "NYSE:IONQ", "default_price": 11.5}
 }
 
-selected_stock_name = st.selectbox("🔍 분석할 종목 선택", list(stocks.keys()))
+selected_stock_name = st.selectbox("🔍 분석할 종목을 선택하세요", list(stocks.keys()))
 selected_info = stocks[selected_stock_name]
 
-# 4. 야후 파이낸스 실시간 시세
+# 3. 야후 파이낸스 실시간 시세
 @st.cache_data(ttl=60)
 def get_live_data(ticker_symbol):
     try:
@@ -65,25 +67,18 @@ if live_price is None or pd.isna(live_price):
     change = 0.0
     pct_change = 0.0
 
-st.divider()
+currency = "KRW" if ".KS" in selected_info["ticker"] else "USD"
+symbol_str = "₩" if currency == "KRW" else "$"
+display_val = f"{symbol_str}{live_price:,.2f}" if currency == "USD" else f"{symbol_str}{int(live_price):,}"
 
-# 5. 실시간 시세 표기
-col_price1, col_price2 = st.columns([1, 1])
-
-with col_price1:
+# 상단 요약 카드 (실시간 시세)
+col_h1, col_h2 = st.columns([1, 1])
+with col_h1:
     st.subheader(f"📊 {selected_stock_name}")
+with col_h2:
+    st.metric(label="실시간 라이브 시세", value=display_val, delta=f"{change:+,.2f} ({pct_change:+.2f}%)" if change else "0.00 (0.00%)")
 
-with col_price2:
-    currency = "KRW" if ".KS" in selected_info["ticker"] else "USD"
-    symbol_str = "₩" if currency == "KRW" else "$"
-    display_val = f"{symbol_str}{live_price:,.2f}" if currency == "USD" else f"{symbol_str}{int(live_price):,}"
-    st.metric(
-        label="실시간 시세 (Yahoo Finance)",
-        value=display_val,
-        delta=f"{change:+,.2f} ({pct_change:+.2f}%)" if change else "0.00 (0.00%)"
-    )
-
-# 6. 시스템 판단 및 달걀 국면 매핑 데이터
+# 4. 종목별 시스템 종합 데이터
 stock_system_data = {
     "SK하이닉스": {
         "phase_idx": 0,
@@ -92,7 +87,7 @@ stock_system_data = {
         "corp": "3~5년 HBM 및 고성능 메모리 독점적 경쟁우위 가설 유지",
         "invest": "10/28 실적 발표 대기 및 외국인 수급 추이 점검",
         "action": "기존 9주 보유 유지 / 실적 발표 후 HBM 공급 계약 확인 시 추가 매수 검토",
-        "news_title": "📢 [AI 실시간 인사이트] HBM3e 공급 안정성 및 3분기 실적 기대감 지속",
+        "news_title": "📢 [AI 인사이트] HBM3e 공급 안정성 및 3분기 실적 기대감 지속",
         "news_summary": "• 외국인 수급은 일시적 조정을 보이고 있으나, 주요 빅테크 향 HBM 공급 계약은 예정대로 진행 중.\n• 단기 주가 하락은 코스톨라니 달걀 이론상 공포가 극에 달한 A1 구간의 전형적인 특징으로 해석됨."
     },
     "삼성전자": {
@@ -102,7 +97,7 @@ stock_system_data = {
         "corp": "메모리+파운드리+디바이스 종합 생태계 복원 가설",
         "invest": "10/29 확정 실적 및 파운드리 적자 폭 확인 필요",
         "action": "기존 20주 보유 유지 / 저가 매수 서두르지 않고 확실한 수급 전환 확인 후 대응",
-        "news_title": "📢 [AI 실시간 인사이트] 메모리 반도체 업황 바닥 통과 가능성 점검",
+        "news_title": "📢 [AI 인사이트] 메모리 반도체 업황 바닥 통과 가능성 점검",
         "news_summary": "• 범용 메모리 가격 하락세가 진정 국면에 접어들었으며, 파운드리 적자 축소 여부가 주가 반등의 핵심 트리거.\n• 감산 효과와 재고 정상화 속도를 냉정하게 모니터링해야 하는 국면."
     },
     "NVIDIA (NVDA)": {
@@ -112,7 +107,7 @@ stock_system_data = {
         "corp": "AI 풀스택 컴퓨팅 플랫폼 독점 및 대체 불가능한 소프트웨어 생태계",
         "invest": "빅테크 CapEx 지출 성과 지표 지속 확인",
         "action": "핵심 성장주 분할 적립 유지 / 전체 포트폴리오 비중 관리",
-        "news_title": "📢 [AI 실시간 인사이트] 블랙웰(Blackwell) 아키텍처 양산 및 수요 견조",
+        "news_title": "📢 [AI 인사이트] 블랙웰(Blackwell) 아키텍처 양산 및 수요 견조",
         "news_summary": "• 공급망 우려에도 불구하고 빅테크 기업들의 AI 인프라 투자(CapEx) 기조가 흔들림 없이 유지됨.\n• 단기 매크로 변동성에 따른 지수 조정은 장기 적립식 투자 관점에서 좋은 기회."
     }
 }
@@ -124,83 +119,88 @@ info = stock_system_data.get(selected_stock_name, {
     "corp": "장기 성장 가설 점검 중",
     "invest": "현재 가격 밸류에이션 재평가 진행 중",
     "action": "보유 관점 유지 / 추가 매수 보류 및 신호 확인",
-    "news_title": "📢 [AI 실시간 인사이트] 시장 동향 모니터링 중",
+    "news_title": "📢 [AI 인사이트] 시장 동향 모니터링 중",
     "news_summary": "• 현재 종목의 기술적 추세와 수급 지표를 실시간으로 추적하고 있습니다."
 })
 
-current_idx = info["phase_idx"]
+st.divider()
 
-# 7. 코스톨라니 달걀 사이클 시각화
-st.markdown(f"""
-<div class='egg-header'>
-    <div style='font-size:0.9rem; color:#92400E; font-weight:bold;'>🍳 코스톨라니 달걀 이론 사이클 (Market Cycle)</div>
-    <div style='font-size:1.2rem; font-weight:bold; color:#78350F; margin-top:2px;'>{info['egg_title']}</div>
-    <div style='font-size:0.9rem; color:#B45309;'>{info['egg_desc']}</div>
-</div>
-""", unsafe_allow_html=True)
+# 5. 핵심: 모바일 전용 멀티 탭(Tabs) 인터페이스 구현
+tab1, tab2, tab3, tab4 = st.tabs(["📊 차트&분석", "🍳 달걀 국면", "📰 AI 인사이트", "🎯 실행 가이드"])
 
-phases_info = [
-    ("A. 침체기", "최저점 / 투매 구간"),
-    ("B. 회복기", "거래량 증가 구간"),
-    ("C. 상승기", "낙관론 확산 구간"),
-    ("D. 버블기", "최고점 / 과열 구간"),
-    ("E. 후퇴기", "거래량 감소 구간"),
-    ("F. 하락기", "비관론 시작 구간")
-]
+# TAB 1: 실시간 트레이딩뷰 차트
+with tab1:
+    st.subheader("📈 실시간 기술적 차트 (TradingView)")
+    tv_symbol = selected_info['tv_symbol']
+    tv_widget_html = f"""
+    <div class="tradingview-widget-container" style="height:480px;width:100%">
+      <div id="tradingview_chart" style="height:calc(100% - 32px);width:100%"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+      <script type="text/javascript">
+      new TradingView.widget(
+      {{
+      "autosize": true,
+      "symbol": "{tv_symbol}",
+      "interval": "D",
+      "timezone": "Asia/Seoul",
+      "theme": "light",
+      "style": "1",
+      "locale": "kr",
+      "toolbar_bg": "#f1f3f6",
+      "enable_publishing": false,
+      "allow_symbol_change": true,
+      "container_id": "tradingview_chart"
+      }}
+      );
+      </script>
+    </div>
+    """
+    components.html(tv_widget_html, height=500)
 
-cols = st.columns(3)
-for idx, (p_name, p_desc) in enumerate(phases_info):
-    col = cols[idx % 3]
-    with col:
-        if idx == current_idx:
-            st.error(f"**📌 [현재위치] {p_name}**\n\n{p_desc}")
-        else:
-            st.info(f"**{p_name}**\n\n{p_desc}")
+# TAB 2: 코스톨라니 달걀 이론 국면
+with tab2:
+    st.markdown(f"""
+    <div class='egg-header'>
+        <div style='font-size:0.9rem; color:#92400E; font-weight:bold;'>🍳 코스톨라니 달걀 이론 사이클</div>
+        <div style='font-size:1.2rem; font-weight:bold; color:#78350F; margin-top:2px;'>{info['egg_title']}</div>
+        <div style='font-size:0.9rem; color:#B45309;'>{info['egg_desc']}</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    phases_info = [
+        ("A. 침체기", "최저점 / 투매 구간"),
+        ("B. 회복기", "거래량 증가 구간"),
+        ("C. 상승기", "낙관론 확산 구간"),
+        ("D. 버블기", "최고점 / 과열 구간"),
+        ("E. 후퇴기", "거래량 감소 구간"),
+        ("F. 하락기", "비관론 시작 구간")
+    ]
+    
+    current_idx = info["phase_idx"]
+    cols = st.columns(2)
+    for idx, (p_name, p_desc) in enumerate(phases_info):
+        col = cols[idx % 2]
+        with col:
+            if idx == current_idx:
+                st.error(f"**📌 [현재위치] {p_name}**\n\n{p_desc}")
+            else:
+                st.info(f"**{p_name}**\n\n{p_desc}")
 
-st.write("")
+# TAB 3: AI 실시간 뉴스 요약 & 인사이트
+with tab3:
+    st.markdown(f"""
+    <div class='news-box'>
+        <div style='font-weight:bold; color:#166534; font-size:1.05rem;'>{info['news_title']}</div>
+        <div style='font-size:0.92rem; color:#14532D; margin-top:10px; line-height:1.6;'>{info['news_summary']}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-# 8. AI 실시간 뉴스 요약 및 인사이트 카드 (New!)
-st.markdown(f"""
-<div class='news-box'>
-    <div style='font-weight:bold; color:#166534; font-size:1rem;'>{info['news_title']}</div>
-    <div style='font-size:0.9rem; color:#14532D; margin-top:8px; line-height:1.5;'>{info['news_summary']}</div>
-</div>
-""", unsafe_allow_html=True)
+# TAB 4: 2트랙 분석 & 최종 실행 가이드
+with tab4:
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(f"<div class='card'><div style='font-weight:bold; color:#475569;'>💡 기업 판단 (미래 상상력)</div><div style='font-size:0.9rem; margin-top:6px;'>{info['corp']}</div></div>", unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"<div class='card'><div style='font-weight:bold; color:#475569;'>❄️ 투자 판단 (현재 냉정함)</div><div style='font-size:0.9rem; margin-top:6px;'>{info['invest']}</div></div>", unsafe_allow_html=True)
 
-# 9. 2트랙 기업/투자 판단 & 실행 가이드
-col1, col2 = st.columns(2)
-with col1:
-    st.markdown(f"<div class='card'><div style='font-weight:bold; color:#475569;'>💡 기업 판단 (미래 상상력)</div><div style='font-size:0.9rem; margin-top:6px;'>{info['corp']}</div></div>", unsafe_allow_html=True)
-with col2:
-    st.markdown(f"<div class='card'><div style='font-weight:bold; color:#475569;'>❄️ 투자 판단 (현재 냉정함)</div><div style='font-size:0.9rem; margin-top:6px;'>{info['invest']}</div></div>", unsafe_allow_html=True)
-
-st.markdown(f"<div class='card' style='background-color:#EFF6FF; border-color:#BFDBFE;'><div style='font-size:0.85rem; color:#1E40AF; font-weight:bold;'>🎯 시스템 최종 실행 가이드</div><div style='font-size:1rem; font-weight:bold; color:#1E3A8A; margin-top:4px;'>{info['action']}</div></div>", unsafe_allow_html=True)
-
-# 10. 트레이딩뷰 실시간 차트
-st.subheader("📈 실시간 기술적 차트 (TradingView)")
-tv_symbol = selected_info['tv_symbol']
-
-tv_widget_html = f"""
-<div class="tradingview-widget-container" style="height:500px;width:100%">
-  <div id="tradingview_chart" style="height:calc(100% - 32px);width:100%"></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script type="text/javascript">
-  new TradingView.widget(
-  {{
-  "autosize": true,
-  "symbol": "{tv_symbol}",
-  "interval": "D",
-  "timezone": "Asia/Seoul",
-  "theme": "light",
-  "style": "1",
-  "locale": "kr",
-  "toolbar_bg": "#f1f3f6",
-  "enable_publishing": false,
-  "allow_symbol_change": true,
-  "container_id": "tradingview_chart"
-  }}
-  );
-  </script>
-</div>
-"""
-components.html(tv_widget_html, height=520)
+    st.markdown(f"<div class='card' style='background-color:#EFF6FF; border-color:#BFDBFE;'><div style='font-size:0.85rem; color:#1E40AF; font-weight:bold;'>🎯 시스템 최종 실행 가이드</div><div style='font-size:1.1rem; font-weight:bold; color:#1E3A8A; margin-top:4px;'>{info['action']}</div></div>", unsafe_allow_html=True)
