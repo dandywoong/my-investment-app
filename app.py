@@ -11,62 +11,12 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 커스텀 CSS (시각적 달걀 그래픽 및 모바일 최적화 디자인)
+# 커스텀 CSS (카드 디자인 및 간격 최적화)
 st.markdown("""
     <style>
     .main-title { font-size: 1.6rem; font-weight: bold; color: #0F172A; margin-bottom: 0.2rem; }
     .card { background-color: #F8FAFC; border-radius: 12px; padding: 16px; border: 1px solid #E2E8F0; margin-bottom: 12px; }
-    
-    /* 코스톨라니 달걀 시각적 그래픽 컨테이너 */
-    .egg-visual-container {
-        background: linear-gradient(135deg, #FFFBEB 0%, #FEF3C7 100%);
-        border: 2px solid #F59E0B;
-        border-radius: 16px;
-        padding: 20px;
-        margin: 14px 0;
-        box-shadow: 0 4px 12px rgba(245, 158, 11, 0.15);
-    }
-    .egg-track {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        position: relative;
-        margin-top: 15px;
-        margin-bottom: 15px;
-    }
-    .egg-node {
-        background: #FFFFFF;
-        border: 2px solid #E2E8F0;
-        border-radius: 10px;
-        padding: 10px 6px;
-        text-align: center;
-        width: 15%;
-        font-size: 0.75rem;
-        color: #64748B;
-        position: relative;
-    }
-    .egg-node.active {
-        background: #D97706;
-        border: 2px solid #92400E;
-        color: #FFFFFF;
-        font-weight: bold;
-        transform: scale(1.08);
-        box-shadow: 0 6px 12px rgba(217, 119, 6, 0.3);
-    }
-    .pin-badge {
-        position: absolute;
-        top: -26px;
-        left: 50%;
-        transform: translateX(-50%);
-        background: #DC2626;
-        color: white;
-        padding: 2px 6px;
-        font-size: 0.7rem;
-        border-radius: 6px;
-        font-weight: bold;
-        white-space: nowrap;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-    }
+    .egg-header { background: linear-gradient(135deg, #FFFBEB 0%, #FEF3C7 100%); border: 2px solid #F59E0B; border-radius: 14px; padding: 16px; margin-bottom: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -109,7 +59,6 @@ def get_live_data(ticker_symbol):
 
 live_price, change, pct_change = get_live_data(selected_info["ticker"])
 
-# 데이터 수신 실패 시 기본 안전 값 적용
 if live_price is None or pd.isna(live_price):
     live_price = selected_info["default_price"]
     change = 0.0
@@ -172,40 +121,34 @@ info = stock_system_data.get(selected_stock_name, {
 
 current_idx = info["phase_idx"]
 
-# 7. 시각적 달걀 사이클 그래픽 위젯 렌더링
-phases_info = [
-    ("A. 침체기", "투매/바닥"),
-    ("B. 회복기", "거래증가"),
-    ("C. 상승기", "낙관확산"),
-    ("D. 버블기", "최고과열"),
-    ("E. 후퇴기", "거래감소"),
-    ("F. 하락기", "비관시작")
-]
-
-nodes_html = ""
-for idx, (p_name, p_desc) in enumerate(phases_info):
-    is_active = (idx == current_idx)
-    active_class = "active" if is_active else ""
-    pin_tag = "<div class='pin-badge'>📍 현재위치</div>" if is_active else ""
-    
-    nodes_html += f"""
-    <div class='egg-node {active_class}'>
-        {pin_tag}
-        <b>{p_name}</b><br>{p_desc}
-    </div>
-    """
-
+# 7. 코스톨라니 달걀 사이클 시각화 (스트림릿 네이티브 그리드 카드 활용)
 st.markdown(f"""
-<div class='egg-visual-container'>
-    <div style='font-size:0.95rem; color:#92400E; font-weight:bold;'>🍳 코스톨라니 달걀 이론 사이클 (Market Cycle)</div>
-    <div style='font-size:1.25rem; font-weight:bold; color:#78350F; margin-top:4px;'>{info['egg_title']}</div>
-    <div style='font-size:0.9rem; color:#B45309; margin-bottom:10px;'>{info['egg_desc']}</div>
-    
-    <div class='egg-track'>
-        {nodes_html}
-    </div>
+<div class='egg-header'>
+    <div style='font-size:0.9rem; color:#92400E; font-weight:bold;'>🍳 코스톨라니 달걀 이론 사이클 (Market Cycle)</div>
+    <div style='font-size:1.2rem; font-weight:bold; color:#78350F; margin-top:2px;'>{info['egg_title']}</div>
+    <div style='font-size:0.9rem; color:#B45309;'>{info['egg_desc']}</div>
 </div>
 """, unsafe_allow_html=True)
+
+phases_info = [
+    ("A. 침체기", "최저점 / 투매 구간"),
+    ("B. 회복기", "거래량 증가 구간"),
+    ("C. 상승기", "낙관론 확산 구간"),
+    ("D. 버블기", "최고점 / 과열 구간"),
+    ("E. 후퇴기", "거래량 감소 구간"),
+    ("F. 하락기", "비관론 시작 구간")
+]
+
+cols = st.columns(3)
+for idx, (p_name, p_desc) in enumerate(phases_info):
+    col = cols[idx % 3]
+    with col:
+        if idx == current_idx:
+            st.error(f"**📌 [현재위치] {p_name}**\n\n{p_desc}")
+        else:
+            st.info(f"**{p_name}**\n\n{p_desc}")
+
+st.write("")
 
 # 8. 2트랙 기업/투자 판단 & 실행 가이드
 col1, col2 = st.columns(2)
@@ -226,7 +169,7 @@ tv_widget_html = f"""
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <script type="text/javascript">
   new TradingView.widget(
-  {
+  {{
   "autosize": true,
   "symbol": "{tv_symbol}",
   "interval": "D",
@@ -238,7 +181,7 @@ tv_widget_html = f"""
   "enable_publishing": false,
   "allow_symbol_change": true,
   "container_id": "tradingview_chart"
-  }
+  }}
   );
   </script>
 </div>
