@@ -27,10 +27,9 @@ st.markdown("""
 # 2. 메인 헤더
 st.markdown("<div class='main-title'>🛡️ 개인 투자 시스템 v3.0 (AI & 포트폴리오)</div>", unsafe_allow_html=True)
 
-# 3. 사이드바 / 상단 종목 검색 시스템 (한국 및 미국 모든 종목 지원)
+# 3. 사이드바 / 상단 종목 검색 시스템
 st.sidebar.header("🔍 종목 검색 & 포트폴리오 설정")
 
-# 자주 찾는 추천 종목 + 자유 입력 조합
 search_preset = {
     "SK하이닉스 (000660.KS)": "000660.KS",
     "삼성전자 (005930.KS)": "005930.KS",
@@ -49,31 +48,35 @@ if search_preset[selected_preset] == "CUSTOM":
 else:
     ticker_input = search_preset[selected_preset]
 
-# 4. 실시간 주가 및 수급 데이터 라이브 추출 함수
+# 4. 실시간 주가 및 수급 데이터 안전 추출 함수
 @st.cache_data(ttl=30)
 def fetch_live_stock_data(symbol):
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(period="5d")
-        info = ticker.fast_info
         
         if df is not None and not df.empty and 'Close' in df.columns:
-            latest_price = float(df['Close'].iloc[-1])
-            prev_price = float(df['Close'].iloc[-2]) if len(df) >= 2 else latest_price
-            change = latest_price - prev_price
-            pct_change = (change / prev_price) * 100 if prev_price else 0.0
-            volume = int(df['Volume'].iloc[-1]) if 'Volume' in df.columns else 0
-            avg_volume = int(df['Volume'].mean()) if 'Volume' in df.columns else 1
-            
-            return {
-                "symbol": symbol,
-                "price": latest_price,
-                "change": change,
-                "pct_change": pct_change,
-                "volume": volume,
-                "avg_volume": avg_volume,
-                "currency": "KRW" if ".KS" in symbol or ".KQ" in symbol else "USD"
-            }
+            # NaN 방지 처리
+            df = df.dropna(subset=['Close'])
+            if not df.empty:
+                latest_price = float(df['Close'].iloc[-1])
+                prev_price = float(df['Close'].iloc[-2]) if len(df) >= 2 else latest_price
+                change = latest_price - prev_price
+                pct_change = (change / prev_price) * 100 if prev_price else 0.0
+                
+                volume = int(df['Volume'].iloc[-1]) if ('Volume' in df.columns and not pd.isna(df['Volume'].iloc[-1])) else 0
+                avg_vol_val = df['Volume'].mean() if 'Volume' in df.columns else 1
+                avg_volume = int(avg_vol_val) if not pd.isna(avg_vol_val) else 1
+                
+                return {
+                    "symbol": symbol,
+                    "price": latest_price,
+                    "change": change,
+                    "pct_change": pct_change,
+                    "volume": volume,
+                    "avg_volume": avg_volume if avg_volume > 0 else 1,
+                    "currency": "KRW" if ".KS" in symbol or ".KQ" in symbol else "USD"
+                }
     except Exception:
         pass
     return None
@@ -84,9 +87,16 @@ if not stock_data:
     st.error(f"'{ticker_input}' 종목 정보를 불러올 수 없습니다. 올바른 티커(예: 005930.KS, NVDA)인지 확인해 주세요.")
     st.stop()
 
-# 시세 표기 가공
+# 시세 표기 안전 처리
 currency_symbol = "₩" if stock_data["currency"] == "KRW" else "$"
-price_fmt = f"{currency_symbol}{stock_data['price']:,.2f}" if stock_data["currency"] == "USD" else f"{currency_symbol}{int(stock_data['price']):,}"
+
+try:
+    if stock_data["currency"] == "USD":
+        price_fmt = f"{currency_symbol}{stock_data['price']:,.2f}"
+    else:
+        price_fmt = f"{currency_symbol}{int(round(stock_data['price'])):,}"
+except Exception:
+    price_fmt = f"{currency_symbol}{stock_data['price']}"
 
 col_h1, col_h2 = st.columns([1, 1])
 with col_h1:
@@ -156,7 +166,6 @@ with tab1:
 
 # --- TAB 2: AI 코스톨라니 달걀 국면 판정 ---
 with tab2:
-    # 수급/등락률에 기반한 규칙 기반 AI 국면 판정 엔진
     pct = stock_data["pct_change"]
     
     if pct < -2.0:
@@ -215,7 +224,7 @@ with tab3:
     </div>
     """, unsafe_allow_html=True)
 
-# --- TAB 4: 내 포트폴리오 (삼성증권 등 보유 주식 관리) ---
+# --- TAB 4: 내 포트폴리오 ---
 with tab4:
     st.subheader("💼 나의 실시간 포트폴리오 자산 트래커")
     st.caption("실제 보유 중인 종목의 매수가와 수량을 입력하면 실시간 평가 손익이 자동으로 계산됩니다.")
@@ -224,13 +233,14 @@ with tab4:
     with col_in1:
         my_qty = st.number_input("보유 수량 (주)", min_value=0, value=10, step=1)
     with col_in2:
-        my_buy_price = st.number_input(f"평균 매수가 ({currency_symbol})", min_value=0.0, value=float(stock_data['price'] * 0.95), step=100.0)
+        default_buy_price = float(stock_data['price'] * 0.95) if stock_data['price'] else 1000.0
+        my_buy_price = st.number_input(f"평균 매수가 ({currency_symbol})", min_value=0.0, value=default_buy_price, step=100.0)
         
     if my_qty > 0 and my_buy_price > 0:
         total_buy = my_buy_price * my_qty
         total_eval = stock_data['price'] * my_qty
         pnl = total_eval - total_buy
-        pnl_pct = (pnl / total_buy) * 100
+        pnl_pct = (pnl / total_buy) * 100 if total_buy else 0.0
         
         st.write("---")
         m_col1, m_col2, m_col3 = st.columns(3)
