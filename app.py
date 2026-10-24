@@ -1,192 +1,251 @@
+
+import time
+from datetime import datetime
+
+import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
-import pandas as pd
 
-# 1. 페이지 설정 (모바일 최적화 다크 모드)
+
 st.set_page_config(
-    page_title="SAVE 스타일 투자 시스템",
-    page_icon="🔥",
+    page_title="Eggfolio | Data Test",
+    page_icon="🥚",
     layout="wide",
-    initial_sidebar_state="collapsed"
 )
 
-# SAVE 앱 특유의 다크 테마 및 카드 UI 스타일링 CSS
-st.markdown("""
-    <style>
-    /* 전체 배경 다크 모드 설정 */
-    .stApp { background-color: #0F1117; color: #F8FAFC; }
-    
-    /* 상단 헤더 및 타이틀 */
-    .save-logo { font-size: 1.4rem; font-weight: 900; color: #FFFFFF; background: #000; padding: 4px 12px; border-radius: 6px; display: inline-block; border: 1px solid #333; }
-    
-    /* 카드 컴포넌트 디자인 */
-    .save-card { background-color: #1A1D24; border-radius: 14px; padding: 16px; border: 1px solid #2A2F3B; margin-bottom: 12px; }
-    .index-card { background-color: #1A1D24; border-radius: 12px; padding: 14px; border: 1px solid #2A2F3B; text-align: center; }
-    
-    /* 텍스트 컬러 */
-    .text-muted { color: #94A3B8; font-size: 0.85rem; }
-    .text-green { color: #10B981; font-weight: bold; }
-    .text-red { color: #EF4444; font-weight: bold; }
-    
-    /* 탭 메뉴 스타일링 */
-    .stTabs [data-baseweb="tab-list"] { background-color: #161922; border-radius: 10px; padding: 4px; gap: 4px; }
-    .stTabs [data-baseweb="tab"] { height: 40px; border-radius: 8px; font-weight: bold; color: #94A3B8; font-size: 0.9rem; }
-    .stTabs [aria-selected="true"] { background-color: #262B38 !important; color: #FFFFFF !important; }
-    </style>
-""", unsafe_allow_html=True)
+st.title("🥚 Eggfolio")
+st.caption("1차 테스트 · Yahoo Finance 데이터 연결 및 종목 변경 검증")
 
-# 2. 상단 로고 및 알람 바
-col_logo, col_bell = st.columns([8, 2])
-with col_logo:
-    st.markdown("<div class='save-logo'>SAVE</div>", unsafe_allow_html=True)
-with col_bell:
-    st.markdown("<div style='text-align: right; font-size: 1.2rem; cursor: pointer;'>🔔 🔍</div>", unsafe_allow_html=True)
+st.info(
+    "이 버전은 데이터 연결을 검증하기 위한 테스트입니다. "
+    "조회 시각은 데이터를 받아온 시각이며, 실시간 시세를 의미하지 않습니다."
+)
 
-st.write("")
 
-# 3. 하단 네비게이션 모사 탭 메뉴 (뉴스 / 증시 / 캘린더 / 내정보)
-main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs(["📰 뉴스", "📈 증시 & 관심종목", "📅 캘린더", "👤 내 정보"])
+@st.cache_data(ttl=300, show_spinner=False)
+def load_stock_data(ticker: str, period: str):
+    """Yahoo Finance에서 주가 데이터를 조회한다."""
+    stock = yf.Ticker(ticker)
+    data = stock.history(
+        period=period,
+        interval="1d",
+        auto_adjust=False,
+        actions=False,
+        raise_errors=True,
+    )
 
-# --- [TAB 1] 뉴스 피드 화면 ---
-with main_tab1:
-    st.markdown("<div class='text-muted'>🔥 실시간 트렌드 | 트럼프 · 반도체 · 스페이스X</div>", unsafe_allow_html=True)
-    st.write("")
-    
-    # 주요 뉴스 카드 (SAVE PICK)
-    st.markdown("""
-    <div class='save-card'>
-        <div style='display: flex; justify-content: space-between; align-items: center;'>
-            <span style='background: #3B82F6; color: white; font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; font-weight: bold;'>SAVE PICK · 정보</span>
-            <span class='text-muted'>2026. 10. 23. 07:41</span>
-        </div>
-        <div style='font-size: 1.05rem; font-weight: bold; color: #FFFFFF; margin-top: 8px;'>
-            (카더라) 스페이스X, 자체 이동통신망 구축 위해 미국 내 기지국 8만 곳 확보 협상
-        </div>
-        <div style='margin-top: 10px;'>
-            <span style='color: #94A3B8; font-size: 0.8rem;'>$SPCX  $T  $TMUS  +1</span>
-            <span style='float: right; color: #94A3B8; font-size: 0.8rem;'>👁️ 11.4K</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # 일반 뉴스 카드
-    st.markdown("""
-    <div class='save-card'>
-        <div style='display: flex; justify-content: space-between; align-items: center;'>
-            <span style='background: #D97706; color: white; font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; font-weight: bold;'>로이터 · 속보</span>
-            <span class='text-muted'>3분 전</span>
-        </div>
-        <div style='font-size: 1rem; font-weight: bold; color: #FFFFFF; margin-top: 8px;'>
-            ENI, 연료 가격 상한제 1년 내내 연장... CEO가 이탈리아 신문에 밝혀
-        </div>
-        <div style='margin-top: 10px;'>
-            <span style='color: #94A3B8; font-size: 0.8rem;'>$E</span>
-            <span style='float: right; color: #94A3B8; font-size: 0.8rem;'>👁️ 21</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    if data is None or data.empty:
+        raise ValueError(
+            "조회된 데이터가 없습니다. 티커가 맞는지 확인하거나 잠시 후 다시 시도하세요."
+        )
 
-# --- [TAB 2] 증시 & 관심종목 화면 (SAVE 앱 핵심) ---
-with main_tab2:
-    st.markdown("### 📊 주요 지수 (실시간)")
-    
-    # 주요 지수 3개 컬럼 배치 (QQQ, SPY, DIA)
-    i_col1, i_col2, i_col3 = st.columns(3)
-    with i_col1:
-        st.markdown("""
-        <div class='index-card'>
-            <div class='text-muted'>QQQ ETF</div>
-            <div style='font-size: 1rem; font-weight: bold;'>나스닥100</div>
-            <div style='font-size: 1.1rem; font-weight: bold; margin-top: 4px;'>$706.99</div>
-            <div class='text-green'>+0.36%</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with i_col2:
-        st.markdown("""
-        <div class='index-card'>
-            <div class='text-muted'>SPY ETF</div>
-            <div style='font-size: 1rem; font-weight: bold;'>S&P500</div>
-            <div style='font-size: 1.1rem; font-weight: bold; margin-top: 4px;'>$762.12</div>
-            <div class='text-red'>-0.24%</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with i_col3:
-        st.markdown("""
-        <div class='index-card'>
-            <div class='text-muted'>DIA ETF</div>
-            <div style='font-size: 1rem; font-weight: bold;'>다우존스</div>
-            <div style='font-size: 1.1rem; font-weight: bold; margin-top: 4px;'>$522.41</div>
-            <div class='text-red'>-1.04%</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    st.write("")
-    st.markdown("### ⭐ 관심 종목 리스트")
-    
-    # 관심 종목 리스트 (엔비디아, 테슬라, 팔란티어 등)
-    watchlist = [
-        {"name": "엔비디아", "ticker": "NVDA", "price": 212.24, "change": 0.02},
-        {"name": "테슬라", "ticker": "TSLA", "price": 373.11, "change": -0.39},
-        {"name": "팔란티어 테크놀로지", "ticker": "PLTR", "price": 196.11, "change": -0.04},
-        {"name": "알파벳 Class A", "ticker": "GOOGL", "price": 323.37, "change": -0.26}
-    ]
-    
-    for item in watchlist:
-        ch_color = "text-green" if item["change"] >= 0 else "text-red"
-        sign = "+" if item["change"] >= 0 else ""
-        st.markdown(f"""
-        <div class='save-card' style='padding: 12px 16px; margin-bottom: 8px;'>
-            <div style='display: flex; justify-content: space-between; align-items: center;'>
-                <div>
-                    <span style='font-weight: bold; font-size: 1rem; color: #FFF;'>{item['name']}</span><br>
-                    <span class='text-muted'>{item['ticker']}</span>
-                </div>
-                <div style='text-align: right;'>
-                    <span style='font-weight: bold; font-size: 1rem; color: #FFF;'>${item['price']:,.2f}</span><br>
-                    <span class='{ch_color}'>{sign}{item['change']}%</span>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    data = data.copy()
+    data.index = pd.to_datetime(data.index)
 
-# --- [TAB 3] 캘린더 화면 ---
-with main_tab3:
-    st.markdown("### 📅 경제 실적 및 이벤트 캘린더")
-    st.markdown("""
-    <div class='save-card'>
-        <div style='font-weight: bold; color: #F59E0B;'>📌 다중 실적 발표 일정</div>
-        <div class='text-muted' style='margin-top: 6px;'>
-            • 10/28: SK하이닉스 3분기 실적 발표 대기<br>
-            • 10/29: 삼성전자 확정 실적 및 파운드리 가이던스 공개<br>
-            • 빅테크 CapEx 지출 성과 발표 집중 구간
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # 주가와 거래량에 필요한 값이 실제로 존재하는지 확인한다.
+    required_columns = ["Open", "High", "Low", "Close", "Volume"]
+    missing = [col for col in required_columns if col not in data.columns]
+    if missing:
+        raise ValueError(f"필수 데이터 항목이 없습니다: {', '.join(missing)}")
 
-# --- [TAB 4] 내 정보 & 포트폴리오 트래커 ---
-with main_tab4:
-    st.markdown("### 👤 내 정보 및 자산 관리")
-    st.markdown("""
-    <div class='save-card'>
-        <div style='font-weight: bold; font-size: 1rem; color: #FFF;'>🛡️ 개인 투자 시스템 계정</div>
-        <div class='text-muted' style='margin-top: 4px;'>원칙 중심 장기 투자 모드 활성화됨</div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.subheader("💼 포트폴리오 요약")
-    my_shares = st.number_input("엔비디아(NVDA) 보유 수량", min_value=0, value=5)
-    my_avg = st.number_input("평균 매수가 ($)", min_value=0.0, value=150.0)
-    
-    current_nvda_price = 212.24
-    total_eval = my_shares * current_nvda_price
-    total_invest = my_shares * my_avg
-    profit = total_eval - total_invest
-    profit_pct = (profit / total_invest * 100) if total_invest > 0 else 0
-    
-    st.markdown(f"""
-    <div class='save-card'>
-        <div class='text-muted'>총 평가 금액</div>
-        <div style='font-size: 1.4rem; font-weight: bold; color: #FFF;'>${total_eval:,.2f}</div>
-        <div style='margin-top: 8px;' class='text-green'>평가 손익: ${profit:+,.2f} ({profit_pct:+.2f}%)</div>
-    </div>
-    """, unsafe_allow_html=True)
+    data = data.dropna(subset=["Close"])
+
+    if data.empty:
+        raise ValueError("유효한 종가 데이터가 없습니다.")
+
+    return data
+
+
+with st.sidebar:
+    st.header("조회 설정")
+
+    presets = {
+        "NVDA · NVIDIA": "NVDA",
+        "AAPL · Apple": "AAPL",
+        "MSFT · Microsoft": "MSFT",
+        "GOOGL · Alphabet": "GOOGL",
+        "AMZN · Amazon": "AMZN",
+        "TSLA · Tesla": "TSLA",
+        "005930.KS · Samsung Electronics": "005930.KS",
+        "000660.KS · SK Hynix": "000660.KS",
+        "직접 입력": "CUSTOM",
+    }
+
+    selected = st.selectbox("종목 선택", list(presets.keys()))
+
+    if presets[selected] == "CUSTOM":
+        ticker_input = st.text_input(
+            "티커 입력",
+            value="NVDA",
+            help="예: NVDA, AAPL, 005930.KS, 000660.KS",
+        )
+    else:
+        ticker_input = presets[selected]
+
+    period_label = st.selectbox(
+        "조회 기간",
+        ["1개월", "3개월", "6개월", "1년", "2년", "5년"],
+        index=1,
+    )
+
+    periods = {
+        "1개월": "1mo",
+        "3개월": "3mo",
+        "6개월": "6mo",
+        "1년": "1y",
+        "2년": "2y",
+        "5년": "5y",
+    }
+    period = periods[period_label]
+
+    refresh = st.button("데이터 새로 조회", use_container_width=True)
+
+ticker = ticker_input.strip().upper()
+
+if not ticker:
+    st.warning("먼저 조회할 종목의 티커를 입력하세요.")
+    st.stop()
+
+if refresh:
+    # 사용자가 명시적으로 새로 조회할 때 해당 종목의 캐시를 비운다.
+    load_stock_data.clear()
+
+st.subheader(f"조회 종목: {ticker}")
+
+try:
+    with st.spinner(f"{ticker} 데이터를 Yahoo Finance에서 조회하고 있습니다..."):
+        started_at = time.time()
+        data = load_stock_data(ticker, period)
+        elapsed = time.time() - started_at
+        retrieved_at = datetime.now().astimezone()
+
+except Exception as exc:
+    st.error("데이터 조회에 실패했습니다.")
+    st.write("**조회 티커:**", ticker)
+    st.write("**오류 내용:**")
+    st.code(str(exc))
+
+    st.markdown(
+        """
+        **확인할 사항**
+        - 티커 표기가 맞는지 확인하세요.
+        - 잠시 기다렸다가 다시 조회하세요.
+        - 반복적으로 실패한다면 Yahoo Finance의 요청 제한이나 연결 문제일 수 있습니다.
+        """
+    )
+    st.stop()
+
+latest = data.iloc[-1]
+previous = data.iloc[-2] if len(data) >= 2 else None
+
+latest_close = float(latest["Close"])
+latest_volume = latest["Volume"]
+
+if previous is not None and float(previous["Close"]) != 0:
+    change_pct = (
+        latest_close / float(previous["Close"]) - 1
+    ) * 100
+else:
+    change_pct = None
+
+latest_date = pd.Timestamp(data.index[-1])
+if latest_date.tzinfo is not None:
+    latest_date = latest_date.tz_convert("UTC")
+
+latest_date_text = latest_date.strftime("%Y-%m-%d %H:%M UTC")
+
+st.subheader("데이터 상태")
+
+m1, m2, m3, m4 = st.columns(4)
+
+m1.metric(
+    "최근 종가",
+    f"{latest_close:,.2f}",
+    delta=None if change_pct is None else f"{change_pct:+.2f}%",
+)
+
+m2.metric(
+    "최근 일봉 거래량",
+    "없음" if pd.isna(latest_volume) else f"{float(latest_volume):,.0f}",
+)
+
+m3.metric(
+    "조회된 일봉 수",
+    f"{len(data):,}개",
+)
+
+m4.metric(
+    "조회 소요 시간",
+    f"{elapsed:.2f}초",
+)
+
+st.write("**데이터 기준 시각:**", latest_date_text)
+st.write(
+    "**Eggfolio 조회 시각:**",
+    retrieved_at.strftime("%Y-%m-%d %H:%M:%S %Z"),
+)
+
+st.caption(
+    "기준 시각은 Yahoo Finance가 반환한 가장 최근 일봉의 날짜입니다. "
+    "조회 시각은 이 앱이 요청을 수행한 시각입니다. "
+    "두 시각은 다를 수 있으며, 이 정보만으로 실시간 여부를 보장할 수 없습니다."
+)
+
+st.divider()
+st.subheader(f"{ticker} 주가 차트")
+
+fig = go.Figure()
+
+fig.add_trace(
+    go.Scatter(
+        x=data.index,
+        y=data["Close"],
+        mode="lines",
+        name="종가",
+        hovertemplate="날짜: %{x}<br>종가: %{y:,.2f}<extra></extra>",
+    )
+)
+
+fig.update_layout(
+    xaxis_title="날짜",
+    yaxis_title="가격",
+    hovermode="x unified",
+    margin=dict(l=10, r=10, t=20, b=10),
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+st.subheader("거래량")
+
+volume_fig = go.Figure()
+volume_fig.add_trace(
+    go.Bar(
+        x=data.index,
+        y=data["Volume"],
+        name="거래량",
+        hovertemplate="날짜: %{x}<br>거래량: %{y:,.0f}<extra></extra>",
+    )
+)
+volume_fig.update_layout(
+    xaxis_title="날짜",
+    yaxis_title="거래량",
+    margin=dict(l=10, r=10, t=20, b=10),
+)
+st.plotly_chart(volume_fig, use_container_width=True)
+
+with st.expander("최근 10개 일봉 원본 데이터"):
+    display_data = data.tail(10).reset_index()
+    st.dataframe(display_data, use_container_width=True, hide_index=True)
+
+    st.download_button(
+        "원본 데이터 CSV 다운로드",
+        data=display_data.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"eggfolio_{ticker}_daily.csv",
+        mime="text/csv",
+    )
+
+st.caption(
+    "데이터 제공처: Yahoo Finance 비공식 인터페이스(yfinance). "
+    "데이터 제공 여부, 지연 시간 및 정확성은 제공처의 조건에 영향을 받습니다."
+)
