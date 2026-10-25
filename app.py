@@ -823,16 +823,326 @@ with tab_chart:
     vr = last["VolumeRatio20"]
     st.write(f"• 거래량은 20일 평균 대비 {vr:.2f}배입니다." if pd.notna(vr) else "• 거래량 평균을 계산하기에 데이터가 부족합니다.")
 
+
 with tab_market:
-    label,desc,signals = market_read(prices)
-    st.subheader("가격 추세 관측")
-    st.markdown(f"### {label}")
-    st.write(desc)
-    st.dataframe(pd.DataFrame(signals,columns=["관측 항목","판독"]), use_container_width=True, hide_index=True)
-    st.warning("이 판독은 가격·거래량 기반의 단순 규칙 요약이며 검증된 예측 모델이 아닙니다.")
-    st.subheader("코스톨라니 달걀 이론 · 민스키 가설")
-    st.write("현재는 두 이론의 국면을 자동 확정하지 않습니다. 가격 데이터만으로는 투자심리, 신용 팽창, 레버리지, 대출 기준, 신용스프레드를 충분히 판별할 수 없습니다.")
-    st.write("공매도, 투자자별 수급, 선물·옵션 포지셔닝, 신용스프레드, AI 종합 분석은 아직 연결되지 않았습니다. 데이터 출처와 기준일을 검증한 뒤 추가해야 하며 임의의 숫자는 표시하지 않습니다.")
+    st.subheader("시장 국면 분석")
+    st.caption(
+        "종목별 가격·거래량 데이터를 바탕으로 추세를 관측하고, "
+        "코스톨라니·민스키 이론을 참고해 해석합니다. "
+        "국면은 확정 예측이 아니라 참고용 추정입니다."
+    )
+
+    # 1. 시장 국면 페이지 전용 종목 선택
+    market_name, market_ticker = stock_search_widget(
+        "market_regime_search",
+        default_ticker=ticker,
+        default_name=""
+    )
+
+    market_period_label = st.selectbox(
+        "분석 기간",
+        list(PERIODS.keys()),
+        index=list(PERIODS.keys()).index("1년"),
+        key="market_regime_period"
+    )
+    market_period = PERIODS[market_period_label]
+
+    if not market_ticker:
+        st.warning("먼저 분석할 종목을 검색하고 선택해 주세요.")
+    else:
+        try:
+            market_prices, fetch_elapsed = get_prices(
+                market_ticker,
+                market_period
+            )
+
+            if market_prices is None or market_prices.empty:
+                st.warning("선택한 종목의 가격 데이터가 없습니다.")
+            else:
+                market_last = market_prices.iloc[-1]
+                market_close = float(market_last["Close"])
+                market_date = str(market_prices.index[-1].date())
+
+                st.markdown(f"### {market_name} (`{market_ticker}`)")
+                st.caption(
+                    f"최근 관측 데이터: {market_date} · "
+                    f"데이터 조회 시간: {fetch_elapsed:.2f}초"
+                )
+
+                # 2. 핵심 관측값
+                ma20 = market_last["MA20"]
+                ma60 = market_last["MA60"]
+                ma120 = market_last["MA120"]
+                ret20 = market_last["Return20"]
+                ret60 = market_last["Return60"]
+                volume_ratio = market_last["VolumeRatio20"]
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("최근 종가", f"{market_close:,.2f}")
+                m2.metric(
+                    "20거래일 수익률",
+                    f"{ret20:+.2f}%" if pd.notna(ret20) else "자료 부족"
+                )
+                m3.metric(
+                    "60거래일 수익률",
+                    f"{ret60:+.2f}%" if pd.notna(ret60) else "자료 부족"
+                )
+
+                # 3. 가격 추세 판독
+                st.subheader("① 가격 추세 관측")
+                trend_label, trend_desc, trend_signals = market_read(
+                    market_prices
+                )
+                st.markdown(f"#### {trend_label}")
+                st.write(trend_desc)
+                st.dataframe(
+                    pd.DataFrame(
+                        trend_signals,
+                        columns=["관측 항목", "판독"]
+                    ),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                st.plotly_chart(
+                    make_chart(market_prices, [20, 60, 120], True),
+                    use_container_width=True,
+                    config={
+                        "scrollZoom": True,
+                        "displaylogo": False,
+                        "responsive": True
+                    },
+                    key="market_regime_price_chart"
+                )
+
+                # 4. 코스톨라니 달걀 사이클
+                st.subheader("② 코스톨라니 달걀 사이클")
+                st.caption(
+                    "표시 위치는 가격 추세를 이용한 기술적 참고값입니다. "
+                    "시장 심리나 자금 흐름을 직접 측정한 결과가 아닙니다."
+                )
+
+                # 가격·이동평균 관계에 따른 단순 추세 대리 분류
+                if pd.notna(ma20) and pd.notna(ma60) and pd.notna(ma120):
+                    if market_close > ma20 > ma60 > ma120:
+                        egg_stage = "상승 추세"
+                        egg_x, egg_y = 0.72, 0.76
+                        egg_reason = "종가가 주요 이동평균선 위에 있고 평균선이 상승 방향으로 정렬"
+                    elif market_close < ma20 < ma60 < ma120:
+                        egg_stage = "하락 추세"
+                        egg_x, egg_y = 0.28, 0.24
+                        egg_reason = "종가가 주요 이동평균선 아래에 있고 평균선이 하락 방향으로 정렬"
+                    elif market_close > ma20 and market_close > ma60:
+                        egg_stage = "회복·상승 시도"
+                        egg_x, egg_y = 0.34, 0.72
+                        egg_reason = "종가가 단기·중기 이동평균선 위에 있으나 장기 추세 확인 필요"
+                    elif market_close < ma20 and market_close < ma60:
+                        egg_stage = "약세·하락 압력"
+                        egg_x, egg_y = 0.66, 0.28
+                        egg_reason = "종가가 단기·중기 이동평균선 아래에 있어 약세 압력이 관측됨"
+                    else:
+                        egg_stage = "전환·혼합 구간"
+                        egg_x, egg_y = 0.50, 0.50
+                        egg_reason = "가격과 이동평균선 관계가 한 방향으로 정렬되지 않음"
+                else:
+                    egg_stage = "판단 보류"
+                    egg_x, egg_y = 0.50, 0.50
+                    egg_reason = "이동평균선 계산에 필요한 가격 데이터가 부족함"
+
+                egg_fig = go.Figure()
+
+                # 달걀형 사이클의 개념적 경로
+                egg_fig.add_shape(
+                    type="circle",
+                    x0=0.12, y0=0.10, x1=0.88, y1=0.90,
+                    line=dict(color="#64748B", width=2),
+                    fillcolor="rgba(148,163,184,0.08)"
+                )
+                egg_fig.add_shape(
+                    type="line",
+                    x0=0.50, y0=0.12, x1=0.50, y1=0.88,
+                    line=dict(color="#94A3B8", dash="dot")
+                )
+                egg_fig.add_shape(
+                    type="line",
+                    x0=0.14, y0=0.50, x1=0.86, y1=0.50,
+                    line=dict(color="#94A3B8", dash="dot")
+                )
+
+                egg_fig.add_trace(go.Scatter(
+                    x=[0.30, 0.50, 0.70, 0.50, 0.30],
+                    y=[0.70, 0.82, 0.50, 0.18, 0.70],
+                    mode="lines+markers",
+                    name="개념적 사이클",
+                    line=dict(color="#64748B", width=2),
+                    marker=dict(size=7),
+                    hoverinfo="skip"
+                ))
+
+                egg_fig.add_trace(go.Scatter(
+                    x=[egg_x],
+                    y=[egg_y],
+                    mode="markers+text",
+                    name="가격 추세 대리 위치",
+                    text=[market_name],
+                    textposition="top center",
+                    marker=dict(
+                        size=18,
+                        color="#F59E0B",
+                        line=dict(color="#FFFFFF", width=2)
+                    ),
+                    hovertemplate=(
+                        f"<b>{market_name}</b><br>"
+                        f"기술적 참고 분류: {egg_stage}<br>"
+                        f"기준일: {market_date}<extra></extra>"
+                    )
+                ))
+
+                egg_fig.add_annotation(
+                    x=0.50, y=0.96,
+                    text="상승·과열 가능 구간",
+                    showarrow=False
+                )
+                egg_fig.add_annotation(
+                    x=0.50, y=0.04,
+                    text="하락·침체 가능 구간",
+                    showarrow=False
+                )
+                egg_fig.add_annotation(
+                    x=0.04, y=0.50,
+                    text="회복",
+                    showarrow=False
+                )
+                egg_fig.add_annotation(
+                    x=0.96, y=0.50,
+                    text="약세",
+                    showarrow=False
+                )
+
+                egg_fig.update_layout(
+                    height=440,
+                    template="plotly_white",
+                    margin=dict(l=20, r=20, t=40, b=30),
+                    xaxis=dict(
+                        range=[0, 1],
+                        visible=False,
+                        fixedrange=True
+                    ),
+                    yaxis=dict(
+                        range=[0, 1],
+                        visible=False,
+                        fixedrange=True,
+                        scaleanchor="x",
+                        scaleratio=1
+                    ),
+                    showlegend=True
+                )
+                st.plotly_chart(
+                    egg_fig,
+                    use_container_width=True,
+                    key="market_egg_cycle"
+                )
+
+                st.markdown(f"**기술적 참고 분류: {egg_stage}**")
+                st.write(egg_reason)
+                st.warning(
+                    "이 위치는 코스톨라니 이론의 실제 심리 국면을 측정한 값이 아닙니다. "
+                    "가격·이동평균선으로 만든 시각적 대리 지표이며, "
+                    "매집·분산·대중심리 단계를 확정하지 않습니다."
+                )
+
+                # 5. 민스키 사이클
+                st.subheader("③ 민스키 금융 불안정 가설")
+                st.caption(
+                    "민스키 국면은 신용 팽창, 부채 상환 능력, 레버리지, "
+                    "금융 여건 등을 함께 살펴야 합니다."
+                )
+
+                minsky_stages = [
+                    "헤지 금융",
+                    "투기 금융",
+                    "폰지 금융",
+                    "디레버리징"
+                ]
+
+                minsky_fig = go.Figure()
+                minsky_x = [0, 1, 2, 3]
+                minsky_y = [0, 0, 0, 0]
+
+                minsky_fig.add_trace(go.Scatter(
+                    x=minsky_x,
+                    y=minsky_y,
+                    mode="lines+markers+text",
+                    line=dict(color="#64748B", width=3),
+                    marker=dict(size=20),
+                    text=minsky_stages,
+                    textposition="top center",
+                    hovertemplate="%{text}<extra></extra>",
+                    name="민스키 개념 단계"
+                ))
+                minsky_fig.update_layout(
+                    height=260,
+                    template="plotly_white",
+                    margin=dict(l=20, r=20, t=35, b=20),
+                    xaxis=dict(
+                        range=[-0.4, 3.4],
+                        visible=False,
+                        fixedrange=True
+                    ),
+                    yaxis=dict(
+                        range=[-0.5, 0.7],
+                        visible=False,
+                        fixedrange=True
+                    ),
+                    showlegend=False
+                )
+                st.plotly_chart(
+                    minsky_fig,
+                    use_container_width=True,
+                    key="market_minsky_cycle"
+                )
+
+                st.info(
+                    f"분석 대상: {market_name} ({market_ticker}) · "
+                    f"가격 데이터 기준일: {market_date}\n\n"
+                    "현재 연결된 가격 데이터만으로는 이 종목의 실제 신용·레버리지 국면을 "
+                    "판정할 수 없습니다. 따라서 민스키 단계의 현재 위치는 "
+                    "**판단 보류**로 둡니다."
+                )
+
+                # 6. 판단 요약
+                st.subheader("④ 매매 판단 전 확인 사항")
+                checklist = pd.DataFrame([
+                    ["가격 추세", trend_label],
+                    ["달걀 사이클 참고값", egg_stage],
+                    ["민스키 금융 국면", "판단 보류 · 신용 데이터 미연결"],
+                    [
+                        "거래량 / 20일 평균",
+                        f"{volume_ratio:.2f}배"
+                        if pd.notna(volume_ratio)
+                        else "자료 부족"
+                    ],
+                    ["가격 데이터 기준일", market_date],
+                ], columns=["항목", "현재 관측"])
+
+                st.dataframe(
+                    checklist,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                st.caption(
+                    "가격 데이터는 Yahoo Finance의 갱신·지연 상황에 영향을 받습니다. "
+                    "시장 국면 분류는 매수·매도 신호나 수익 보장을 의미하지 않습니다."
+                )
+
+        except Exception as e:
+            st.error(
+                f"시장 국면 데이터를 불러오지 못했습니다: {e}"
+            )
+            st.caption(
+                "종목 코드, Yahoo Finance 응답, 데이터 제공 상태를 확인해 주세요."
+            )
+
 
 with tab_company:
     render_fundamentals(ticker)
