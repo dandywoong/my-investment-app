@@ -433,11 +433,17 @@ with tab_portfolio:
                     st.plotly_chart(fig_pie, use_container_width=True)
         st.caption("주의: 통화가 다른 종목의 합계는 환산 전 값이 섞일 수 있으므로 총액·손익 합계는 KRW와 USD를 분리해 해석해야 합니다. 가격 기준일과 제공자 데이터의 지연 가능성을 확인하세요. 세금·배당·환전 비용은 아직 반영하지 않습니다.")
         st.download_button("보유 현황 CSV 다운로드", pf.to_csv(index=False).encode("utf-8-sig"), "eggfolio_portfolio.csv", "text/csv")
-        with st.expander("보유 종목 삭제"):
-            delete_code = st.selectbox("삭제할 종목", holdings.ticker.tolist(), format_func=lambda x: f"{holdings.loc[holdings.ticker==x, 'name'].iloc[0]} ({x})")
-            if st.button("선택한 보유 종목 삭제"):
-                delete_holding(delete_code)
-                st.rerun()
+       
+        st.subheader("보유 종목 개별 삭제")
+        st.caption("잘못 등록한 종목만 선택해 삭제할 수 있습니다. 삭제 후에는 복구할 수 없으므로 종목 코드와 이름을 확인하세요.")
+        for _, item in holdings.iterrows():
+            delete_col1, delete_col2 = st.columns([5, 1])
+            with delete_col1:
+                st.write(f"**{item['name']}** · `{item['ticker']}` · {item['account']}")
+            with delete_col2:
+                if st.button("삭제", key=f"delete_holding_{item['ticker']}", type="secondary"):
+                    delete_holding(item["ticker"])
+                    st.rerun()
     st.divider()
     st.subheader("매수·매도 기록")
     st.write("거래를 기록하면 수량과 가중평균 매입원가가 자동 갱신됩니다. 직접 등록한 보유 정보는 기준값이며, 과거 거래를 소급 계산한 값은 아닙니다.")
