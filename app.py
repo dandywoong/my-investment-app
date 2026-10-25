@@ -1,5 +1,7 @@
 import sqlite3
 import time
+import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +29,16 @@ st.set_page_config(page_title="Eggfolio", page_icon="🥚", layout="wide")
 
 def init_db():
     with sqlite3.connect(DB_PATH) as con:
+        con.execute("""CREATE TABLE IF NOT EXISTS holdings (
+            ticker TEXT PRIMARY KEY, name TEXT, quantity REAL NOT NULL DEFAULT 0,
+            avg_cost REAL NOT NULL DEFAULT 0, currency TEXT NOT NULL DEFAULT 'KRW',
+            account TEXT NOT NULL DEFAULT '삼성증권 ISA', updated_at TEXT
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, traded_at TEXT, ticker TEXT NOT NULL,
+            name TEXT, side TEXT NOT NULL, quantity REAL NOT NULL, price REAL NOT NULL,
+            fee REAL NOT NULL DEFAULT 0, account TEXT, note TEXT
+        )""")
         con.execute("""CREATE TABLE IF NOT EXISTS decisions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, ticker TEXT,
             horizon TEXT, price REAL, thesis TEXT, evidence_for TEXT,
@@ -46,6 +58,87 @@ def save_decision(row):
 def load_decisions():
     with sqlite3.connect(DB_PATH) as con:
         return pd.read_sql_query("SELECT * FROM decisions ORDER BY id DESC", con)
+
+
+def load_holdings():
+    with sqlite3.connect(DB_PATH) as con:
+        return pd.read_sql_query("SELECT * FROM holdings WHERE quantity > 0 ORDER BY name", con)
+
+
+def save_holding(ticker, name, quantity, avg_cost, currency, account):
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute("""INSERT INTO holdings(ticker,name,quantity,avg_cost,currency,account,updated_at)
+            VALUES(?,?,?,?,?,?,?) ON CONFLICT(ticker) DO UPDATE SET
+            name=excluded.name, quantity=excluded.quantity, avg_cost=excluded.avg_cost,
+            currency=excluded.currency, account=excluded.account, updated_at=excluded.updated_at""",
+            (ticker, name, quantity, avg_cost, currency, account, datetime.now(timezone.utc).isoformat()))
+        con.commit()
+
+
+def delete_holding(ticker):
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute("DELETE FROM holdings WHERE ticker=?", (ticker,))
+        con.commit()
+
+
+def load_trades():
+    with sqlite3.connect(DB_PATH) as con:
+        return pd.read_sql_query("SELECT * FROM trades ORDER BY id DESC", con)
+
+
+def save_trade(traded_at, ticker, name, side, quantity, price, fee, account, note):
+    """Record trade and update holding using weighted-average cost; sale cannot exceed holdings."""
+    ticker = ticker.strip().upper()
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute("BEGIN")
+        row = con.execute("SELECT quantity, avg_cost, name, currency, account FROM holdings WHERE ticker=?", (ticker,)).fetchone()
+        old_qty, old_avg = (float(row[0]), float(row[1])) if row else (0.0, 0.0)
+        if side == "매수":
+            new_qty = old_qty + quantity
+            new_avg = ((old_qty * old_avg) + (quantity * price) + fee) / new_qty if new_qty else 0.0
+        else:
+            if quantity > old_qty + 1e-9:
+                raise ValueError(f"매도 수량({quantity:g})이 보유 수량({old_qty:g})보다 많습니다.")
+            new_qty = max(0.0, old_qty - quantity)
+            new_avg = old_avg if new_qty > 0 else 0.0
+        con.execute("INSERT INTO trades(traded_at,ticker,name,side,quantity,price,fee,account,note) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (traded_at, ticker, name, side, quantity, price, fee, account, note))
+        if new_qty <= 1e-9:
+            con.execute("DELETE FROM holdings WHERE ticker=?", (ticker,))
+        else:
+            con.execute("""INSERT INTO holdings(ticker,name,quantity,avg_cost,currency,account,updated_at)
+                VALUES(?,?,?,?,?,?,?) ON CONFLICT(ticker) DO UPDATE SET
+                name=excluded.name, quantity=excluded.quantity, avg_cost=excluded.avg_cost,
+                currency=excluded.currency, account=excluded.account, updated_at=excluded.updated_at""",
+                (ticker, name, new_qty, new_avg, "USD" if not ticker.endswith((".KS", ".KQ")) and not ticker.isdigit() else "KRW", account, datetime.now(timezone.utc).isoformat()))
+        con.commit()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def latest_close(ticker):
+    hist = yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=False)
+    if hist is None or hist.empty or "Close" not in hist:
+        return None, None
+    return float(hist["Close"].dropna().iloc[-1]), str(hist.index[-1].date())
+
+
+def summarize_with_gemini(raw_note):
+    """Optional AI summary. Requires GEMINI_API_KEY in Streamlit secrets or environment."""
+    key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
+    if not key:
+        return None, "AI 요약을 사용하려면 Streamlit Secrets에 GEMINI_API_KEY를 설정해야 합니다. 키를 설정하지 않아도 원문과 직접 작성한 요약은 저장할 수 있습니다."
+    try:
+        import requests
+        prompt = "다음 투자 메모를 한국어로 요약해 JSON으로 반환하세요. 키는 thesis, supporting_evidence, opposing_evidence, risks, invalidation_conditions, follow_up_questions 입니다. 사실을 추가하거나 추정하지 말고, 메모에 없는 항목은 빈 문자열 또는 빈 목록으로 두세요. JSON 외 텍스트는 쓰지 마세요.\n메모:\n" + raw_note
+        response = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            params={"key": key}, json={"contents":[{"parts":[{"text":prompt}]}], "generationConfig":{"responseMimeType":"application/json"}}, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        result = data["candidates"][0]["content"]["parts"][0]["text"]
+        return json.loads(result), None
+    except Exception as e:
+        return None, f"AI 요약에 실패했습니다. 원문은 유지됩니다. 오류: {e}"
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -214,9 +307,98 @@ m3.metric("표시 거래일", f"{len(prices):,}")
 m4.metric("최근 데이터 날짜", prices.index[-1].strftime("%Y-%m-%d"))
 st.caption(f"조회 소요 {elapsed:.2f}초 · 화면 시각 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · 일봉은 장중 체결가와 다를 수 있습니다.")
 
-tab_chart,tab_market,tab_company,tab_journal,tab_raw = st.tabs([
-    "📈 차트","🥚 시장 국면 참고","🏢 기업 기초체력","📝 판단 기록","🧾 원자료"
+tab_portfolio,tab_chart,tab_market,tab_company,tab_journal,tab_raw = st.tabs([
+    "💼 내 포트폴리오", "📈 차트","🥚 시장 국면 참고","🏢 기업 기초체력","📝 판단 기록","🧾 원자료"
 ])
+
+with tab_portfolio:
+    st.subheader("내 보유 종목")
+    st.caption("보유 수량·평단·평가손익은 입력한 거래와 조회된 가격을 기준으로 계산합니다. 가격 제공자는 Yahoo Finance이며 삼성증권 계좌와 직접 연결된 것이 아닙니다.")
+    with st.expander("➕ 보유 종목 직접 등록 / 수정", expanded=not bool(len(load_holdings()))):
+        with st.form("holding_form"):
+            hc1, hc2 = st.columns(2)
+            with hc1:
+                hname = st.text_input("종목명", placeholder="예: SK하이닉스")
+                hticker = st.text_input("종목 코드", placeholder="예: 000660.KS / NVDA").strip().upper()
+                hqty = st.number_input("현재 보유 수량", min_value=0.0, step=1.0, format="%.4f")
+            with hc2:
+                havg = st.number_input("평균 매입단가", min_value=0.0, step=100.0, format="%.4f")
+                hcurrency = st.selectbox("통화", ["KRW", "USD"])
+                haccount = st.selectbox("계좌 구분", ["삼성증권 ISA", "삼성증권 일반계좌", "삼성증권 CMA", "기타 계좌"])
+            hsubmit = st.form_submit_button("보유 정보 저장")
+            if hsubmit:
+                if not hticker or not hname.strip() or hqty <= 0 or havg <= 0:
+                    st.error("종목명, 종목 코드, 보유 수량, 평균 매입단가를 확인해 주세요.")
+                else:
+                    save_holding(hticker, hname.strip(), hqty, havg, hcurrency, haccount)
+                    st.success("보유 정보가 저장되었습니다. 직접 등록은 현재 보유 수량과 평단의 기준값으로 저장됩니다.")
+                    st.rerun()
+    holdings = load_holdings()
+    if holdings.empty:
+        st.info("등록된 보유 종목이 없습니다. 위에서 종목명·코드·수량·평단을 입력하세요.")
+    else:
+        if st.button("🔄 보유 종목 가격 새로고침"):
+            latest_close.clear()
+        rows=[]
+        with st.spinner("보유 종목 가격 조회 중..."):
+            for _, h in holdings.iterrows():
+                px, pxdate = latest_close(str(h.ticker))
+                qty, avg = float(h.quantity), float(h.avg_cost)
+                market_value = px*qty if px is not None else None
+                pnl = (px-avg)*qty if px is not None else None
+                pnl_pct = (px/avg-1)*100 if px is not None and avg else None
+                rows.append({"종목":h["name"],"코드":h.ticker,"계좌":h.account,"수량":qty,
+                             "평단":avg,"현재가":px,"평가금액":market_value,"평가손익":pnl,
+                             "수익률(%)":pnl_pct,"가격 기준일":pxdate or "자료 없음","통화":h.currency})
+        pf = pd.DataFrame(rows)
+        valid = pf.dropna(subset=["평가금액"])
+        total_value = valid["평가금액"].sum() if not valid.empty else None
+        total_pnl = valid["평가손익"].sum() if not valid.empty else None
+        k1,k2,k3 = st.columns(3)
+        k1.metric("조회 가능한 보유 종목 평가금액", fmt_large(total_value))
+        k2.metric("평가손익 합계", fmt_large(total_pnl))
+        base = valid["평가금액"].sum()-valid["평가손익"].sum() if not valid.empty else 0
+        k3.metric("가중 평가수익률", f"{total_pnl/base*100:+.2f}%" if base else "자료 없음")
+        st.dataframe(pf, use_container_width=True, hide_index=True)
+        st.caption("주의: 통화가 다른 종목의 합계는 환산 전 값이 섞일 수 있으므로 총액·손익 합계는 KRW와 USD를 분리해 해석해야 합니다. 가격 기준일과 제공자 데이터의 지연 가능성을 확인하세요. 세금·배당·환전 비용은 아직 반영하지 않습니다.")
+        st.download_button("보유 현황 CSV 다운로드", pf.to_csv(index=False).encode("utf-8-sig"), "eggfolio_portfolio.csv", "text/csv")
+        with st.expander("보유 종목 삭제"):
+            delete_code = st.selectbox("삭제할 종목", holdings.ticker.tolist(), format_func=lambda x: f"{holdings.loc[holdings.ticker==x, 'name'].iloc[0]} ({x})")
+            if st.button("선택한 보유 종목 삭제"):
+                delete_holding(delete_code)
+                st.rerun()
+    st.divider()
+    st.subheader("매수·매도 기록")
+    st.write("거래를 기록하면 수량과 가중평균 매입원가가 자동 갱신됩니다. 직접 등록한 보유 정보는 기준값이며, 과거 거래를 소급 계산한 값은 아닙니다.")
+    with st.form("trade_form", clear_on_submit=True):
+        tc1,tc2 = st.columns(2)
+        with tc1:
+            trade_name = st.text_input("종목명", placeholder="예: SK하이닉스")
+            trade_ticker = st.text_input("종목 코드", placeholder="예: 000660.KS / NVDA").strip().upper()
+            trade_side = st.selectbox("거래 유형", ["매수", "매도"])
+            trade_qty = st.number_input("거래 수량", min_value=0.0001, value=1.0, step=1.0)
+        with tc2:
+            trade_price = st.number_input("거래 단가", min_value=0.0001, value=1.0, step=100.0)
+            trade_fee = st.number_input("수수료 등 비용", min_value=0.0, value=0.0, step=1.0)
+            trade_account = st.selectbox("거래 계좌", ["삼성증권 ISA", "삼성증권 일반계좌", "삼성증권 CMA", "기타 계좌"])
+            trade_date = st.date_input("거래일", value=datetime.now().date())
+        trade_note = st.text_area("거래 메모 (선택)", placeholder="매매 이유나 당시 상황. 비워도 됩니다.")
+        trade_submit = st.form_submit_button("거래 저장 및 자동 계산")
+        if trade_submit:
+            if not trade_ticker or not trade_name.strip():
+                st.error("종목명과 종목 코드를 입력해 주세요.")
+            else:
+                try:
+                    save_trade(str(trade_date), trade_ticker, trade_name.strip(), trade_side, float(trade_qty), float(trade_price), float(trade_fee), trade_account, trade_note.strip())
+                    st.success("거래가 저장되었고 보유 수량·평단이 갱신되었습니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"거래를 저장하지 못했습니다: {e}")
+    trades = load_trades()
+    if not trades.empty:
+        st.subheader("최근 거래 내역")
+        st.dataframe(trades.head(100), use_container_width=True, hide_index=True)
+        st.download_button("거래 내역 CSV 다운로드", trades.to_csv(index=False).encode("utf-8-sig"), "eggfolio_trades.csv", "text/csv")
 
 with tab_chart:
     mas = st.multiselect("이동평균선", [5,20,60,120,200], default=[20,60,120],
@@ -266,14 +448,24 @@ with tab_journal:
             support = st.text_area("지지 근거", placeholder="확인된 사실과 출처")
             against = st.text_area("반대 근거", placeholder="가설이 틀릴 수 있는 이유")
         risks = st.text_area("주요 위험")
-        invalidation = st.text_area("가설 무효화 조건", placeholder="어떤 사실이 확인되면 판단을 바꿀 것인가?")
+        invalidation = st.text_area("가설 무효화 조건 (선택)", placeholder="어떤 사실이 확인되면 판단을 바꿀 것인가?")
+        raw_note = st.text_area("자유 메모 (선택 · 길게 작성 가능)", placeholder="생각나는 대로 적으세요. 매 기록마다 작성할 필요는 없습니다.")
         submitted = st.form_submit_button("판단 기록 저장")
         if submitted:
             if not jt.strip() or not thesis.strip():
                 st.error("종목 코드와 핵심 가설을 입력해 주세요.")
             else:
+                ai_summary_text = ""
+                if raw_note.strip():
+                    summary_obj, summary_error = summarize_with_gemini(raw_note.strip())
+                    if summary_obj:
+                        ai_summary_text = "\n\n[AI 요약 · Gemini]\n" + json.dumps(summary_obj, ensure_ascii=False, indent=2)
+                        st.success("자유 메모의 AI 요약을 생성했습니다. 원문도 함께 저장합니다.")
+                    elif summary_error:
+                        st.warning(summary_error + " 원문과 직접 입력한 항목은 계속 저장합니다.")
+                combined_thesis = thesis.strip() + ai_summary_text + ("\n\n[자유 메모 원문]\n" + raw_note.strip() if raw_note.strip() else "")
                 save_decision((datetime.now(timezone.utc).isoformat(),jt.strip().upper(),horizon,float(price),
-                               thesis.strip(),support.strip(),against.strip(),risks.strip(),invalidation.strip(),decision))
+                               combined_thesis,support.strip(),against.strip(),risks.strip(),invalidation.strip(),decision))
                 st.success("기록을 저장했습니다."); st.rerun()
     journal = load_decisions()
     if journal.empty:
