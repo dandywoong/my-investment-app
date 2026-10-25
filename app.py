@@ -25,18 +25,56 @@ TICKERS = {
 PERIODS = {"1개월":"1mo", "3개월":"3mo", "6개월":"6mo", "1년":"1y", "2년":"2y", "5년":"5y"}
 
 # Curated starter directory. Search works offline against this list; it is not an exhaustive live exchange directory.
+# 종목 검색 목록: 국내 주식·ETF 및 미국 주요 종목
 STOCK_DIRECTORY = {
-    "삼성전자":"005930.KS", "삼성전기":"009150.KS", "삼성SDI":"006400.KS",
-    "삼성바이오로직스":"207940.KS", "SK하이닉스":"000660.KS", "SK텔레콤":"017670.KS",
-    "현대차":"005380.KS", "기아":"000270.KS", "LG에너지솔루션":"373220.KS",
-    "LG화학":"051910.KS", "NAVER":"035420.KS", "카카오":"035720.KS",
-    "한화에어로스페이스":"012450.KS", "두산에너빌리티":"034020.KS", "POSCO홀딩스":"005490.KS",
-    "셀트리온":"068270.KS", "KB금융":"105560.KS", "신한지주":"055550.KS",
-    "NVIDIA":"NVDA", "Apple":"AAPL", "Microsoft":"MSFT", "Alphabet":"GOOGL",
-    "Amazon":"AMZN", "Tesla":"TSLA", "Meta Platforms":"META", "Broadcom":"AVGO",
-    "Berkshire Hathaway B":"BRK-B", "S&P 500 ETF":"VOO", "Nasdaq-100 ETF":"QQQ",
-    "KOSPI":"^KS11", "KOSDAQ":"^KQ11"
+    "삼성전자": "005930.KS",
+    "삼성전기": "009150.KS",
+    "삼성SDI": "006400.KS",
+    "삼성바이오로직스": "207940.KS",
+    "SK하이닉스": "000660.KS",
+    "SK스퀘어": "402340.KS",
+    "SK텔레콤": "017670.KS",
+    "현대차": "005380.KS",
+    "기아": "000270.KS",
+    "LG에너지솔루션": "373220.KS",
+    "LG화학": "051910.KS",
+    "NAVER": "035420.KS",
+    "카카오": "035720.KS",
+    "한화에어로스페이스": "012450.KS",
+    "두산": "000150.KS",
+    "두산에너빌리티": "034020.KS",
+    "두산로보틱스": "454910.KS",
+    "두산테스나": "131970.KQ",
+    "POSCO홀딩스": "005490.KS",
+    "셀트리온": "068270.KS",
+    "KB금융": "105560.KS",
+    "신한지주": "055550.KS",
+    "이수페타시스": "007660.KS",
+    "리노공업": "058470.KQ",
+    "원익IPS": "240810.KQ",
+
+    "KODEX 미국나스닥100": "379810.KS",
+    "KODEX 미국S&P500": "379800.KS",
+    "KODEX 반도체": "091160.KS",
+    "KODEX 200": "069500.KS",
+    "SOL AI반도체TOP2플러스": "0167A0.KS",
+    "KODEX AI반도체TOP2플러스": "395160.KS",
+
+    "NVIDIA": "NVDA",
+    "Apple": "AAPL",
+    "Microsoft": "MSFT",
+    "Alphabet": "GOOGL",
+    "Amazon": "AMZN",
+    "Tesla": "TSLA",
+    "Meta Platforms": "META",
+    "Broadcom": "AVGO",
+    "Berkshire Hathaway B": "BRK-B",
+    "S&P 500 ETF": "VOO",
+    "Nasdaq-100 ETF": "QQQ",
+    "KOSPI": "^KS11",
+    "KOSDAQ": "^KQ11",
 }
+
 
 CHOSEONG = list("ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ")
 
