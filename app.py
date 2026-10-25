@@ -528,7 +528,60 @@ with tab_portfolio:
             except Exception as e:
                 st.error(f"변경사항 저장에 실패했습니다: {e}")
 
-        st.dataframe(pf, use_container_width=True, hide_index=True)
+        
+        st.subheader("계좌별 보유 현황")
+
+        display_cols = [
+            "종목", "코드", "수량", "평단",
+            "현재가", "평가금액", "평가손익", "수익률(%)"
+        ]
+
+        account_order = [
+            "삼성증권 ISA",
+            "삼성증권 일반계좌",
+            "삼성증권 CMA",
+            "기타 계좌",
+        ]
+
+        for account_name in account_order:
+            account_pf = pf[pf["계좌"] == account_name].copy()
+
+            if account_pf.empty:
+                continue
+
+            account_value = account_pf["평가금액"].sum(min_count=1)
+            account_pnl = account_pf["평가손익"].sum(min_count=1)
+
+            with st.expander(
+                f"{account_name} · 평가금액 {fmt_large(account_value)} · "
+                f"평가손익 {fmt_large(account_pnl)}",
+                expanded=True,
+            ):
+                st.dataframe(
+                    account_pf[display_cols],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "수량": st.column_config.NumberColumn(
+                            "수량", format="%.4f"
+                        ),
+                        "평단": st.column_config.NumberColumn(
+                            "평단", format="%.2f"
+                        ),
+                        "현재가": st.column_config.NumberColumn(
+                            "현재가", format="%.2f"
+                        ),
+                        "평가금액": st.column_config.NumberColumn(
+                            "평가금액", format="%.0f"
+                        ),
+                        "평가손익": st.column_config.NumberColumn(
+                            "평가손익", format="%.0f"
+                        ),
+                        "수익률(%)": st.column_config.NumberColumn(
+                            "수익률(%)", format="%.2f%%"
+                        ),
+                    },
+                )
 
         st.subheader("포트폴리오 비중")
         st.caption("평가금액 기준 비중입니다. 서로 다른 통화는 환율 환산 전에는 합산하지 않고 별도로 표시합니다.")
