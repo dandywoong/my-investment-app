@@ -88,15 +88,72 @@ def get_initials(text):
             out.append(ch.lower())
     return "".join(out)
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_yahoo_stocks(query):
+    """Search Yahoo Finance and return (display name, ticker) pairs."""
+    query = query.strip()
+
+    if len(query) < 2:
+        return []
+
+    try:
+        results = yf.Search(query, max_results=10).quotes or []
+    except Exception:
+        return []
+
+    matches = []
+    seen = set()
+
+    for item in results:
+        symbol = str(item.get("symbol", "")).strip().upper()
+        name = (
+            item.get("longname")
+            or item.get("shortname")
+            or symbol
+        )
+
+        if not symbol or symbol in seen:
+            continue
+
+        # Keep common stocks and ETFs; skip unrelated result types.
+        quote_type = str(item.get("quoteType", "")).upper()
+        if quote_type and quote_type not in {"EQUITY", "ETF"}:
+            continue
+
+        matches.append((str(name), symbol))
+        seen.add(symbol)
+
+    return matches
+
+
 def find_stock_matches(query):
     q = query.strip().lower().replace(" ", "")
-    if not q:
-        return list(STOCK_DIRECTORY.items())
-    matches = []
+
+    # Keep the local directory useful for Korean names and initials.
+    local_matches = []
     for name, symbol in STOCK_DIRECTORY.items():
-        if q in name.lower().replace(" ", "") or q in symbol.lower().replace(" ", "") or q in get_initials(name).replace(" ", ""):
-            matches.append((name, symbol))
-    return matches
+        if (
+            not q
+            or q in name.lower().replace(" ", "")
+            or q in symbol.lower().replace(" ", "")
+            or q in get_initials(name).replace(" ", "")
+        ):
+            local_matches.append((name, symbol))
+
+    if not q:
+        return local_matches
+
+    # Add external results, avoiding duplicate tickers.
+    external_matches = search_yahoo_stocks(query)
+    seen = {symbol.upper() for _, symbol in local_matches}
+
+    for name, symbol in external_matches:
+        if symbol.upper() not in seen:
+            local_matches.append((name, symbol))
+            seen.add(symbol.upper())
+
+    return local_matches
 
 st.set_page_config(page_title="Eggfolio", page_icon="🥚", layout="wide")
 
