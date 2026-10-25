@@ -726,8 +726,8 @@ with tab_portfolio:
                         ticker = str(stock["코드"])
                         stock_name = str(stock["종목"])
                         stock_id = f"stock::{currency}::{category}::{ticker}"
-                        # 바깥쪽 라벨에는 개별 종목과 전체 포트폴리오 내 비중을 함께 표시합니다.
-                        short_label = ticker if len(ticker) <= 12 else ticker[:11] + "…"
+                        # 차트 라벨은 티커 대신 사용자가 등록한 종목명을 표시합니다.
+                        short_label = stock_name if len(stock_name) <= 16 else stock_name[:15] + "…"
                         labels.append(f"{short_label} · {stock_weight:.1%}")
                         ids.append(stock_id)
                         parents.append(category_id)
