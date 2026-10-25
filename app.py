@@ -453,7 +453,83 @@ with tab_portfolio:
         k2.metric("평가손익 합계", fmt_large(total_pnl))
         base = valid["평가금액"].sum()-valid["평가손익"].sum() if not valid.empty else 0
         k3.metric("가중 평가수익률", f"{total_pnl/base*100:+.2f}%" if base else "자료 없음")
+        
+        st.subheader("보유 종목 직접 편집")
+        st.caption(
+            "종목명, 수량, 평단, 통화, 계좌를 수정한 뒤 저장하세요. "
+            "종목 코드는 식별자이므로 여기서는 수정할 수 없습니다."
+        )
+
+        edit_cols = ["ticker", "name", "quantity", "avg_cost", "currency", "account"]
+        edit_df = holdings[edit_cols].copy()
+        edit_df = edit_df.rename(columns={
+            "ticker": "종목 코드",
+            "name": "종목명",
+            "quantity": "보유 수량",
+            "avg_cost": "평균 매입단가",
+            "currency": "통화",
+            "account": "계좌",
+        })
+
+        edited = st.data_editor(
+            edit_df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key="holdings_editor",
+            column_config={
+                "종목 코드": st.column_config.TextColumn(
+                    "종목 코드", disabled=True
+                ),
+                "종목명": st.column_config.TextColumn("종목명"),
+                "보유 수량": st.column_config.NumberColumn(
+                    "보유 수량", min_value=0.0, format="%.4f"
+                ),
+                "평균 매입단가": st.column_config.NumberColumn(
+                    "평균 매입단가", min_value=0.0, format="%.4f"
+                ),
+                "통화": st.column_config.SelectboxColumn(
+                    "통화", options=["KRW", "USD"]
+                ),
+                "계좌": st.column_config.SelectboxColumn(
+                    "계좌",
+                    options=[
+                        "삼성증권 ISA",
+                        "삼성증권 일반계좌",
+                        "삼성증권 CMA",
+                        "기타 계좌",
+                    ],
+                ),
+            },
+        )
+
+        if st.button("변경사항 저장", key="save_holdings_edits"):
+            try:
+                if edited["종목명"].astype(str).str.strip().eq("").any():
+                    st.error("종목명은 비워둘 수 없습니다.")
+                elif (
+                    (edited["보유 수량"] <= 0).any()
+                    or (edited["평균 매입단가"] <= 0).any()
+                ):
+                    st.error("보유 수량과 평균 매입단가는 0보다 커야 합니다.")
+                else:
+                    for _, row in edited.iterrows():
+                        save_holding(
+                            str(row["종목 코드"]),
+                            str(row["종목명"]).strip(),
+                            float(row["보유 수량"]),
+                            float(row["평균 매입단가"]),
+                            str(row["통화"]),
+                            str(row["계좌"]),
+                        )
+
+                    st.success("보유 종목 변경사항을 저장했습니다.")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"변경사항 저장에 실패했습니다: {e}")
+
         st.dataframe(pf, use_container_width=True, hide_index=True)
+
         st.subheader("포트폴리오 비중")
         st.caption("평가금액 기준 비중입니다. 서로 다른 통화는 환율 환산 전에는 합산하지 않고 별도로 표시합니다.")
         pie_cols = st.columns(2)
