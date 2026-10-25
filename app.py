@@ -24,7 +24,62 @@ TICKERS = {
 }
 PERIODS = {"1개월":"1mo", "3개월":"3mo", "6개월":"6mo", "1년":"1y", "2년":"2y", "5년":"5y"}
 
+# Curated starter directory. Search works offline against this list; it is not an exhaustive live exchange directory.
+STOCK_DIRECTORY = {
+    "삼성전자":"005930.KS", "삼성전기":"009150.KS", "삼성SDI":"006400.KS",
+    "삼성바이오로직스":"207940.KS", "SK하이닉스":"000660.KS", "SK텔레콤":"017670.KS",
+    "현대차":"005380.KS", "기아":"000270.KS", "LG에너지솔루션":"373220.KS",
+    "LG화학":"051910.KS", "NAVER":"035420.KS", "카카오":"035720.KS",
+    "한화에어로스페이스":"012450.KS", "두산에너빌리티":"034020.KS", "POSCO홀딩스":"005490.KS",
+    "셀트리온":"068270.KS", "KB금융":"105560.KS", "신한지주":"055550.KS",
+    "NVIDIA":"NVDA", "Apple":"AAPL", "Microsoft":"MSFT", "Alphabet":"GOOGL",
+    "Amazon":"AMZN", "Tesla":"TSLA", "Meta Platforms":"META", "Broadcom":"AVGO",
+    "Berkshire Hathaway B":"BRK-B", "S&P 500 ETF":"VOO", "Nasdaq-100 ETF":"QQQ",
+    "KOSPI":"^KS11", "KOSDAQ":"^KQ11"
+}
+
+CHOSEONG = list("ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ")
+
+def get_initials(text):
+    out = []
+    for ch in str(text):
+        code = ord(ch) - 0xAC00
+        if 0 <= code <= 11171:
+            out.append(CHOSEONG[code // 588])
+        else:
+            out.append(ch.lower())
+    return "".join(out)
+
+def find_stock_matches(query):
+    q = query.strip().lower().replace(" ", "")
+    if not q:
+        return list(STOCK_DIRECTORY.items())
+    matches = []
+    for name, symbol in STOCK_DIRECTORY.items():
+        if q in name.lower().replace(" ", "") or q in symbol.lower().replace(" ", "") or q in get_initials(name).replace(" ", ""):
+            matches.append((name, symbol))
+    return matches
+
 st.set_page_config(page_title="Eggfolio", page_icon="🥚", layout="wide")
+
+
+def stock_search_widget(key_prefix, default_ticker="", default_name=""):
+    """Search curated directory by name, ticker, or Korean initials, then select a match."""
+    query = st.text_input("종목 검색 (이름·초성·티커)", value="", placeholder="예: 삼성전기 / ㅅㅅㅈㄱ / 009150 / NVDA", key=f"{key_prefix}_query")
+    matches = find_stock_matches(query)
+    if default_ticker and not query:
+        found = [(n, t) for n, t in matches if t == default_ticker]
+        if found:
+            matches = found + [(n, t) for n, t in matches if t != default_ticker]
+    if matches:
+        labels = [f"{name} · {symbol}" for name, symbol in matches]
+        selected = st.selectbox("검색 결과 선택", labels, key=f"{key_prefix}_selected")
+        idx = labels.index(selected)
+        return matches[idx][0], matches[idx][1]
+    st.warning("검색 결과가 없습니다. 직접 티커를 입력할 수 있습니다.")
+    manual_ticker = st.text_input("직접 입력할 티커", value=default_ticker, key=f"{key_prefix}_manual_ticker").strip().upper()
+    manual_name = st.text_input("직접 입력할 종목명", value=default_name, key=f"{key_prefix}_manual_name")
+    return manual_name.strip(), manual_ticker
 
 
 def init_db():
@@ -315,23 +370,24 @@ with tab_portfolio:
     st.subheader("내 보유 종목")
     st.caption("보유 수량·평단·평가손익은 입력한 거래와 조회된 가격을 기준으로 계산합니다. 가격 제공자는 Yahoo Finance이며 삼성증권 계좌와 직접 연결된 것이 아닙니다.")
     with st.expander("➕ 보유 종목 직접 등록 / 수정", expanded=not bool(len(load_holdings()))):
+        hname, hticker = stock_search_widget("holding_search")
         with st.form("holding_form"):
             hc1, hc2 = st.columns(2)
             with hc1:
-                hname = st.text_input("종목명", placeholder="예: SK하이닉스")
-                hticker = st.text_input("종목 코드", placeholder="예: 000660.KS / NVDA").strip().upper()
+                st.text_input("선택한 종목명", value=hname, disabled=True)
+                st.text_input("종목 코드", value=hticker, disabled=True)
                 hqty = st.number_input("현재 보유 수량", min_value=0.0, step=1.0, format="%.4f")
             with hc2:
                 havg = st.number_input("평균 매입단가", min_value=0.0, step=100.0, format="%.4f")
-                hcurrency = st.selectbox("통화", ["KRW", "USD"])
+                hcurrency = st.selectbox("통화", ["KRW", "USD"], index=0 if hticker.endswith((".KS", ".KQ")) or hticker.startswith("^") else 1)
                 haccount = st.selectbox("계좌 구분", ["삼성증권 ISA", "삼성증권 일반계좌", "삼성증권 CMA", "기타 계좌"])
             hsubmit = st.form_submit_button("보유 정보 저장")
             if hsubmit:
                 if not hticker or not hname.strip() or hqty <= 0 or havg <= 0:
-                    st.error("종목명, 종목 코드, 보유 수량, 평균 매입단가를 확인해 주세요.")
+                    st.error("검색 결과 또는 종목명·티커·보유 수량·평단을 확인해 주세요.")
                 else:
                     save_holding(hticker, hname.strip(), hqty, havg, hcurrency, haccount)
-                    st.success("보유 정보가 저장되었습니다. 직접 등록은 현재 보유 수량과 평단의 기준값으로 저장됩니다.")
+                    st.success("보유 정보가 저장되었습니다. 같은 티커는 기존 보유 정보를 갱신합니다.")
                     st.rerun()
     holdings = load_holdings()
     if holdings.empty:
@@ -360,6 +416,21 @@ with tab_portfolio:
         base = valid["평가금액"].sum()-valid["평가손익"].sum() if not valid.empty else 0
         k3.metric("가중 평가수익률", f"{total_pnl/base*100:+.2f}%" if base else "자료 없음")
         st.dataframe(pf, use_container_width=True, hide_index=True)
+        st.subheader("포트폴리오 비중")
+        st.caption("평가금액 기준 비중입니다. 서로 다른 통화는 환율 환산 전에는 합산하지 않고 별도로 표시합니다.")
+        pie_cols = st.columns(2)
+        for col, currency in zip(pie_cols, ["KRW", "USD"]):
+            subset = pf[(pf["통화"] == currency) & pf["평가금액"].notna() & (pf["평가금액"] > 0)]
+            with col:
+                st.markdown(f"**{currency} 자산 비중**")
+                if subset.empty:
+                    st.info(f"{currency} 평가 가능한 자산이 없습니다.")
+                else:
+                    fig_pie = go.Figure(data=[go.Pie(labels=subset["종목"], values=subset["평가금액"], hole=0.35,
+                        hovertemplate="%{label}<br>평가금액: %{value:,.2f}<br>비중: %{percent}<extra></extra>")])
+                    fig_pie.update_layout(height=340, margin={"l":5,"r":5,"t":10,"b":5}, showlegend=True,
+                                          legend={"orientation":"h","yanchor":"bottom","y":-0.12})
+                    st.plotly_chart(fig_pie, use_container_width=True)
         st.caption("주의: 통화가 다른 종목의 합계는 환산 전 값이 섞일 수 있으므로 총액·손익 합계는 KRW와 USD를 분리해 해석해야 합니다. 가격 기준일과 제공자 데이터의 지연 가능성을 확인하세요. 세금·배당·환전 비용은 아직 반영하지 않습니다.")
         st.download_button("보유 현황 CSV 다운로드", pf.to_csv(index=False).encode("utf-8-sig"), "eggfolio_portfolio.csv", "text/csv")
         with st.expander("보유 종목 삭제"):
@@ -370,11 +441,12 @@ with tab_portfolio:
     st.divider()
     st.subheader("매수·매도 기록")
     st.write("거래를 기록하면 수량과 가중평균 매입원가가 자동 갱신됩니다. 직접 등록한 보유 정보는 기준값이며, 과거 거래를 소급 계산한 값은 아닙니다.")
+    trade_name, trade_ticker = stock_search_widget("trade_search")
     with st.form("trade_form", clear_on_submit=True):
         tc1,tc2 = st.columns(2)
         with tc1:
-            trade_name = st.text_input("종목명", placeholder="예: SK하이닉스")
-            trade_ticker = st.text_input("종목 코드", placeholder="예: 000660.KS / NVDA").strip().upper()
+            st.text_input("선택한 종목명", value=trade_name, disabled=True)
+            st.text_input("종목 코드", value=trade_ticker, disabled=True)
             trade_side = st.selectbox("거래 유형", ["매수", "매도"])
             trade_qty = st.number_input("거래 수량", min_value=0.0001, value=1.0, step=1.0)
         with tc2:
@@ -386,7 +458,7 @@ with tab_portfolio:
         trade_submit = st.form_submit_button("거래 저장 및 자동 계산")
         if trade_submit:
             if not trade_ticker or not trade_name.strip():
-                st.error("종목명과 종목 코드를 입력해 주세요.")
+                st.error("검색 결과 또는 종목명과 티커를 확인해 주세요.")
             else:
                 try:
                     save_trade(str(trade_date), trade_ticker, trade_name.strip(), trade_side, float(trade_qty), float(trade_price), float(trade_fee), trade_account, trade_note.strip())
@@ -474,7 +546,7 @@ with tab_journal:
         st.dataframe(journal, use_container_width=True, hide_index=True)
         st.download_button("판단 기록 CSV 다운로드", journal.to_csv(index=False).encode("utf-8-sig"),
                            "eggfolio_decisions.csv", "text/csv")
-    st.caption("Streamlit Cloud의 로컬 파일은 재배포·환경 변경 시 영구 보존이 보장되지 않습니다. 장기 보관에는 외부 DB가 필요합니다.")
+    st.caption("종목 검색은 앱 내 기본 종목 목록을 사용하며 전체 상장 종목을 망라하지 않습니다. Streamlit Cloud의 로컬 SQLite는 재배포·환경 변경 시 영구 보존이 보장되지 않으므로 실제 자산을 입력하기 전 외부 DB 또는 백업을 추가해야 합니다.")
 
 with tab_raw:
     cols = ["Open","High","Low","Close","Volume","MA5","MA20","MA60","MA120","MA200"]
