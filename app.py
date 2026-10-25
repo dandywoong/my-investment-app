@@ -25,18 +25,56 @@ TICKERS = {
 PERIODS = {"1개월":"1mo", "3개월":"3mo", "6개월":"6mo", "1년":"1y", "2년":"2y", "5년":"5y"}
 
 # Curated starter directory. Search works offline against this list; it is not an exhaustive live exchange directory.
+# 종목 검색 목록: 국내 주식·ETF 및 미국 주요 종목
 STOCK_DIRECTORY = {
-    "삼성전자":"005930.KS", "삼성전기":"009150.KS", "삼성SDI":"006400.KS",
-    "삼성바이오로직스":"207940.KS", "SK하이닉스":"000660.KS", "SK텔레콤":"017670.KS",
-    "현대차":"005380.KS", "기아":"000270.KS", "LG에너지솔루션":"373220.KS",
-    "LG화학":"051910.KS", "NAVER":"035420.KS", "카카오":"035720.KS",
-    "한화에어로스페이스":"012450.KS", "두산에너빌리티":"034020.KS", "POSCO홀딩스":"005490.KS",
-    "셀트리온":"068270.KS", "KB금융":"105560.KS", "신한지주":"055550.KS",
-    "NVIDIA":"NVDA", "Apple":"AAPL", "Microsoft":"MSFT", "Alphabet":"GOOGL",
-    "Amazon":"AMZN", "Tesla":"TSLA", "Meta Platforms":"META", "Broadcom":"AVGO",
-    "Berkshire Hathaway B":"BRK-B", "S&P 500 ETF":"VOO", "Nasdaq-100 ETF":"QQQ",
-    "KOSPI":"^KS11", "KOSDAQ":"^KQ11"
+    "삼성전자": "005930.KS",
+    "삼성전기": "009150.KS",
+    "삼성SDI": "006400.KS",
+    "삼성바이오로직스": "207940.KS",
+    "SK하이닉스": "000660.KS",
+    "SK스퀘어": "402340.KS",
+    "SK텔레콤": "017670.KS",
+    "현대차": "005380.KS",
+    "기아": "000270.KS",
+    "LG에너지솔루션": "373220.KS",
+    "LG화학": "051910.KS",
+    "NAVER": "035420.KS",
+    "카카오": "035720.KS",
+    "한화에어로스페이스": "012450.KS",
+    "두산": "000150.KS",
+    "두산에너빌리티": "034020.KS",
+    "두산로보틱스": "454910.KS",
+    "두산테스나": "131970.KQ",
+    "POSCO홀딩스": "005490.KS",
+    "셀트리온": "068270.KS",
+    "KB금융": "105560.KS",
+    "신한지주": "055550.KS",
+    "이수페타시스": "007660.KS",
+    "리노공업": "058470.KQ",
+    "원익IPS": "240810.KQ",
+
+    "KODEX 미국나스닥100": "379810.KS",
+    "KODEX 미국S&P500": "379800.KS",
+    "KODEX 반도체": "091160.KS",
+    "KODEX 200": "069500.KS",
+    "SOL AI반도체TOP2플러스": "0167A0.KS",
+    "KODEX AI반도체TOP2플러스": "395160.KS",
+
+    "NVIDIA": "NVDA",
+    "Apple": "AAPL",
+    "Microsoft": "MSFT",
+    "Alphabet": "GOOGL",
+    "Amazon": "AMZN",
+    "Tesla": "TSLA",
+    "Meta Platforms": "META",
+    "Broadcom": "AVGO",
+    "Berkshire Hathaway B": "BRK-B",
+    "S&P 500 ETF": "VOO",
+    "Nasdaq-100 ETF": "QQQ",
+    "KOSPI": "^KS11",
+    "KOSDAQ": "^KQ11",
 }
+
 
 CHOSEONG = list("ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ")
 
@@ -50,15 +88,72 @@ def get_initials(text):
             out.append(ch.lower())
     return "".join(out)
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_yahoo_stocks(query):
+    """Search Yahoo Finance and return (display name, ticker) pairs."""
+    query = query.strip()
+
+    if len(query) < 2:
+        return []
+
+    try:
+        results = yf.Search(query, max_results=10).quotes or []
+    except Exception:
+        return []
+
+    matches = []
+    seen = set()
+
+    for item in results:
+        symbol = str(item.get("symbol", "")).strip().upper()
+        name = (
+            item.get("longname")
+            or item.get("shortname")
+            or symbol
+        )
+
+        if not symbol or symbol in seen:
+            continue
+
+        # Keep common stocks and ETFs; skip unrelated result types.
+        quote_type = str(item.get("quoteType", "")).upper()
+        if quote_type and quote_type not in {"EQUITY", "ETF"}:
+            continue
+
+        matches.append((str(name), symbol))
+        seen.add(symbol)
+
+    return matches
+
+
 def find_stock_matches(query):
     q = query.strip().lower().replace(" ", "")
-    if not q:
-        return list(STOCK_DIRECTORY.items())
-    matches = []
+
+    # Keep the local directory useful for Korean names and initials.
+    local_matches = []
     for name, symbol in STOCK_DIRECTORY.items():
-        if q in name.lower().replace(" ", "") or q in symbol.lower().replace(" ", "") or q in get_initials(name).replace(" ", ""):
-            matches.append((name, symbol))
-    return matches
+        if (
+            not q
+            or q in name.lower().replace(" ", "")
+            or q in symbol.lower().replace(" ", "")
+            or q in get_initials(name).replace(" ", "")
+        ):
+            local_matches.append((name, symbol))
+
+    if not q:
+        return local_matches
+
+    # Add external results, avoiding duplicate tickers.
+    external_matches = search_yahoo_stocks(query)
+    seen = {symbol.upper() for _, symbol in local_matches}
+
+    for name, symbol in external_matches:
+        if symbol.upper() not in seen:
+            local_matches.append((name, symbol))
+            seen.add(symbol.upper())
+
+    return local_matches
 
 st.set_page_config(page_title="Eggfolio", page_icon="🥚", layout="wide")
 
@@ -244,41 +339,32 @@ def fmt_large(v):
         return "자료 없음"
 
 
-
 def classify_holding(name, ticker):
-    """Best-effort portfolio category from ticker/name; unverified cases stay unclassified."""
+    """종목명과 티커를 이용한 간단한 카테고리 추정. 확정된 업종 정보는 아닙니다."""
     n = str(name).lower()
     t = str(ticker).upper()
-
-    # Broad-market and sector ETFs are identified before individual-company rules.
-    if any(x in n for x in ["s&p 500", "nasdaq-100", "total market", "전세계", "월드", "미국지수"]):
+    if t.startswith("^"):
+        return "시장 지수"
+    if any(x in n for x in ["s&p 500", "nasdaq-100", "total market", "전세계", "월드", "미국지수", "미국나스닥", "미국s&p"]):
         return "시장 지수 ETF"
     if any(x in n for x in ["채권", "국채", "bond", "treasury"]):
         return "채권"
     if any(x in n for x in ["배당", "고배당", "dividend"]):
         return "배당 ETF"
-
-    if t in {"NVDA", "AMD", "AVGO", "QCOM", "MU", "ASML", "TSM", "000660.KS", "005930.KS", "009150.KS"} or any(
-        x in n for x in ["반도체", "semiconductor", "엔비디아", "하이닉스", "삼성전자", "삼성전기", "브로드컴"]
-    ):
+    if t in {"NVDA", "AMD", "AVGO", "QCOM", "MU", "ASML", "TSM", "000660.KS", "005930.KS", "009150.KS"} or any(x in n for x in ["반도체", "semiconductor", "엔비디아", "하이닉스", "삼성전자", "삼성전기", "브로드컴"]):
         return "반도체·하드웨어"
-    if t in {"GOOG", "GOOGL", "MSFT", "AAPL", "META", "AMZN", "CRM", "NOW", "PLTR", "ORCL", "ADBE"} or any(
-        x in n for x in ["alphabet", "google", "microsoft", "apple", "meta platforms", "amazon", "software", "소프트웨어", "테슬라"]
-    ):
+    if t in {"GOOG", "GOOGL", "MSFT", "AAPL", "META", "AMZN", "CRM", "NOW", "PLTR", "ORCL", "ADBE", "TSLA"} or any(x in n for x in ["alphabet", "google", "microsoft", "apple", "meta platforms", "amazon", "software", "소프트웨어", "테슬라"]):
         return "기술·성장주"
-    if t in {"BRK-A", "BRK-B", "JPM", "BAC", "WFC", "GS", "MS", "105560.KS", "055550.KS"} or any(
-        x in n for x in ["berkshire", "금융", "은행", "보험", "지주"]
-    ):
+    if t in {"BRK-A", "BRK-B", "BRK.A", "BRK.B", "JPM", "BAC", "WFC", "GS", "MS", "105560.KS", "055550.KS"} or any(x in n for x in ["berkshire", "금융", "은행", "보험", "지주"]):
         return "금융·지주"
     if any(x in n for x in ["필수소비재", "식품", "생활용품", "walmart", "costco", "procter", "coca-cola", "pepsico"]):
         return "경기 방어주"
     if any(x in n for x in ["헬스케어", "제약", "바이오", "health", "pharma"]):
         return "헬스케어"
-    if any(x in n for x in ["자동차", "자동차", "항공", "철강", "화학", "에너지", "조선", "건설", "기아", "현대차", "posco"]):
+    if any(x in n for x in ["자동차", "항공", "철강", "화학", "에너지", "조선", "건설", "기아", "현대차", "posco"]):
         return "경기 민감주"
-    if t.startswith("^"):
-        return "시장 지수"
     return "기타·분류 확인 필요"
+
 
 def make_chart(df, mas, volume):
     fig = make_subplots(rows=2 if volume else 1, cols=1, shared_xaxes=volume,
@@ -451,89 +537,243 @@ with tab_portfolio:
         k2.metric("평가손익 합계", fmt_large(total_pnl))
         base = valid["평가금액"].sum()-valid["평가손익"].sum() if not valid.empty else 0
         k3.metric("가중 평가수익률", f"{total_pnl/base*100:+.2f}%" if base else "자료 없음")
-        st.dataframe(pf, use_container_width=True, hide_index=True)
+        
+        st.subheader("보유 종목 직접 편집")
+        st.caption(
+            "종목명, 수량, 평단, 통화, 계좌를 수정한 뒤 저장하세요. "
+            "종목 코드는 식별자이므로 여기서는 수정할 수 없습니다."
+        )
+
+        edit_cols = ["ticker", "name", "quantity", "avg_cost", "currency", "account"]
+        edit_df = holdings[edit_cols].copy()
+        edit_df = edit_df.rename(columns={
+            "ticker": "종목 코드",
+            "name": "종목명",
+            "quantity": "보유 수량",
+            "avg_cost": "평균 매입단가",
+            "currency": "통화",
+            "account": "계좌",
+        })
+
+        edited = st.data_editor(
+            edit_df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key="holdings_editor",
+            column_config={
+                "종목 코드": st.column_config.TextColumn(
+                    "종목 코드", disabled=True
+                ),
+                "종목명": st.column_config.TextColumn("종목명"),
+                "보유 수량": st.column_config.NumberColumn(
+                    "보유 수량", min_value=0.0, format="%.4f"
+                ),
+                "평균 매입단가": st.column_config.NumberColumn(
+                    "평균 매입단가", min_value=0.0, format="%.4f"
+                ),
+                "통화": st.column_config.SelectboxColumn(
+                    "통화", options=["KRW", "USD"]
+                ),
+                "계좌": st.column_config.SelectboxColumn(
+                    "계좌",
+                    options=[
+                        "삼성증권 ISA",
+                        "삼성증권 일반계좌",
+                        "삼성증권 CMA",
+                        "기타 계좌",
+                    ],
+                ),
+            },
+        )
+
+        if st.button("변경사항 저장", key="save_holdings_edits"):
+            try:
+                if edited["종목명"].astype(str).str.strip().eq("").any():
+                    st.error("종목명은 비워둘 수 없습니다.")
+                elif (
+                    (edited["보유 수량"] <= 0).any()
+                    or (edited["평균 매입단가"] <= 0).any()
+                ):
+                    st.error("보유 수량과 평균 매입단가는 0보다 커야 합니다.")
+                else:
+                    for _, row in edited.iterrows():
+                        save_holding(
+                            str(row["종목 코드"]),
+                            str(row["종목명"]).strip(),
+                            float(row["보유 수량"]),
+                            float(row["평균 매입단가"]),
+                            str(row["통화"]),
+                            str(row["계좌"]),
+                        )
+
+                    st.success("보유 종목 변경사항을 저장했습니다.")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"변경사항 저장에 실패했습니다: {e}")
+
+        
+        st.subheader("계좌별 보유 현황")
+
+        display_cols = [
+            "종목", "코드", "수량", "평단",
+            "현재가", "평가금액", "평가손익", "수익률(%)"
+        ]
+
+        account_order = [
+            "삼성증권 ISA",
+            "삼성증권 일반계좌",
+            "삼성증권 CMA",
+            "기타 계좌",
+        ]
+
+        for account_name in account_order:
+            account_pf = pf[pf["계좌"] == account_name].copy()
+
+            if account_pf.empty:
+                continue
+
+            account_value = account_pf["평가금액"].sum(min_count=1)
+            account_pnl = account_pf["평가손익"].sum(min_count=1)
+
+            with st.expander(
+                f"{account_name} · 평가금액 {fmt_large(account_value)} · "
+                f"평가손익 {fmt_large(account_pnl)}",
+                expanded=True,
+            ):
+                st.dataframe(
+                    account_pf[display_cols],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "수량": st.column_config.NumberColumn(
+                            "수량", format="%.4f"
+                        ),
+                        "평단": st.column_config.NumberColumn(
+                            "평단", format="%.2f"
+                        ),
+                        "현재가": st.column_config.NumberColumn(
+                            "현재가", format="%.2f"
+                        ),
+                        "평가금액": st.column_config.NumberColumn(
+                            "평가금액", format="%.0f"
+                        ),
+                        "평가손익": st.column_config.NumberColumn(
+                            "평가손익", format="%.0f"
+                        ),
+                        "수익률(%)": st.column_config.NumberColumn(
+                            "수익률(%)", format="%.2f%%"
+                        ),
+                    },
+                )
+
         st.subheader("포트폴리오 비중")
-        st.caption("평가금액 기준 비중입니다. 서로 다른 통화는 환율 환산 전에는 합산하지 않고 별도로 표시합니다.")
-        pie_cols = st.columns(2)
-        for col, currency in zip(pie_cols, ["KRW", "USD"]):
-            subset = pf[(pf["통화"] == currency) & pf["평가금액"].notna() & (pf["평가금액"] > 0)]
+        st.caption("통화별로 차트를 분리했습니다. 안쪽은 자산 카테고리, 바깥쪽은 개별 종목입니다. 조각을 누르거나 마우스를 올리면 평가금액과 전체 비중을 확인할 수 있습니다.")
+
+        category_colors = {
+            "반도체·하드웨어": "#2563EB",
+            "기술·성장주": "#7C3AED",
+            "시장 지수 ETF": "#0D9488",
+            "시장 지수": "#0F766E",
+            "경기 방어주": "#16A34A",
+            "헬스케어": "#22A06B",
+            "금융·지주": "#D97706",
+            "경기 민감주": "#EA580C",
+            "배당 ETF": "#65A30D",
+            "채권": "#64748B",
+            "기타·분류 확인 필요": "#9CA3AF",
+        }
+        # 같은 종목이 여러 계좌에 있으면 차트에서는 한 종목으로 합산합니다.
+        chart_cols = st.columns(2)
+        for col, currency in zip(chart_cols, ["KRW", "USD"]):
+            subset = pf[(pf["통화"] == currency) & pf["평가금액"].notna() & (pf["평가금액"] > 0)].copy()
             with col:
                 st.markdown(f"**{currency} 자산 비중**")
                 if subset.empty:
                     st.info(f"{currency} 평가 가능한 자산이 없습니다.")
-                else:
-                    # Aggregate duplicate tickers across accounts, then show category and ticker
-                    # as two nested rings. Percentages for every ticker are relative to this currency's total.
-                    chart_data = subset.copy()
-                    chart_data["카테고리"] = chart_data.apply(
-                        lambda row: classify_holding(row["종목"], row["코드"]), axis=1
-                    )
-                    chart_data = (chart_data.groupby(["카테고리", "코드", "종목"], as_index=False)
-                                  ["평가금액"].sum())
-                    category_totals = chart_data.groupby("카테고리")["평가금액"].sum()
-                    total_chart_value = float(chart_data["평가금액"].sum())
-                    labels = ["전체 자산"]
-                    ids = ["portfolio_root"]
-                    parents = [""]
-                    values = [total_chart_value]
-                    hover_names = [f"{currency} 전체 자산"]
-                    category_colors = {
-                        "반도체·하드웨어": "#2563EB", "기술·성장주": "#7C3AED",
-                        "시장 지수 ETF": "#0D9488", "시장 지수": "#0D9488",
-                        "경기 방어주": "#16A34A", "헬스케어": "#22A06B",
-                        "금융·지주": "#D97706", "경기 민감주": "#EA580C",
-                        "배당 ETF": "#65A30D", "채권": "#64748B",
-                        "기타·분류 확인 필요": "#9CA3AF",
-                    }
-                    colors = ["#FFFFFF"]
-                    for category, category_value in category_totals.items():
-                        category_id = f"category::{category}"
-                        category_weight = float(category_value) / total_chart_value
-                        labels.append(f"{category} · {category_weight:.1%}")
-                        ids.append(category_id)
-                        parents.append("portfolio_root")
-                        values.append(float(category_value))
-                        hover_names.append(f"{category}: {category_value / total_chart_value:.1%} of portfolio")
-                        colors.append(category_colors.get(category, "#9CA3AF"))
-                        children = chart_data[chart_data["카테고리"] == category]
-                        for _, stock in children.iterrows():
-                            ticker_id = f"stock::{category}::{stock['코드']}"
-                            weight = float(stock["평가금액"]) / total_chart_value
-                            labels.append(f"{stock['코드']} · {weight:.1%}")
-                            ids.append(ticker_id)
-                            parents.append(category_id)
-                            values.append(float(stock["평가금액"]))
-                            hover_names.append(
-                                f"{stock['종목']} ({stock['코드']})<br>카테고리: {category}"
-                                f"<br>평가금액: {stock['평가금액']:,.2f} {currency}"
-                                f"<br>전체 비중: {weight:.2%}"
-                            )
-                            # Same category color family; individual holdings vary by opacity.
-                            colors.append(category_colors.get(category, "#9CA3AF"))
+                    continue
 
-                    fig_pie = go.Figure(go.Sunburst(
-                        ids=ids, labels=labels, parents=parents, values=values,
-                        branchvalues="total", sort=False, maxdepth=2,
-                        insidetextorientation="radial",
-                        textinfo="label",
-                        marker={"colors": colors, "line": {"color": "white", "width": 1}},
-                        customdata=hover_names,
-                        hovertemplate="%{customdata}<extra></extra>",
-                        leaf={"opacity": 0.88},
-                    ))
-                    fig_pie.update_layout(
-                        height=430, margin={"l":5,"r":5,"t":10,"b":5},
-                        showlegend=False, uniformtext={"minsize": 9, "mode": "hide"},
+                subset["카테고리"] = subset.apply(
+                    lambda row: classify_holding(row["종목"], row["코드"]), axis=1
+                )
+                chart_data = (
+                    subset.groupby(["카테고리", "코드", "종목"], as_index=False)["평가금액"]
+                    .sum()
+                    .sort_values("평가금액", ascending=False)
+                )
+                total_value_chart = float(chart_data["평가금액"].sum())
+                category_totals = chart_data.groupby("카테고리")["평가금액"].sum().sort_values(ascending=False)
+
+                labels, ids, parents, values, colors, hover_text = [], [], [], [], [], []
+                for category, category_value in category_totals.items():
+                    category_id = f"category::{currency}::{category}"
+                    category_weight = float(category_value) / total_value_chart
+                    labels.append(f"{category} · {category_weight:.1%}")
+                    ids.append(category_id)
+                    parents.append("")
+                    values.append(float(category_value))
+                    base_color = category_colors.get(category, "#9CA3AF")
+                    colors.append(base_color)
+                    hover_text.append(
+                        f"<b>{category}</b><br>평가금액: {category_value:,.2f} {currency}"
+                        f"<br>전체 비중: {category_weight:.2%}"
                     )
-                    st.plotly_chart(fig_pie, use_container_width=True)
-                    st.caption("안쪽은 카테고리, 바깥쪽은 티커입니다. 각 종목 비중은 해당 통화 포트폴리오 전체 기준이며, 작은 조각은 마우스를 올려 확인하세요. 카테고리는 이름·티커 기반의 자동 추정이므로 ‘분류 확인 필요’ 항목은 검토가 필요합니다.")
+
+                    children = chart_data[chart_data["카테고리"] == category]
+                    for _, stock in children.iterrows():
+                        stock_value = float(stock["평가금액"])
+                        stock_weight = stock_value / total_value_chart
+                        ticker = str(stock["코드"])
+                        stock_name = str(stock["종목"])
+                        stock_id = f"stock::{currency}::{category}::{ticker}"
+                        # 바깥쪽 라벨에는 개별 종목과 전체 포트폴리오 내 비중을 함께 표시합니다.
+                        short_label = ticker if len(ticker) <= 12 else ticker[:11] + "…"
+                        labels.append(f"{short_label} · {stock_weight:.1%}")
+                        ids.append(stock_id)
+                        parents.append(category_id)
+                        values.append(stock_value)
+                        colors.append(base_color)
+                        hover_text.append(
+                            f"<b>{stock_name} ({ticker})</b><br>카테고리: {category}"
+                            f"<br>평가금액: {stock_value:,.2f} {currency}"
+                            f"<br>전체 비중: {stock_weight:.2%}"
+                        )
+
+                fig_pie = go.Figure(go.Sunburst(
+                    ids=ids,
+                    labels=labels,
+                    parents=parents,
+                    values=values,
+                    branchvalues="total",
+                    sort=False,
+                    maxdepth=2,
+                    insidetextorientation="radial",
+                    textinfo="label",
+                    marker={"colors": colors, "line": {"color": "white", "width": 1}},
+                    customdata=hover_text,
+                    hovertemplate="%{customdata}<extra></extra>",
+                ))
+                fig_pie.update_layout(
+                    height=470,
+                    margin={"l": 4, "r": 4, "t": 8, "b": 8},
+                    showlegend=False,
+                    uniformtext={"minsize": 9, "mode": "hide"},
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+                st.caption("작은 조각은 라벨이 숨겨질 수 있습니다. 해당 조각에 마우스를 올리면 종목명·평가금액·전체 비중이 표시됩니다. 자동 카테고리는 종목명과 티커를 바탕으로 한 추정이며, 미분류 항목은 별도 확인이 필요합니다.")
         st.caption("주의: 통화가 다른 종목의 합계는 환산 전 값이 섞일 수 있으므로 총액·손익 합계는 KRW와 USD를 분리해 해석해야 합니다. 가격 기준일과 제공자 데이터의 지연 가능성을 확인하세요. 세금·배당·환전 비용은 아직 반영하지 않습니다.")
         st.download_button("보유 현황 CSV 다운로드", pf.to_csv(index=False).encode("utf-8-sig"), "eggfolio_portfolio.csv", "text/csv")
-        with st.expander("보유 종목 삭제"):
-            delete_code = st.selectbox("삭제할 종목", holdings.ticker.tolist(), format_func=lambda x: f"{holdings.loc[holdings.ticker==x, 'name'].iloc[0]} ({x})")
-            if st.button("선택한 보유 종목 삭제"):
-                delete_holding(delete_code)
-                st.rerun()
+       
+        st.subheader("보유 종목 개별 삭제")
+        st.caption("잘못 등록한 종목만 선택해 삭제할 수 있습니다. 삭제 후에는 복구할 수 없으므로 종목 코드와 이름을 확인하세요.")
+        for _, item in holdings.iterrows():
+            delete_col1, delete_col2 = st.columns([5, 1])
+            with delete_col1:
+                st.write(f"**{item['name']}** · `{item['ticker']}` · {item['account']}")
+            with delete_col2:
+                if st.button("삭제", key=f"delete_holding_{item['ticker']}", type="secondary"):
+                    delete_holding(item["ticker"])
+                    st.rerun()
     st.divider()
     st.subheader("매수·매도 기록")
     st.write("거래를 기록하면 수량과 가중평균 매입원가가 자동 갱신됩니다. 직접 등록한 보유 정보는 기준값이며, 과거 거래를 소급 계산한 값은 아닙니다.")
