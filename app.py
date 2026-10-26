@@ -1179,6 +1179,31 @@ with tab_market:
                 else:
                     egg_stage = "전환·혼합 · 판단 보류"
 
+                # 달걀 그래프 생성 및 기본 도형
+                egg_fig = go.Figure()
+                egg_fig.add_shape(
+                    type="circle", x0=0.12, y0=0.10, x1=0.88, y1=0.90,
+                    line=dict(color="#64748B", width=2),
+                    fillcolor="rgba(148,163,184,0.08)"
+                )
+                egg_fig.add_shape(
+                    type="line", x0=0.50, y0=0.12, x1=0.50, y1=0.88,
+                    line=dict(color="#94A3B8", dash="dot")
+                )
+                egg_fig.add_shape(
+                    type="line", x0=0.14, y0=0.50, x1=0.86, y1=0.50,
+                    line=dict(color="#94A3B8", dash="dot")
+                )
+                egg_fig.add_trace(go.Scatter(
+                    x=[0.30, 0.50, 0.70, 0.50, 0.30],
+                    y=[0.70, 0.82, 0.50, 0.18, 0.70],
+                    mode="lines+markers",
+                    name="개념적 사이클",
+                    line=dict(color="#64748B", width=2),
+                    marker=dict(size=7),
+                    hoverinfo="skip"
+                ))
+
                 egg_fig.add_trace(go.Scatter(
                     x=[egg_x], y=[egg_y], mode="markers+text", name="가격 행동 참고 위치",
                     text=[market_name], textposition="top center",
