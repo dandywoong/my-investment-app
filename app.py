@@ -284,21 +284,21 @@ def render_investor_flow_check(ticker):
             return "자료 없음"
         return f"{value / 100_000_000:+,.1f}억원"
 
+    
     c1, c2, c3 = st.columns(3)
 
-    c1.metric("외국인 · 1일", fmt_shares(row["f_1d_sh"]))
-    c2.metric("외국인 · 5일", fmt_shares(row["f_5d_sh"]))
-    c3.metric("외국인 · 20일", fmt_shares(row["f_20d_sh"]))
+    c1.metric("외국인 · 1일", fmt_shares(values["f_1d_sh"]))
+    c2.metric("외국인 · 5일", fmt_shares(values["f_5d_sh"]))
+    c3.metric("외국인 · 20일", fmt_shares(values["f_20d_sh"]))
 
     c1, c2, c3 = st.columns(3)
-
-    c1.metric("기관 · 1일", fmt_shares(row["i_1d_sh"]))
-    c2.metric("기관 · 5일", fmt_shares(row["i_5d_sh"]))
-    c3.metric("기관 · 20일", fmt_shares(row["i_20d_sh"]))
+    c1.metric("기관 · 1일", fmt_shares(values["i_1d_sh"]))
+    c2.metric("기관 · 5일", fmt_shares(values["i_5d_sh"]))
+    c3.metric("기관 · 20일", fmt_shares(values["i_20d_sh"]))
 
     st.write("**순매수 금액 참고**")
-    st.write(f"- 외국인 · 5일: {fmt_value(row['f_5d_val'])}")
-    st.write(f"- 외국인 · 20일: {fmt_value(row['f_20d_val'])}")
+    st.write(f"- 외국인 · 5일: {fmt_value(values['f_5d_val'])}")
+    st.write(f"- 외국인 · 20일: {fmt_value(values['f_20d_val'])}")
 
     foreign_5d = pd.to_numeric(row["f_5d_sh"], errors="coerce")
     institution_5d = pd.to_numeric(row["i_5d_sh"], errors="coerce")
