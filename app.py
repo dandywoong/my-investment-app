@@ -645,7 +645,12 @@ with st.sidebar:
             ticker
         )
     )
-
+    st.write("🔧 종목 선택 진단")
+    st.write("chosen:", chosen)
+    st.write("sidebar_tickers[chosen]:", sidebar_tickers.get(chosen))
+    st.write("custom:", repr(custom))
+    st.write("use_custom_ticker:", use_custom_ticker)
+    st.write("최종 ticker:", ticker)
     period_name = st.selectbox(
         "차트 기간",
         list(PERIODS.keys()),
