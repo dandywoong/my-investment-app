@@ -413,54 +413,105 @@ def save_trade(traded_at, ticker, name, side, quantity, price, fee, account, not
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def latest_close(ticker):
-    hist = yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=False)
-    if hist is None or hist.empty or "Close" not in hist:
-        return None, None
-    return float(hist["Close"].dropna().iloc[-1]), str(hist.index[-1].date())
-
-
-def summarize_with_gemini(raw_note):
-    """Optional AI summary. Requires GEMINI_API_KEY in Streamlit secrets or environment."""
-    key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
-    if not key:
-        return None, "AI 요약을 사용하려면 Streamlit Secrets에 GEMINI_API_KEY를 설정해야 합니다. 키를 설정하지 않아도 원문과 직접 작성한 요약은 저장할 수 있습니다."
-    try:
-        import requests
-        prompt = "다음 투자 메모를 한국어로 요약해 JSON으로 반환하세요. 키는 thesis, supporting_evidence, opposing_evidence, risks, invalidation_conditions, follow_up_questions 입니다. 사실을 추가하거나 추정하지 말고, 메모에 없는 항목은 빈 문자열 또는 빈 목록으로 두세요. JSON 외 텍스트는 쓰지 마세요.\n메모:\n" + raw_note
-        response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-            params={"key": key}, json={"contents":[{"parts":[{"text":prompt}]}], "generationConfig":{"responseMimeType":"application/json"}}, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        result = data["candidates"][0]["content"]["parts"][0]["text"]
-        return json.loads(result), None
-    except Exception as e:
-        return None, f"AI 요약에 실패했습니다. 원문은 유지됩니다. 오류: {e}"
-
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_prices(ticker, period):
     t0 = time.time()
-    df = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False, actions=False)
+    df = yf.Ticker(ticker).history(
+        period=period,
+        interval="1d",
+        auto_adjust=False,
+        actions=False,
+    )
     elapsed = time.time() - t0
+
     if df is None or df.empty:
-        raise ValueError("가격 데이터가 없습니다. 종목 코드나 Yahoo Finance 응답을 확인하세요.")
+        raise ValueError(
+            "가격 데이터가 없습니다. 종목 코드나 Yahoo Finance 응답을 확인하세요."
+        )
+
     needed = ["Open", "High", "Low", "Close", "Volume"]
     missing = [c for c in needed if c not in df.columns]
     if missing:
         raise ValueError("필수 데이터 누락: " + ", ".join(missing))
+
     df = df.dropna(subset=["Open", "High", "Low", "Close"]).copy()
+    if df.empty:
+        raise ValueError("유효한 OHLC 가격 데이터가 없습니다.")
+
+    # 이동평균선
     for n in (5, 20, 60, 120, 200):
-        df[f"MA{n}"] = df["Close"].rolling(n).mean()
+        df[f"MA{n}"] = df["Close"].rolling(n, min_periods=n).mean()
+
+    # 캔들 방향 및 거래량
     df["PrevClose"] = df["Close"].shift(1)
     df["IsUp"] = df["Close"] >= df["PrevClose"]
     if len(df):
-        df.iloc[0, df.columns.get_loc("IsUp")] = df["Close"].iloc[0] >= df["Open"].iloc[0]
-    df["VolumeMA20"] = df["Volume"].rolling(20).mean()
+        df.iloc[0, df.columns.get_loc("IsUp")] = (
+            df["Close"].iloc[0] >= df["Open"].iloc[0]
+        )
+
+    df["VolumeMA20"] = df["Volume"].rolling(20, min_periods=20).mean()
     df["VolumeRatio20"] = df["Volume"] / df["VolumeMA20"]
+
+    # 기간 수익률
     df["Return20"] = df["Close"].pct_change(20) * 100
     df["Return60"] = df["Close"].pct_change(60) * 100
+
+    # 볼린저 밴드: 20일 이동평균 ± 표준편차 2배
+    df["BB_Middle"] = df["Close"].rolling(20, min_periods=20).mean()
+    bb_std = df["Close"].rolling(20, min_periods=20).std(ddof=1)
+    df["BB_Upper"] = df["BB_Middle"] + 2 * bb_std
+    df["BB_Lower"] = df["BB_Middle"] - 2 * bb_std
+    band_width = df["BB_Upper"] - df["BB_Lower"]
+    df["BB_Width"] = (
+        band_width / df["BB_Middle"].where(df["BB_Middle"] != 0) * 100
+    )
+    df["BB_Position"] = (
+        (df["Close"] - df["BB_Lower"])
+        / band_width.where(band_width != 0)
+    )
+
+    # RSI(14): Wilder 방식의 지수 평활
+    delta = df["Close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(
+        alpha=1 / 14, min_periods=14, adjust=False
+    ).mean()
+    avg_loss = loss.ewm(
+        alpha=1 / 14, min_periods=14, adjust=False
+    ).mean()
+
+    rs = avg_gain / avg_loss.where(avg_loss != 0)
+    df["RSI14"] = 100 - (100 / (1 + rs))
+    df.loc[(avg_loss == 0) & (avg_gain > 0), "RSI14"] = 100
+    df.loc[(avg_loss == 0) & (avg_gain == 0), "RSI14"] = 50
+
+    # MACD(12, 26, 9)
+    ema12 = df["Close"].ewm(span=12, adjust=False, min_periods=12).mean()
+    ema26 = df["Close"].ewm(span=26, adjust=False, min_periods=26).mean()
+    df["MACD"] = ema12 - ema26
+    df["MACD_Signal"] = df["MACD"].ewm(
+        span=9, adjust=False, min_periods=9
+    ).mean()
+    df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
+
+    # ATR(14): True Range의 Wilder 방식 평활
+    prev_close = df["Close"].shift(1)
+    true_range = pd.concat(
+        [
+            df["High"] - df["Low"],
+            (df["High"] - prev_close).abs(),
+            (df["Low"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    df["ATR14"] = true_range.ewm(
+        alpha=1 / 14, min_periods=14, adjust=False
+    ).mean()
+    df["ATR14_Pct"] = df["ATR14"] / df["Close"].where(df["Close"] != 0) * 100
+
     return df, elapsed
 
 
