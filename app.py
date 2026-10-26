@@ -177,6 +177,149 @@ def stock_search_widget(key_prefix, default_ticker="", default_name=""):
     return manual_name.strip(), manual_ticker
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_korean_investor_flows():
+    """한국 상장 보통주의 외국인·기관 순매수 집계 데이터."""
+    import pandas as pd
+
+    base_url = (
+        "https://raw.githubusercontent.com/"
+        "james-brand/korea-market-data/main/data"
+    )
+    url = f"{base_url}/foreign-flows-aggregates.csv"
+
+    try:
+        flows = pd.read_csv(url, comment="#")
+
+        required = {
+            "ticker", "name_en", "market",
+            "f_1d_sh", "f_5d_sh", "f_20d_sh",
+            "f_5d_val", "f_20d_val",
+            "i_1d_sh", "i_5d_sh", "i_20d_sh",
+        }
+
+        missing = required - set(flows.columns)
+        if missing:
+            return None, f"필수 열 누락: {', '.join(sorted(missing))}"
+
+        flows["ticker"] = (
+            flows["ticker"]
+            .astype(str)
+            .str.replace(r"\.0$", "", regex=True)
+            .str.zfill(6)
+        )
+
+        return flows, None
+
+    except Exception as e:
+        return None, str(e)
+
+
+def render_investor_flow_check(ticker):
+    """현재 종목의 수급 데이터와 연결 상태를 표시한다."""
+    st.subheader("① 수급 검증")
+
+    # 한국 주식만 지원하는 데이터셋이므로 시장을 먼저 구분한다.
+    ticker_upper = ticker.strip().upper()
+
+    if not ticker_upper.endswith((".KS", ".KQ")):
+        st.warning(
+            "미연결 · 현재 수급 데이터 연결은 .KS / .KQ "
+            "한국 상장 보통주만 지원합니다."
+        )
+        st.caption(
+            "미국 주식 등은 별도 데이터 공급원을 연결해야 합니다. "
+            "수급이 중립이라는 뜻은 아닙니다."
+        )
+        return
+
+    code = ticker_upper.rsplit(".", 1)[0]
+
+    if not code.isdigit() or len(code) != 6:
+        st.warning("미연결 · 종목 코드 형식을 확인할 수 없습니다.")
+        return
+
+    with st.spinner("외국인·기관 수급 데이터 확인 중..."):
+        flows, error = load_korean_investor_flows()
+
+    if flows is None:
+        st.warning("데이터 조회 실패 · 수급 미연결")
+        st.caption(f"오류 내용: {error}")
+        return
+
+    matched = flows.loc[flows["ticker"] == code]
+
+    if matched.empty:
+        st.warning(
+            f"미연결 · 공개 데이터셋에서 종목 코드 {code}를 찾지 못했습니다."
+        )
+        return
+
+    row = matched.iloc[0]
+
+    # 필수 데이터가 실제로 숫자로 읽히는지 확인한다.
+    fields = [
+        "f_1d_sh", "f_5d_sh", "f_20d_sh",
+        "f_5d_val", "f_20d_val",
+        "i_1d_sh", "i_5d_sh", "i_20d_sh",
+    ]
+
+    values = pd.to_numeric(row[fields], errors="coerce")
+    valid_count = int(values.notna().sum())
+
+    if valid_count == 0:
+        st.warning("부분 연결 · 수급 수치가 유효하지 않습니다.")
+        return
+
+    status = "연결됨" if valid_count == len(fields) else "부분 연결"
+    st.success(f"수급 데이터 {status} · 유효 항목 {valid_count}/{len(fields)}")
+
+    def fmt_shares(value):
+        if pd.isna(value):
+            return "자료 없음"
+        return f"{value:+,.0f}주"
+
+    def fmt_value(value):
+        if pd.isna(value):
+            return "자료 없음"
+        return f"{value / 100_000_000:+,.1f}억원"
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric("외국인 · 1일", fmt_shares(row["f_1d_sh"]))
+    c2.metric("외국인 · 5일", fmt_shares(row["f_5d_sh"]))
+    c3.metric("외국인 · 20일", fmt_shares(row["f_20d_sh"]))
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric("기관 · 1일", fmt_shares(row["i_1d_sh"]))
+    c2.metric("기관 · 5일", fmt_shares(row["i_5d_sh"]))
+    c3.metric("기관 · 20일", fmt_shares(row["i_20d_sh"]))
+
+    st.write("**순매수 금액 참고**")
+    st.write(f"- 외국인 · 5일: {fmt_value(row['f_5d_val'])}")
+    st.write(f"- 외국인 · 20일: {fmt_value(row['f_20d_val'])}")
+
+    foreign_5d = pd.to_numeric(row["f_5d_sh"], errors="coerce")
+    institution_5d = pd.to_numeric(row["i_5d_sh"], errors="coerce")
+
+    if pd.notna(foreign_5d) and pd.notna(institution_5d):
+        if foreign_5d > 0 and institution_5d > 0:
+            interpretation = "외국인과 기관의 5일 누적 순매수가 모두 양수입니다."
+        elif foreign_5d < 0 and institution_5d < 0:
+            interpretation = "외국인과 기관의 5일 누적 순매도가 모두 관측됩니다."
+        else:
+            interpretation = "외국인과 기관의 5일 수급 방향이 서로 다릅니다."
+
+        st.info(interpretation)
+
+    st.caption(
+        "출처: Korean Market Data / K-Export Stars, CC BY 4.0. "
+        "일별 집계이며 장중 실시간 수급이 아닙니다. "
+        "순매수는 투자심리의 직접 측정치가 아니며, "
+        "데이터의 기준일을 확인한 후 해석해야 합니다."
+    )
+
 def init_db():
     with sqlite3.connect(DB_PATH) as con:
         con.execute("""CREATE TABLE IF NOT EXISTS holdings (
