@@ -1015,6 +1015,7 @@ with tab_chart:
 
 
 
+
 with tab_market:
     render_investor_flow_check(ticker)
     st.subheader("시장 국면 분석")
@@ -1024,11 +1025,10 @@ with tab_market:
         "현재 연결된 가격 자료만으로 실제 대중심리를 확정하지 않습니다."
     )
 
-    market_name, market_ticker = stock_search_widget(
-        "market_regime_search",
-        default_ticker=ticker,
-        default_name=""
-    )
+    # 사이드바 공통 종목 선택값 사용
+    market_ticker = ticker
+    market_name = chosen
+
     market_period_label = st.selectbox(
         "분석 기간",
         list(PERIODS.keys()),
