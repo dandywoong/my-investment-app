@@ -451,16 +451,58 @@ init_db()
 st.title("🥚 Eggfolio")
 st.caption("투자 리서치 워크벤치 · 관측 데이터와 해석을 구분합니다.")
 
+
 with st.sidebar:
     st.header("조회 설정")
-    chosen = st.selectbox("종목 선택", list(TICKERS.keys()))
-    custom = st.text_input("직접 입력 (선택사항)", placeholder="예: NVDA 또는 005930.KS")
-    ticker = custom.strip().upper() if custom.strip() else TICKERS[chosen]
-    period_name = st.selectbox("차트 기간", list(PERIODS.keys()), index=2)
+    st.caption(
+        "여기서 선택한 종목은 차트·시장 국면·기업 기초체력·판단 기록의 공통 기준입니다."
+    )
+
+    # 기본 종목과 확장 종목 목록 통합
+    sidebar_tickers = {**TICKERS, **STOCK_DIRECTORY}
+
+    chosen = st.selectbox(
+        "공통 종목 선택",
+        list(sidebar_tickers.keys()),
+        key="global_ticker_choice"
+    )
+
+    custom = st.text_input(
+        "티커 직접 입력 (선택사항)",
+        placeholder="예: NVDA 또는 005930.KS",
+        key="global_ticker_custom"
+    )
+
+    ticker = (
+        custom.strip().upper()
+        if custom.strip()
+        else sidebar_tickers[chosen]
+    )
+
+    selected_stock_name = (
+        chosen
+        if not custom.strip()
+        else next(
+            (
+                name for name, symbol in sidebar_tickers.items()
+                if symbol.upper() == ticker
+            ),
+            ticker
+        )
+    )
+
+    period_name = st.selectbox(
+        "차트 기간",
+        list(PERIODS.keys()),
+        index=2
+    )
     period = PERIODS[period_name]
+
     if st.button("🔄 데이터 새로고침", use_container_width=True):
         st.cache_data.clear()
+
     st.caption("한국 종목은 .KS 또는 .KQ 접미사가 필요할 수 있습니다.")
+
 
 try:
     with st.spinner(f"{ticker} 가격 데이터 조회 중..."):
