@@ -1499,7 +1499,7 @@ with tab_chart:
                 "이 결과는 사전에 정의한 규칙의 기계적 집계입니다. "
                 "백테스트로 검증된 매매 전략이나 매수·매도 권고가 아닙니다."
             )
- rsi = prices["RSI14"]
+    rsi = prices["RSI14"]
     rsi_fig = go.Figure()
 
 
