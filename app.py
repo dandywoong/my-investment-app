@@ -300,6 +300,11 @@ def render_investor_flow_check(ticker):
     st.write(f"- 외국인 · 5일: {fmt_value(values['f_5d_val'])}")
     st.write(f"- 외국인 · 20일: {fmt_value(values['f_20d_val'])}")
 
+    st.caption(
+        "데이터 기준일: 제공자 파일의 기준일 표기와 실제 집계 거래일은 "
+        "별도 검증이 필요합니다. 실시간 수급 데이터가 아닐 수 있습니다."
+    )
+
     foreign_5d = pd.to_numeric(row["f_5d_sh"], errors="coerce")
     institution_5d = pd.to_numeric(row["i_5d_sh"], errors="coerce")
 
