@@ -10,7 +10,8 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 from plotly.subplots import make_subplots
-
+import urllib.request
+import urllib.error
 # Eggfolio integrated MVP: observable data is separated from interpretation.
 DB_PATH = Path("eggfolio_journal.db")
 UP, DOWN = "#E53935", "#1E88E5"  # Korean-market convention
@@ -700,6 +701,135 @@ def market_read(df):
         label, desc = "혼합 / 방향 불명확", "이동평균선 관계가 한 방향으로 정렬되지 않았습니다."
     return label, desc, signals
 
+def analyze_chart_with_openai(ticker, stock_name, prices):
+    """계산된 기술 지표를 OpenAI API에 전달해 근거 기반 해석을 생성한다."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        try:
+            api_key = str(st.secrets["OPENAI_API_KEY"]).strip()
+        except Exception:
+            api_key = ""
+
+    if not api_key:
+        return None, (
+            "OpenAI API 키가 설정되지 않았습니다. "
+            "Streamlit Cloud의 App settings → Secrets에 "
+            "OPENAI_API_KEY를 설정하세요."
+        )
+
+    if prices is None or prices.empty:
+        return None, "분석할 가격 데이터가 없습니다."
+
+    last = prices.iloc[-1]
+
+    def number(value, digits=4):
+        if pd.isna(value):
+            return None
+        return round(float(value), digits)
+
+    fields = [
+        "Close", "MA20", "MA60", "MA120", "MA200",
+        "Return20", "Return60", "VolumeRatio20",
+        "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
+        "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
+        "BB_Position", "ATR14", "ATR14_Pct",
+    ]
+
+    current = {
+        field: number(last[field])
+        for field in fields
+        if field in prices.columns
+    }
+
+    recent_columns = [
+        c for c in [
+            "Close", "Volume", "RSI14", "MACD",
+            "MACD_Signal", "MACD_Hist", "BB_Width", "ATR14_Pct"
+        ]
+        if c in prices.columns
+    ]
+    recent = prices[recent_columns].tail(20).copy()
+    recent.index = recent.index.strftime("%Y-%m-%d")
+    recent_data = [
+        {"date": date, **{
+            key: number(value)
+            for key, value in row.items()
+        }}
+        for date, row in recent.iterrows()
+    ]
+
+    prompt_data = {
+        "ticker": ticker,
+        "stock_name": stock_name,
+        "price_data_as_of": str(prices.index[-1].date()),
+        "indicator_values_latest": current,
+        "recent_20_sessions": recent_data,
+    }
+
+    instructions = """
+너는 투자 리서치 보조 분석가다. 제공된 데이터만 근거로 한국어로 분석한다.
+
+반드시 다음 순서로 작성한다.
+1. 핵심 요약: 추세와 모멘텀의 현재 상태
+2. 상승을 지지하는 근거: 실제 입력값을 인용
+3. 하락 또는 반대 근거: 실제 입력값을 인용
+4. 변동성 및 거래량: 위험과 해석 한계
+5. 조건부 시나리오: 어떤 관측이 나오면 현재 해석이 강화되거나 약화되는지
+6. 데이터 한계와 신뢰도: 누락 데이터, 기준일, 해석상 제약
+
+규칙:
+- 입력에 없는 가격, 실적, 뉴스, 수급, 목표가를 만들지 않는다.
+- 지표값과 해석을 구분한다.
+- RSI 70/30, 볼린저 밴드 접촉, MACD 교차만으로 반전을 확정하지 않는다.
+- ATR은 방향이 아니라 변동 폭을 나타낸다.
+- 상승 근거와 하락 근거가 충돌하면 이를 명시한다.
+- 매수·매도를 단정하지 말고 조건부로 설명한다.
+- 미래 가격이나 수익률을 확정적으로 예측하지 않는다.
+- 입력 데이터가 부족하면 판단을 보류한다.
+- 제공된 데이터의 마지막 날짜를 분석 기준일로 명시한다.
+"""
+
+    request_body = {
+        "model": "gpt-6.1-sol",
+        "instructions": instructions,
+        "input": json.dumps(prompt_data, ensure_ascii=False, allow_nan=False),
+        "max_output_tokens": 1400,
+    }
+
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(request_body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        output_text = result.get("output_text", "").strip()
+        if not output_text:
+            parts = []
+            for item in result.get("output", []):
+                for content in item.get("content", []):
+                    if content.get("type") == "output_text":
+                        parts.append(content.get("text", ""))
+            output_text = "\n".join(parts).strip()
+
+        if not output_text:
+            return None, "AI 응답에 분석 본문이 없습니다."
+
+        return output_text, None
+
+    except urllib.error.HTTPError as e:
+        details = e.read().decode("utf-8", errors="replace")[:1000]
+        return None, f"OpenAI API 오류 ({e.code}): {details}"
+    except Exception as e:
+        return None, f"AI 분석 요청 실패: {type(e).__name__}: {e}"
+
 
 def render_fundamentals(ticker):
     st.subheader("기업 기초체력")
@@ -1184,9 +1314,37 @@ with tab_chart:
         else "• 거래량 평균을 계산하기에 데이터가 부족합니다."
     )
 
+    
     st.divider()
-    st.subheader("RSI · 상대강도")
-    rsi = prices["RSI14"]
+    st.subheader("AI 차트 해석")
+    st.caption(
+        "선택 종목의 가격과 계산된 기술 지표를 AI가 해석합니다. "
+        "분석은 마지막 가격 데이터 날짜를 기준으로 하며, "
+        "연결되지 않은 뉴스·수급·재무정보는 분석 근거로 사용하지 않습니다."
+    )
+
+    if st.button(
+        "현재 종목 AI 분석 실행",
+        key=f"ai_chart_analysis_{ticker}_{period}",
+        type="primary",
+    ):
+        with st.spinner("지표를 종합해 AI가 분석 중입니다..."):
+            ai_result, ai_error = analyze_chart_with_openai(
+                ticker,
+                selected_stock_name,
+                prices,
+            )
+
+        if ai_error:
+            st.error(ai_error)
+        else:
+            st.markdown(f"**분석 기준일:** {prices.index[-1].date()}")
+            st.markdown(ai_result)
+            st.caption(
+                "AI 분석은 제공된 데이터에 기반한 참고 자료입니다. "
+                "계산 오류나 해석 오류가 있을 수 있으며 투자 판단을 보장하지 않습니다."
+            )
+
     rsi_fig = go.Figure()
     rsi_fig.add_trace(
         go.Scatter(
