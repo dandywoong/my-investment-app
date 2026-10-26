@@ -925,9 +925,10 @@ with tab_portfolio:
                     for _, stock in children.iterrows():
                         stock_value = float(stock["평가금액"])
                         stock_weight = stock_value / total_value_chart
-                        ticker = str(stock["코드"])
+                        
+                        stock_ticker = str(stock["코드"])
                         stock_name = str(stock["종목"])
-                        stock_id = f"stock::{currency}::{category}::{ticker}"
+                        stock_id = f"stock::{currency}::{category}::{stock_ticker}"
                         # 차트 라벨은 티커 대신 사용자가 등록한 종목명을 표시합니다.
                         short_label = stock_name if len(stock_name) <= 16 else stock_name[:15] + "…"
                         labels.append(f"{short_label} · {stock_weight:.1%}")
@@ -936,10 +937,11 @@ with tab_portfolio:
                         values.append(stock_value)
                         colors.append(base_color)
                         hover_text.append(
-                            f"<b>{stock_name} ({ticker})</b><br>카테고리: {category}"
+                            f"<b>{stock_name} ({stock_ticker})</b><br>카테고리: {category}"
                             f"<br>평가금액: {stock_value:,.2f} {currency}"
                             f"<br>전체 비중: {stock_weight:.2%}"
                         )
+
 
                 fig_pie = go.Figure(go.Sunburst(
                     ids=ids,
