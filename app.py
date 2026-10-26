@@ -565,30 +565,96 @@ def classify_holding(name, ticker):
     return "기타·분류 확인 필요"
 
 
-def make_chart(df, mas, volume):
-    fig = make_subplots(rows=2 if volume else 1, cols=1, shared_xaxes=volume,
-                        vertical_spacing=.035, row_heights=[.74,.26] if volume else [1])
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df.Open, high=df.High, low=df.Low, close=df.Close,
-        name="캔들", increasing_line_color=UP, increasing_fillcolor=UP,
-        decreasing_line_color=DOWN, decreasing_fillcolor=DOWN
-    ), row=1, col=1)
+
+def make_chart(df, mas, volume, show_bollinger=False):
+    fig = make_subplots(
+        rows=2 if volume else 1,
+        cols=1,
+        shared_xaxes=volume,
+        vertical_spacing=.035,
+        row_heights=[.74, .26] if volume else [1],
+    )
+
+    fig.add_trace(
+        go.Candlestick(
+            x=df.index,
+            open=df.Open,
+            high=df.High,
+            low=df.Low,
+            close=df.Close,
+            name="캔들",
+            increasing_line_color=UP,
+            increasing_fillcolor=UP,
+            decreasing_line_color=DOWN,
+            decreasing_fillcolor=DOWN,
+        ),
+        row=1, col=1,
+    )
+
     for n in mas:
-        fig.add_trace(go.Scatter(x=df.index, y=df[f"MA{n}"], mode="lines",
-            name=f"{n}일선", line={"color":MA_COLORS[n],"width":1.5}), row=1, col=1)
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df[f"MA{n}"],
+                mode="lines",
+                name=f"{n}일선",
+                line={"color": MA_COLORS[n], "width": 1.5},
+            ),
+            row=1, col=1,
+        )
+
+    if show_bollinger:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["BB_Upper"],
+                mode="lines",
+                name="볼린저 상단",
+                line={"color": "#94A3B8", "width": 1, "dash": "dot"},
+            ),
+            row=1, col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["BB_Lower"],
+                mode="lines",
+                name="볼린저 하단",
+                line={"color": "#94A3B8", "width": 1, "dash": "dot"},
+                fill="tonexty",
+                fillcolor="rgba(148,163,184,0.10)",
+            ),
+            row=1, col=1,
+        )
+
     if volume:
         colors = [UP if bool(x) else DOWN for x in df.IsUp]
-        fig.add_trace(go.Bar(x=df.index, y=df.Volume, name="거래량",
-            marker_color=colors, opacity=.82), row=2, col=1)
+        fig.add_trace(
+            go.Bar(
+                x=df.index,
+                y=df.Volume,
+                name="거래량",
+                marker_color=colors,
+                opacity=.82,
+            ),
+            row=2, col=1,
+        )
         fig.update_yaxes(title_text="거래량", tickformat=",", row=2, col=1)
-    fig.update_layout(height=720 if volume else 560, template="plotly_white",
-        margin={"l":10,"r":10,"t":30,"b":10}, hovermode="x unified",
+
+    fig.update_layout(
+        height=720 if volume else 560,
+        template="plotly_white",
+        margin={"l": 10, "r": 10, "t": 30, "b": 10},
+        hovermode="x unified",
         xaxis_rangeslider_visible=False,
-        legend={"orientation":"h","yanchor":"bottom","y":1.02,"xanchor":"left","x":0})
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02,
+                "xanchor": "left", "x": 0},
+    )
     fig.update_yaxes(title_text="가격", row=1, col=1)
     fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,.15)")
     fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,.15)")
     return fig
+
 
 
 def market_read(df):
@@ -1063,20 +1129,157 @@ with tab_portfolio:
         st.dataframe(trades.head(100), use_container_width=True, hide_index=True)
         st.download_button("거래 내역 CSV 다운로드", trades.to_csv(index=False).encode("utf-8-sig"), "eggfolio_trades.csv", "text/csv")
 
+
 with tab_chart:
-    mas = st.multiselect("이동평균선", [5,20,60,120,200], default=[20,60,120],
-                         format_func=lambda n:f"{n}일선")
+    mas = st.multiselect(
+        "이동평균선",
+        [5, 20, 60, 120, 200],
+        default=[20, 60, 120],
+        format_func=lambda n: f"{n}일선",
+    )
     volume = st.checkbox("거래량 표시", True)
-    st.plotly_chart(make_chart(prices, mas, volume), use_container_width=True,
-                    config={"scrollZoom":True,"displaylogo":False,"responsive":True})
-    st.caption("상승 빨강 / 하락 파랑. 첫 데이터 날짜는 전일 종가가 없어 시가와 종가를 비교합니다.")
+    show_bollinger = st.checkbox("볼린저 밴드 표시", True)
+
+    st.plotly_chart(
+        make_chart(prices, mas, volume, show_bollinger),
+        use_container_width=True,
+        config={"scrollZoom": True, "displaylogo": False, "responsive": True},
+    )
+    st.caption(
+        "상승 빨강 / 하락 파랑. 볼린저 밴드는 20일 평균과 표준편차를 "
+        "이용합니다. 밴드 접촉만으로 매수·매도 신호를 확정하지 않습니다."
+    )
+
     st.subheader("기술적 관측")
-    for n in (20,60,120,200):
+    for n in (20, 60, 120, 200):
         ma = last[f"MA{n}"]
         if pd.notna(ma):
-            st.write(f"• 종가는 {n}일선 { '위' if close > ma else '아래'}입니다.")
+            st.write(f"• 종가는 {n}일선 {'위' if close > ma else '아래'}입니다.")
+
     vr = last["VolumeRatio20"]
-    st.write(f"• 거래량은 20일 평균 대비 {vr:.2f}배입니다." if pd.notna(vr) else "• 거래량 평균을 계산하기에 데이터가 부족합니다.")
+    st.write(
+        f"• 거래량은 20일 평균 대비 {vr:.2f}배입니다."
+        if pd.notna(vr)
+        else "• 거래량 평균을 계산하기에 데이터가 부족합니다."
+    )
+
+    st.divider()
+    st.subheader("RSI · 상대강도")
+    rsi = prices["RSI14"]
+    rsi_fig = go.Figure()
+    rsi_fig.add_trace(
+        go.Scatter(
+            x=prices.index, y=rsi, mode="lines",
+            name="RSI(14)", line={"color": "#7C3AED", "width": 2},
+        )
+    )
+    rsi_fig.add_hline(y=70, line_dash="dash", line_color="#E53935")
+    rsi_fig.add_hline(y=30, line_dash="dash", line_color="#1E88E5")
+    rsi_fig.update_yaxes(range=[0, 100], title_text="RSI")
+    rsi_fig.update_layout(
+        height=260, template="plotly_white",
+        margin={"l": 10, "r": 10, "t": 20, "b": 10},
+        showlegend=False, hovermode="x unified",
+    )
+    st.plotly_chart(rsi_fig, use_container_width=True)
+
+    current_rsi = rsi.iloc[-1]
+    if pd.isna(current_rsi):
+        st.info("RSI: 계산에 필요한 가격 데이터가 부족합니다.")
+    elif current_rsi >= 70:
+        st.write(f"RSI(14)는 {current_rsi:.1f}입니다. 전통적인 과매수 참고 구간입니다.")
+    elif current_rsi <= 30:
+        st.write(f"RSI(14)는 {current_rsi:.1f}입니다. 전통적인 과매도 참고 구간입니다.")
+    else:
+        st.write(f"RSI(14)는 {current_rsi:.1f}입니다. 30~70 사이입니다.")
+
+    st.caption(
+        "RSI 70·30은 참고 기준이지 반전 보장이 아닙니다. 강한 추세에서는 "
+        "과매수·과매도 구간이 장기간 유지될 수 있습니다."
+    )
+
+    st.divider()
+    st.subheader("MACD · 추세 모멘텀")
+    macd_fig = go.Figure()
+    macd_fig.add_trace(
+        go.Bar(
+            x=prices.index, y=prices["MACD_Hist"],
+            name="히스토그램",
+            marker_color=[
+                UP if pd.notna(v) and v >= 0 else DOWN
+                for v in prices["MACD_Hist"]
+            ],
+        )
+    )
+    macd_fig.add_trace(
+        go.Scatter(
+            x=prices.index, y=prices["MACD"],
+            mode="lines", name="MACD",
+            line={"color": "#2563EB", "width": 1.8},
+        )
+    )
+    macd_fig.add_trace(
+        go.Scatter(
+            x=prices.index, y=prices["MACD_Signal"],
+            mode="lines", name="시그널",
+            line={"color": "#F59E0B", "width": 1.5},
+        )
+    )
+    macd_fig.add_hline(y=0, line_dash="dot", line_color="#64748B")
+    macd_fig.update_layout(
+        height=320, template="plotly_white",
+        margin={"l": 10, "r": 10, "t": 20, "b": 10},
+        hovermode="x unified",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02,
+                "xanchor": "left", "x": 0},
+    )
+    st.plotly_chart(macd_fig, use_container_width=True)
+
+    macd_value = last["MACD"]
+    signal_value = last["MACD_Signal"]
+    hist_value = last["MACD_Hist"]
+    if pd.isna(macd_value) or pd.isna(signal_value):
+        st.info("MACD: 계산에 필요한 가격 데이터가 부족합니다.")
+    else:
+        relation = "MACD가 시그널선 위" if macd_value > signal_value else (
+            "MACD가 시그널선 아래" if macd_value < signal_value else
+            "MACD와 시그널선이 동일"
+        )
+        st.write(
+            f"• {relation}. 히스토그램: {hist_value:+.4f}. "
+            "교차 하나만으로 추세 전환을 확정하지 않습니다."
+        )
+
+    st.divider()
+    st.subheader("ATR · 변동성")
+    atr = last["ATR14"]
+    atr_pct = last["ATR14_Pct"]
+    atr_col1, atr_col2 = st.columns(2)
+    atr_col1.metric("ATR(14)", fmt(atr, 4))
+    atr_col2.metric("ATR / 종가", f"{atr_pct:.2f}%" if pd.notna(atr_pct) else "자료 부족")
+
+    st.caption(
+        "ATR은 변동 폭을 측정하며 상승·하락 방향을 나타내지 않습니다. "
+        "종목별 가격 수준이 다르므로 ATR과 ATR/종가 비율을 함께 확인합니다."
+    )
+
+    st.divider()
+    st.subheader("최근 지표 데이터")
+    indicator_cols = [
+        "Close", "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
+        "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
+        "ATR14", "ATR14_Pct", "VolumeRatio20",
+    ]
+    indicator_table = prices[
+        [c for c in indicator_cols if c in prices.columns]
+    ].tail(20).sort_index(ascending=False)
+    st.dataframe(indicator_table, use_container_width=True)
+    st.download_button(
+        "지표 데이터 CSV 다운로드",
+        prices.to_csv(index=True).encode("utf-8-sig"),
+        f"{ticker}_{period}_indicators.csv",
+        "text/csv",
+    )
 
 
 
@@ -1352,7 +1555,15 @@ with tab_journal:
     st.caption("종목 검색은 앱 내 기본 종목 목록을 사용하며 전체 상장 종목을 망라하지 않습니다. Streamlit Cloud의 로컬 SQLite는 재배포·환경 변경 시 영구 보존이 보장되지 않으므로 실제 자산을 입력하기 전 외부 DB 또는 백업을 추가해야 합니다.")
 
 with tab_raw:
-    cols = ["Open","High","Low","Close","Volume","MA5","MA20","MA60","MA120","MA200"]
+    
+    cols = [
+        "Open", "High", "Low", "Close", "Volume",
+        "MA5", "MA20", "MA60", "MA120", "MA200",
+        "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
+        "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
+        "ATR14", "ATR14_Pct", "VolumeRatio20",
+    ]
+
     st.dataframe(prices[[c for c in cols if c in prices.columns]].tail(20).sort_index(ascending=False),
                  use_container_width=True)
     st.download_button("전체 가격 데이터 CSV 다운로드", prices.to_csv(index=True).encode("utf-8-sig"),
