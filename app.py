@@ -600,6 +600,7 @@ st.title("🥚 Eggfolio")
 st.caption("투자 리서치 워크벤치 · 관측 데이터와 해석을 구분합니다.")
 
 
+
 with st.sidebar:
     st.header("조회 설정")
     st.caption(
@@ -607,7 +608,14 @@ with st.sidebar:
     )
 
     # 기본 종목과 확장 종목 목록 통합
-        use_custom_ticker = st.checkbox(
+    sidebar_tickers = {**TICKERS, **STOCK_DIRECTORY}
+    chosen = st.selectbox(
+        "공통 종목 선택",
+        list(sidebar_tickers.keys()),
+        key="global_ticker_choice"
+    )
+
+    use_custom_ticker = st.checkbox(
         "종목 코드 직접 입력 사용",
         value=False,
         key="use_global_custom_ticker"
