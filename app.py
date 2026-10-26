@@ -516,6 +516,27 @@ def get_prices(ticker, period):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def latest_close(ticker):
+    """최근 종가와 해당 거래일을 반환한다."""
+    try:
+        hist = yf.Ticker(ticker).history(
+            period="5d",
+            interval="1d",
+            auto_adjust=False,
+        )
+        if hist is None or hist.empty or "Close" not in hist.columns:
+            return None, None
+
+        close = hist["Close"].dropna()
+        if close.empty:
+            return None, None
+
+        return float(close.iloc[-1]), str(close.index[-1].date())
+    except Exception:
+        return None, None
+
 def get_fundamentals(ticker):
     return yf.Ticker(ticker).info
 
