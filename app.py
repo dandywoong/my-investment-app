@@ -826,341 +826,219 @@ with tab_chart:
 
 
 with tab_market:
-    st.subheader("🥚 코스톨라니 달걀 · 시장 국면 판독")
-    st.write(
-        "목표는 고점·저점을 정확히 맞히는 것이 아니라, "
-        "상승 후반의 과열 신호를 놓치지 않고 매매 판단을 규칙화하는 것입니다."
-    )
-
-    # 현재 선택된 종목의 가격 데이터로 국면을 추정한다.
-    # 투자심리와 투자자별 수급은 아직 연결되지 않았으므로 사용하지 않는다.
-    df = prices.dropna(subset=["Close"]).copy()
-    last = df.iloc[-1]
-    close_now = float(last["Close"])
-
-    ma20 = last["MA20"]
-    ma60 = last["MA60"]
-    ma120 = last["MA120"]
-    ret20 = last["Return20"]
-    ret60 = last["Return60"]
-    vol_ratio = last["VolumeRatio20"]
-
-    def valid_number(value):
-        return pd.notna(value) and value is not None
-
-    # 이동평균선의 방향과 가격 이격
-    ma20_rising = (
-        len(df) >= 6
-        and valid_number(df["MA20"].iloc[-6])
-        and valid_number(ma20)
-        and float(ma20) > float(df["MA20"].iloc[-6])
-    )
-    ma60_rising = (
-        len(df) >= 11
-        and valid_number(df["MA60"].iloc[-11])
-        and valid_number(ma60)
-        and float(ma60) > float(df["MA60"].iloc[-11])
-    )
-
-    stretch20 = (
-        (close_now / float(ma20) - 1) * 100
-        if valid_number(ma20) and float(ma20) != 0 else None
-    )
-    stretch60 = (
-        (close_now / float(ma60) - 1) * 100
-        if valid_number(ma60) and float(ma60) != 0 else None
-    )
-
-    # 최근 60거래일 고점 대비 하락률
-    recent_window = df.tail(60)
-    peak60 = float(recent_window["Close"].max())
-    drawdown60 = (close_now / peak60 - 1) * 100 if peak60 else None
-
-    # 데이터 부족 여부를 먼저 확인한다.
-    required_values = [ma20, ma60, ret20, ret60, vol_ratio]
-    data_ready = (
-        len(df) >= 65
-        and all(valid_number(v) for v in required_values)
-    )
-
-    stages = {
-        "A1": {
-            "name": "상승 초기 · 조정국면",
-            "action": "회복 신호를 관찰하고 매수 근거를 점검합니다.",
-            "color": "#16A34A",
-        },
-        "A2": {
-            "name": "상승 중반 · 동행국면",
-            "action": "추세를 관찰하며 보유 논리와 목표 비중을 점검합니다.",
-            "color": "#059669",
-        },
-        "A3": {
-            "name": "상승 후반 · 과장국면",
-            "action": "추가 상승을 단정하지 말고 분할 매도 계획을 검토합니다.",
-            "color": "#D97706",
-        },
-        "B1": {
-            "name": "하락 초기 · 조정국면",
-            "action": "추세 약화 여부를 확인하고 보유 위험을 재점검합니다.",
-            "color": "#EA580C",
-        },
-        "B2": {
-            "name": "하락 중반 · 동행국면",
-            "action": "하락 추세와 기업의 기초체력을 구분해 판단합니다.",
-            "color": "#DC2626",
-        },
-        "B3": {
-            "name": "하락 후반 · 과장국면",
-            "action": "매수 후보를 검토할 수 있지만 바닥 확정으로 보지 않습니다.",
-            "color": "#2563EB",
-        },
-    }
-
-    stage = None
-    reasons = []
-    caution = []
-
-    if not data_ready:
-        st.warning(
-            "판독에 필요한 가격 데이터가 충분하지 않습니다. "
-            "최소 관측 기간을 확보한 뒤 국면을 표시합니다."
-        )
-    else:
-        # 상승 후반: 추세가 강한 가운데 과열 신호가 누적되는지 확인
-        overheat_score = 0
-        if ret60 >= 25:
-            overheat_score += 1
-            reasons.append(f"60일 수익률 {ret60:+.1f}%: 상승 폭 확대")
-        if ret20 >= 12:
-            overheat_score += 1
-            reasons.append(f"20일 수익률 {ret20:+.1f}%: 단기 급등")
-        if stretch60 is not None and stretch60 >= 18:
-            overheat_score += 1
-            reasons.append(f"60일선 대비 이격 {stretch60:+.1f}%")
-        if stretch20 is not None and stretch20 >= 10:
-            overheat_score += 1
-            reasons.append(f"20일선 대비 이격 {stretch20:+.1f}%")
-        if vol_ratio >= 1.5:
-            overheat_score += 1
-            reasons.append(f"거래량이 20일 평균의 {vol_ratio:.2f}배")
-
-        # 급락·하락 후반 신호
-        severe_decline = (
-            ret60 <= -20
-            and drawdown60 is not None
-            and drawdown60 <= -20
-        )
-        downtrend = (
-            close_now < float(ma20)
-            and float(ma20) < float(ma60)
-        )
-        weakening = (
-            close_now < float(ma20)
-            and (not ma20_rising or not ma60_rising)
-        )
-
-        # 우선순위: 극단적 하락 → 하락 추세 → 상승 과열 → 일반 추세
-        if severe_decline and vol_ratio >= 1.2:
-            stage = "B3"
-            reasons = [
-                f"60일 수익률 {ret60:+.1f}%",
-                f"60일 고점 대비 {drawdown60:+.1f}%",
-                f"거래량 {vol_ratio:.2f}배",
-            ]
-        elif downtrend:
-            stage = "B2" if ret60 <= -10 else "B1"
-            reasons = [
-                f"종가와 이동평균선 관계: 종가 < 20일선 < 60일선",
-                f"20일 수익률 {ret20:+.1f}%",
-                f"60일 수익률 {ret60:+.1f}%",
-            ]
-        elif weakening:
-            stage = "B1"
-            reasons = [
-                "종가가 20일선 아래에 위치",
-                "이동평균선의 상승 동력이 약화",
-            ]
-        elif overheat_score >= 2 and close_now > float(ma20):
-            stage = "A3"
-        elif (
-            close_now > float(ma20)
-            and ma20_rising
-            and ma60_rising
-            and close_now > float(ma60)
-        ):
-            stage = "A2"
-            reasons = [
-                "종가가 20일·60일선 위에 위치",
-                "20일·60일 이동평균선 상승",
-            ]
-        elif close_now > float(ma20) and ma20_rising:
-            stage = "A1"
-            reasons = [
-                "종가가 20일선 위에 위치",
-                "단기 이동평균선 회복 신호",
-            ]
-        elif ret60 < 0:
-            stage = "B2"
-            reasons = [
-                f"60일 수익률 {ret60:+.1f}%",
-                "상승 추세 회복 여부 관찰 필요",
-            ]
-        else:
-            stage = "A1"
-            reasons = [
-                "뚜렷한 추세 분류 신호가 충분하지 않음",
-                "초기 회복 가능성을 관찰하되 확정 판단은 보류",
-            ]
-
-        # A3를 단일 신호로 확정하지 않도록 데이터의 한계를 표시
-        if stage == "A3":
-            if overheat_score >= 3:
-                caution.append("복수의 과열 신호가 동시에 관측됩니다.")
-            else:
-                caution.append("일부 과열 신호가 관측됩니다. 강한 과열 확정은 아닙니다.")
-
-        if not valid_number(ma120):
-            caution.append("120일 이동평균선 자료가 부족합니다.")
-
-    # 달걀 모형의 6개 위치
-    egg_positions = {
-        "A1": (-1.0, -0.35),
-        "A2": (-0.75, 0.55),
-        "A3": (0.75, 0.55),
-        "B1": (1.0, -0.35),
-        "B2": (0.55, -0.85),
-        "B3": (-0.55, -0.85),
-    }
-
-    fig_egg = go.Figure()
-
-    # 달걀 외곽선
-    theta = [i * 2 * 3.141592653589793 / 120 for i in range(121)]
-    egg_x = [1.15 * __import__("math").cos(t) for t in theta]
-    egg_y = [1.45 * __import__("math").sin(t) for t in theta]
-
-    fig_egg.add_trace(go.Scatter(
-        x=egg_x,
-        y=egg_y,
-        mode="lines",
-        line={"color": "#94A3B8", "width": 2},
-        hoverinfo="skip",
-        showlegend=False,
-    ))
-
-    for code, (x, y) in egg_positions.items():
-        info = stages[code]
-        is_current = code == stage
-        fig_egg.add_trace(go.Scatter(
-            x=[x],
-            y=[y],
-            mode="markers+text",
-            text=[f"{code}<br>{info['name'].split(' · ')[0]}"],
-            textposition="middle center",
-            textfont={
-                "size": 12 if is_current else 10,
-                "color": "#111827",
-            },
-            marker={
-                "size": 43 if is_current else 34,
-                "color": info["color"] if is_current else "#E5E7EB",
-                "line": {
-                    "color": "#111827" if is_current else "#94A3B8",
-                    "width": 3 if is_current else 1,
-                },
-            },
-            hovertemplate=f"{code} · {info['name']}<extra></extra>",
-            showlegend=False,
-        ))
-
-    fig_egg.update_layout(
-        height=450,
-        margin={"l": 10, "r": 10, "t": 10, "b": 10},
-        xaxis={"visible": False, "range": [-1.5, 1.5]},
-        yaxis={"visible": False, "range": [-1.8, 1.8], "scaleanchor": "x"},
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-    )
-
-    left, right = st.columns([1.15, 1])
-
-    with left:
-        st.plotly_chart(fig_egg, use_container_width=True)
-
-    with right:
-        if stage:
-            current = stages[stage]
-            st.markdown(f"### 현재 추정 위치: {stage}")
-            st.markdown(f"**{current['name']}**")
-            st.write(current["action"])
-
-            if stage == "A3":
-                st.warning(
-                    "욕심 절제 체크: 추가 상승을 기대하더라도 "
-                    "보유 물량 일부를 매도할 조건과 비중을 미리 검토하세요. "
-                    "이 표시는 매도 지시가 아닙니다."
-                )
-            elif stage == "B3":
-                st.info(
-                    "급락은 저점 확정과 다릅니다. "
-                    "매수 여부를 검토하더라도 분할 접근과 추가 하락 위험을 확인하세요."
-                )
-            elif stage in ("B1", "B2"):
-                st.warning("추세 약화 신호입니다. 기존 투자 가설이 유지되는지 재검토하세요.")
-            else:
-                st.info("추세를 관찰하되 현재 단계가 계속 유지된다고 가정하지 마세요.")
-        else:
-            st.info("데이터가 충분하지 않아 현재 단계를 표시하지 않습니다.")
-
-    st.subheader("현재 판독의 근거")
-    if data_ready and stage:
-        st.write(f"**판독 기준일:** {df.index[-1].strftime('%Y-%m-%d')}")
-        st.write(f"**종가:** {close_now:,.2f}")
-        st.write(f"**20일 수익률:** {ret20:+.2f}%")
-        st.write(f"**60일 수익률:** {ret60:+.2f}%")
-        st.write(
-            f"**20일선 대비 이격:** "
-            f"{stretch20:+.2f}%" if stretch20 is not None else "**20일선 대비 이격:** 자료 없음"
-        )
-        st.write(
-            f"**60일선 대비 이격:** "
-            f"{stretch60:+.2f}%" if stretch60 is not None else "**60일선 대비 이격:** 자료 없음"
-        )
-        st.write(f"**거래량 / 20일 평균:** {vol_ratio:.2f}배")
-        st.write(
-            f"**60일 고점 대비 하락률:** "
-            f"{drawdown60:+.2f}%" if drawdown60 is not None else "**60일 고점 대비 하락률:** 자료 없음"
-        )
-
-        st.markdown("**단계 판독 근거**")
-        for reason in reasons:
-            st.write(f"- {reason}")
-        for note in caution:
-            st.caption(f"주의: {note}")
-    else:
-        st.caption("가격 데이터가 충분해지면 추세·과열 지표를 함께 표시합니다.")
-
-    st.divider()
-    st.subheader("욕심을 줄이는 매매 규칙")
-    st.write(
-        "1. A3로 이동하면 추가 상승을 예측하기보다 분할 매도 계획을 검토합니다.\n"
-        "2. A3 신호가 처음 나타났을 때 즉시 전량 매도하도록 설계하지 않습니다.\n"
-        "3. 신호가 반복되거나 추세가 약해지면 사전에 정한 매도 비중과 조건을 재점검합니다.\n"
-        "4. A1·A2라고 해서 무조건 보유하거나 추가 매수하지 않습니다.\n"
-        "5. 기업의 기초체력과 투자 가설이 훼손되면 달걀 위치만으로 보유를 정당화하지 않습니다."
-    )
-
-    st.subheader("현재 연결 상태")
-    st.write(
-        "연결됨: 가격, 이동평균선, 20·60일 수익률, 거래량. "
-        "미연결: 외국인·기관·개인 수급, 공매도, 신용융자, 선물·옵션 포지셔닝."
-    )
+    st.subheader("시장 국면 분석")
     st.caption(
-        "중요: 현재 단계는 가격 기반의 휴리스틱 추정입니다. "
-        "투자심리를 직접 측정한 결과가 아니며, 역사적 고점·저점 예측이나 "
-        "검증된 매매 성과를 보장하지 않습니다. A3는 분할 매도를 검토하는 경고 구간이지 "
-        "자동 매도 신호가 아닙니다."
+        "시장 심리를 중심에 두고, 가격 행동으로 간접 관측한 뒤 "
+        "수급·실적·거시 자료로 검증해 나가는 분석 화면입니다. "
+        "현재 연결된 가격 자료만으로 실제 대중심리를 확정하지 않습니다."
     )
+
+    market_name, market_ticker = stock_search_widget(
+        "market_regime_search",
+        default_ticker=ticker,
+        default_name=""
+    )
+    market_period_label = st.selectbox(
+        "분석 기간",
+        list(PERIODS.keys()),
+        index=list(PERIODS.keys()).index("1년"),
+        key="market_regime_period"
+    )
+    market_period = PERIODS[market_period_label]
+
+    if not market_ticker:
+        st.warning("먼저 분석할 종목을 검색하고 선택해 주세요.")
+    else:
+        try:
+            market_prices, fetch_elapsed = get_prices(market_ticker, market_period)
+            if market_prices is None or market_prices.empty:
+                st.warning("선택한 종목의 가격 데이터가 없습니다.")
+            else:
+                market_last = market_prices.iloc[-1]
+                market_close = float(market_last["Close"])
+                market_date = str(market_prices.index[-1].date())
+                ma20 = market_last["MA20"]
+                ma60 = market_last["MA60"]
+                ma120 = market_last["MA120"]
+                ret20 = market_last["Return20"]
+                ret60 = market_last["Return60"]
+                volume_ratio = market_last["VolumeRatio20"]
+
+                st.markdown(f"### {market_name} (`{market_ticker}`)")
+                st.caption(
+                    f"가격 데이터 기준일: {market_date} · 조회 소요: {fetch_elapsed:.2f}초 · "
+                    "가격은 Yahoo Finance 제공 데이터이며 장중·장후 현재가와 다를 수 있습니다."
+                )
+
+                # 핵심 요약
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("최근 일봉 종가", f"{market_close:,.2f}")
+                m2.metric("20거래일 수익률", f"{ret20:+.2f}%" if pd.notna(ret20) else "자료 부족")
+                m3.metric("60거래일 수익률", f"{ret60:+.2f}%" if pd.notna(ret60) else "자료 부족")
+                m4.metric("거래량 / 20일 평균", f"{volume_ratio:.2f}배" if pd.notna(volume_ratio) else "자료 부족")
+
+                # 차트는 국면 판단 화면 상단에 배치해 국면 근거와 함께 확인할 수 있게 함
+                st.subheader("가격 행동: 차트와 거래량")
+                market_mas = st.multiselect(
+                    "차트 이동평균선",
+                    [5, 20, 60, 120, 200],
+                    default=[20, 60, 120],
+                    format_func=lambda n: f"{n}일선",
+                    key="market_regime_mas"
+                )
+                market_volume = st.checkbox("차트에 거래량 표시", True, key="market_regime_volume")
+                st.plotly_chart(
+                    make_chart(market_prices, market_mas, market_volume),
+                    use_container_width=True,
+                    config={"scrollZoom": True, "displaylogo": False, "responsive": True},
+                    key="market_regime_price_chart"
+                )
+
+                # 1) 가격 행동: 심리를 직접 측정하지 않고, 시장 행동에 남은 흔적을 관측
+                st.subheader("① 시장 심리의 간접 신호")
+                trend_label, trend_desc, trend_signals = market_read(market_prices)
+                st.markdown(f"**가격 추세 판독: {trend_label}**")
+                st.write(trend_desc)
+
+                distance_ma120 = (
+                    (market_close / float(ma120) - 1) * 100
+                    if pd.notna(ma120) and float(ma120) != 0 else None
+                )
+                above_ma20 = bool(pd.notna(ma20) and market_close > float(ma20))
+                above_ma60 = bool(pd.notna(ma60) and market_close > float(ma60))
+                above_ma120 = bool(pd.notna(ma120) and market_close > float(ma120))
+                strong_momentum = bool(pd.notna(ret20) and pd.notna(ret60) and ret20 > 8 and ret60 > 15)
+                volume_spike = bool(pd.notna(volume_ratio) and volume_ratio >= 1.5)
+                weak_momentum = bool(pd.notna(ret20) and pd.notna(ret60) and ret20 < 0 and ret60 < 0)
+                below_short_medium = bool(pd.notna(ma20) and pd.notna(ma60) and market_close < ma20 and market_close < ma60)
+
+                signal_rows = [
+                    ["추세 구조", "20·60일선 위" if above_ma20 and above_ma60 else ("20·60일선 아래" if pd.notna(ma20) and pd.notna(ma60) and not above_ma20 and not above_ma60 else "혼합 / 자료 부족"), "추세 방향을 관측하며 심리 자체를 확정하지 않음"],
+                    ["중기 추세 대비 위치", f"120일선 대비 {distance_ma120:+.1f}%" if distance_ma120 is not None else "자료 부족", "장기 평균에서 멀어진 정도를 확인"],
+                    ["최근 상승 탄력", "강한 상승 탄력 관측" if strong_momentum else ("20·60일 수익률 모두 음수" if weak_momentum else "뚜렷한 극단 신호 없음"), "강한 추세와 과열을 동일시하지 않음"],
+                    ["거래량 반응", f"20일 평균의 {volume_ratio:.2f}배" if pd.notna(volume_ratio) else "자료 부족", "거래량 급증은 방향만으로 해석하지 않음"],
+                ]
+                st.dataframe(
+                    pd.DataFrame(signal_rows, columns=["관측 영역", "현재 관측", "해석 원칙"]),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # 단일 지표가 아니라 서로 다른 가격 행동 신호가 겹치는지 확인
+                overheating_evidence = []
+                if strong_momentum:
+                    overheating_evidence.append("20·60거래일 수익률이 모두 강한 상승 구간")
+                if distance_ma120 is not None and distance_ma120 >= 20:
+                    overheating_evidence.append("종가가 120일선보다 20% 이상 위")
+                if volume_spike:
+                    overheating_evidence.append("거래량이 20일 평균의 1.5배 이상")
+
+                downside_evidence = []
+                if weak_momentum:
+                    downside_evidence.append("20·60거래일 수익률이 모두 음수")
+                if below_short_medium:
+                    downside_evidence.append("종가가 20일선과 60일선 아래")
+                if pd.notna(volume_ratio) and volume_ratio >= 1.5 and weak_momentum:
+                    downside_evidence.append("약세 구간에서 거래량 증가")
+
+                if len(overheating_evidence) >= 2:
+                    psychology_read = "상승 과열 가능성 점검 필요"
+                    psychology_detail = "가격 행동에서 상승 탄력·평균선 이격·거래량 중 여러 신호가 겹칩니다. 이것만으로 고점이나 하락 전환을 뜻하지는 않습니다."
+                    st.warning(psychology_read + " — " + psychology_detail)
+                    confidence_note = "가격 행동 신호 일부가 같은 방향을 가리킴. 직접 심리·수급 자료가 없어 신뢰도는 제한적."
+                elif len(downside_evidence) >= 2:
+                    psychology_read = "약세·위험 회피 가능성 점검 필요"
+                    psychology_detail = "하락 탄력과 추세 약화가 함께 관측됩니다. 단기 반등 여부만으로 국면 전환을 확정하지 않습니다."
+                    st.warning(psychology_read + " — " + psychology_detail)
+                    confidence_note = "약세 관련 가격 행동 신호가 겹침. 직접 심리·수급 자료가 없어 신뢰도는 제한적."
+                else:
+                    psychology_read = "심리 국면 판단 보류"
+                    psychology_detail = "현재 연결된 가격 행동만으로 과열 또는 공포가 충분히 확인되지 않습니다. 수급·심리 조사·실적 등 독립 근거가 필요합니다."
+                    st.info(psychology_read + " — " + psychology_detail)
+                    confidence_note = "판단을 뒷받침할 독립적인 심리·수급 자료가 아직 연결되지 않음."
+
+                st.markdown("**판단 근거**")
+                if overheating_evidence:
+                    st.write("상승·과열 후보 신호: " + "; ".join(overheating_evidence))
+                if downside_evidence:
+                    st.write("약세 후보 신호: " + "; ".join(downside_evidence))
+                if not overheating_evidence and not downside_evidence:
+                    st.write("현재 규칙에서 여러 신호가 동시에 충족되지 않았습니다.")
+                st.caption("판단 신뢰도: " + confidence_note)
+
+                # 2) 코스톨라니 달걀: 이론적 틀과 관측 자료를 분리
+                st.subheader("② 코스톨라니 달걀 관점")
+                st.caption(
+                    "아래 표시는 코스톨라니의 실제 심리 단계를 측정한 결과가 아니라, "
+                    "현재 가격 행동을 이론적 틀과 비교하기 위한 참고용 요약입니다."
+                )
+                egg_fig = go.Figure()
+                egg_fig.add_shape(type="circle", x0=0.12, y0=0.10, x1=0.88, y1=0.90,
+                                  line=dict(color="#64748B", width=2), fillcolor="rgba(148,163,184,0.08)")
+                egg_fig.add_shape(type="line", x0=0.50, y0=0.12, x1=0.50, y1=0.88,
+                                  line=dict(color="#94A3B8", dash="dot"))
+                egg_fig.add_shape(type="line", x0=0.14, y0=0.50, x1=0.86, y1=0.50,
+                                  line=dict(color="#94A3B8", dash="dot"))
+                egg_fig.add_trace(go.Scatter(
+                    x=[0.30, 0.50, 0.70, 0.50, 0.30], y=[0.70, 0.82, 0.50, 0.18, 0.70],
+                    mode="lines+markers", name="개념적 사이클",
+                    line=dict(color="#64748B", width=2), marker=dict(size=7), hoverinfo="skip"
+                ))
+                if len(overheating_evidence) >= 2:
+                    egg_stage, egg_x, egg_y = "상승 과열 가능성 점검", 0.70, 0.75
+                elif len(downside_evidence) >= 2:
+                    egg_stage, egg_x, egg_y = "약세 가능성 점검", 0.68, 0.28
+                elif above_ma20 and above_ma60:
+                    egg_stage, egg_x, egg_y = "상승 추세 관측 · 심리 판단 보류", 0.36, 0.72
+                elif below_short_medium:
+                    egg_stage, egg_x, egg_y = "약세 추세 관측 · 심리 판단 보류", 0.64, 0.28
+                else:
+                    egg_stage, egg_x, egg_y = "전환·혼합 · 판단 보류", 0.50, 0.50
+                egg_fig.add_trace(go.Scatter(
+                    x=[egg_x], y=[egg_y], mode="markers+text", name="가격 행동 참고 위치",
+                    text=[market_name], textposition="top center",
+                    marker=dict(size=18, color="#F59E0B", line=dict(color="#FFFFFF", width=2)),
+                    hovertemplate=f"<b>{market_name}</b><br>참고 해석: {egg_stage}<br>기준일: {market_date}<extra></extra>"
+                ))
+                for x, y, label in [(0.50, 0.96, "상승·낙관 가능 영역"), (0.50, 0.04, "하락·공포 가능 영역"), (0.04, 0.50, "회복"), (0.96, 0.50, "약세")]:
+                    egg_fig.add_annotation(x=x, y=y, text=label, showarrow=False)
+                egg_fig.update_layout(
+                    height=420, template="plotly_white", margin=dict(l=20, r=20, t=40, b=30),
+                    xaxis=dict(range=[0, 1], visible=False, fixedrange=True),
+                    yaxis=dict(range=[0, 1], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1),
+                    showlegend=True
+                )
+                st.plotly_chart(egg_fig, use_container_width=True, key="market_egg_cycle")
+                st.markdown(f"**현재 가격 행동 참고: {egg_stage}**")
+                st.write("이 판단은 가격·거래량 기반의 간접 관측입니다. 실제 대중심리·자금 흐름 자료가 연결되기 전에는 코스톨라니 국면을 확정하지 않습니다.")
+
+                # 3) 민스키는 가격 차트만으로 분류하지 않음
+                st.subheader("③ 민스키 금융 불안정 관점")
+                st.info(
+                    "현재 종목별 신용·레버리지·부채 상환 능력 자료가 연결되지 않아 "
+                    "민스키 국면은 **판단 보류**입니다. 주가 상승이나 거래량 증가만으로 "
+                    "투기 금융·폰지 금융 단계라고 분류하지 않습니다."
+                )
+
+                # 4) 다음 데이터 연결 시 검증할 항목을 명시
+                st.subheader("④ 다음 검증 단계")
+                review_rows = [
+                    ["가격 행동", "연결됨", "추세·수익률·거래량으로 간접 관측"],
+                    ["직접 심리 자료", "미연결", "투자심리 조사·변동성·시장 심리 지표"],
+                    ["수급 자료", "미연결", "외국인·기관·개인 흐름, 공매도·대차"],
+                    ["실적·밸류에이션", "미연결", "가격 상승이 이익 전망으로 뒷받침되는지 검증"],
+                    ["거시·신용 자료", "미연결", "금리·유동성·신용 팽창과 레버리지 위험"],
+                ]
+                st.dataframe(pd.DataFrame(review_rows, columns=["분석 영역", "연결 상태", "활용 목적"]),
+                             use_container_width=True, hide_index=True)
+                st.caption(
+                    "이 화면은 매수·매도 신호나 수익 보장을 제공하지 않습니다. "
+                    "데이터가 늘어날 때마다 과거 사례에서 경고의 적시성·오경보 빈도를 검증하고, "
+                    "판단 개선에 도움이 되는 자료만 추가합니다."
+                )
+        except Exception as e:
+            st.error(f"시장 국면 데이터를 불러오지 못했습니다: {e}")
+            st.caption("종목 코드, Yahoo Finance 응답, 데이터 제공 상태를 확인해 주세요.")
 
 with tab_company:
     render_fundamentals(ticker)
