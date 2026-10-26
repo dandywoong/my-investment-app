@@ -607,29 +607,28 @@ with st.sidebar:
     )
 
     # 기본 종목과 확장 종목 목록 통합
-    sidebar_tickers = {**TICKERS, **STOCK_DIRECTORY}
-
-    chosen = st.selectbox(
-        "공통 종목 선택",
-        list(sidebar_tickers.keys()),
-        key="global_ticker_choice"
+        use_custom_ticker = st.checkbox(
+        "종목 코드 직접 입력 사용",
+        value=False,
+        key="use_global_custom_ticker"
     )
 
     custom = st.text_input(
-        "티커 직접 입력 (선택사항)",
+        "직접 입력할 티커",
         placeholder="예: NVDA 또는 005930.KS",
-        key="global_ticker_custom"
+        key="global_ticker_custom",
+        disabled=not use_custom_ticker
     )
 
     ticker = (
         custom.strip().upper()
-        if custom.strip()
+        if use_custom_ticker and custom.strip()
         else sidebar_tickers[chosen]
     )
 
     selected_stock_name = (
         chosen
-        if not custom.strip()
+        if not (use_custom_ticker and custom.strip())
         else next(
             (
                 name for name, symbol in sidebar_tickers.items()
