@@ -1011,7 +1011,7 @@ with tab_chart:
 
 
 with tab_market:
-     render_investor_flow_check(ticker)
+    render_investor_flow_check(ticker)
     st.subheader("시장 국면 분석")
     st.caption(
         "시장 심리를 중심에 두고, 가격 행동으로 간접 관측한 뒤 "
