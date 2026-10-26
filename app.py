@@ -701,134 +701,212 @@ def market_read(df):
         label, desc = "혼합 / 방향 불명확", "이동평균선 관계가 한 방향으로 정렬되지 않았습니다."
     return label, desc, signals
 
-def analyze_chart_with_openai(ticker, stock_name, prices):
-    """계산된 기술 지표를 OpenAI API에 전달해 근거 기반 해석을 생성한다."""
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        try:
-            api_key = str(st.secrets["OPENAI_API_KEY"]).strip()
-        except Exception:
-            api_key = ""
 
-    if not api_key:
-        return None, (
-            "OpenAI API 키가 설정되지 않았습니다. "
-            "Streamlit Cloud의 App settings → Secrets에 "
-            "OPENAI_API_KEY를 설정하세요."
-        )
+def analyze_chart_rules(ticker, stock_name, prices):
+    """외부 API 없이 가격과 기술 지표를 종합하는 규칙 기반 분석."""
 
     if prices is None or prices.empty:
         return None, "분석할 가격 데이터가 없습니다."
 
     last = prices.iloc[-1]
+    close = float(last["Close"])
+    analysis_date = str(prices.index[-1].date())
 
-    def number(value, digits=4):
-        if pd.isna(value):
+    def value(name):
+        if name not in last.index:
             return None
-        return round(float(value), digits)
+        v = last[name]
+        if pd.isna(v):
+            return None
+        return float(v)
 
-    fields = [
-        "Close", "MA20", "MA60", "MA120", "MA200",
-        "Return20", "Return60", "VolumeRatio20",
-        "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
-        "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
-        "BB_Position", "ATR14", "ATR14_Pct",
-    ]
+    def pct_distance(price, ma):
+        if ma is None or ma == 0:
+            return None
+        return (price / ma - 1) * 100
 
-    current = {
-        field: number(last[field])
-        for field in fields
-        if field in prices.columns
-    }
+    ma20 = value("MA20")
+    ma60 = value("MA60")
+    ma120 = value("MA120")
+    ma200 = value("MA200")
+    rsi = value("RSI14")
+    macd = value("MACD")
+    macd_signal = value("MACD_Signal")
+    macd_hist = value("MACD_Hist")
+    bb_upper = value("BB_Upper")
+    bb_lower = value("BB_Lower")
+    bb_position = value("BB_Position")
+    bb_width = value("BB_Width")
+    volume_ratio = value("VolumeRatio20")
+    atr_pct = value("ATR14_Pct")
+    return20 = value("Return20")
+    return60 = value("Return60")
 
-    recent_columns = [
-        c for c in [
-            "Close", "Volume", "RSI14", "MACD",
-            "MACD_Signal", "MACD_Hist", "BB_Width", "ATR14_Pct"
-        ]
-        if c in prices.columns
-    ]
-    recent = prices[recent_columns].tail(20).copy()
-    recent.index = recent.index.strftime("%Y-%m-%d")
-    recent_data = [
-        {"date": date, **{
-            key: number(value)
-            for key, value in row.items()
-        }}
-        for date, row in recent.iterrows()
-    ]
+    positive = []
+    negative = []
+    neutral = []
+    score = 0
+    valid_signals = 0
 
-    prompt_data = {
+    # 1. 추세: 종가와 이동평균선의 관계
+    if ma20 is not None:
+        valid_signals += 1
+        if close > ma20:
+            score += 1
+            positive.append(
+                f"종가가 20일 이동평균선 위입니다 "
+                f"(종가 {close:,.2f}, MA20 {ma20:,.2f})."
+            )
+        else:
+            score -= 1
+            negative.append(
+                f"종가가 20일 이동평균선 아래입니다 "
+                f"(종가 {close:,.2f}, MA20 {ma20:,.2f})."
+            )
+
+    if ma20 is not None and ma60 is not None:
+        valid_signals += 1
+        if ma20 > ma60:
+            score += 1
+            positive.append("20일선이 60일선 위에 있어 단·중기 추세가 우위 방향입니다.")
+        elif ma20 < ma60:
+            score -= 1
+            negative.append("20일선이 60일선 아래에 있어 단기 추세가 약합니다.")
+        else:
+            neutral.append("20일선과 60일선이 거의 같은 수준입니다.")
+
+    if ma60 is not None and ma120 is not None:
+        valid_signals += 1
+        if ma60 > ma120:
+            score += 1
+            positive.append("60일선이 120일선 위에 있습니다.")
+        elif ma60 < ma120:
+            score -= 1
+            negative.append("60일선이 120일선 아래에 있습니다.")
+        else:
+            neutral.append("60일선과 120일선의 관계가 중립적입니다.")
+
+    # 2. 중기 수익률
+    if return20 is not None:
+        valid_signals += 1
+        if return20 > 0:
+            score += 1
+            positive.append(f"20거래일 수익률이 {return20:+.2f}%입니다.")
+        elif return20 < 0:
+            score -= 1
+            negative.append(f"20거래일 수익률이 {return20:+.2f}%입니다.")
+        else:
+            neutral.append("20거래일 수익률이 거의 0%입니다.")
+
+    if return60 is not None:
+        valid_signals += 1
+        if return60 > 0:
+            score += 1
+            positive.append(f"60거래일 수익률이 {return60:+.2f}%입니다.")
+        elif return60 < 0:
+            score -= 1
+            negative.append(f"60거래일 수익률이 {return60:+.2f}%입니다.")
+        else:
+            neutral.append("60거래일 수익률이 거의 0%입니다.")
+
+    # 3. MACD 모멘텀
+    if macd is not None and macd_signal is not None:
+        valid_signals += 1
+        if macd > macd_signal:
+            score += 1
+            positive.append("MACD가 시그널선 위에 있습니다.")
+        elif macd < macd_signal:
+            score -= 1
+            negative.append("MACD가 시그널선 아래에 있습니다.")
+        else:
+            neutral.append("MACD와 시그널선이 같은 수준입니다.")
+
+    if macd_hist is not None:
+        if macd_hist > 0:
+            positive.append(f"MACD 히스토그램이 양수입니다 ({macd_hist:.4f}).")
+        elif macd_hist < 0:
+            negative.append(f"MACD 히스토그램이 음수입니다 ({macd_hist:.4f}).")
+
+    # 4. RSI: 과매수·과매도는 반전 확정 신호가 아님
+    if rsi is not None:
+        if rsi >= 70:
+            neutral.append(f"RSI는 {rsi:.1f}으로 과매수 참고 구간입니다. 강한 상승 추세가 지속될 수도 있습니다.")
+        elif rsi <= 30:
+            neutral.append(f"RSI는 {rsi:.1f}으로 과매도 참고 구간입니다. 추가 하락 가능성도 배제할 수 없습니다.")
+        elif rsi >= 50:
+            positive.append(f"RSI는 {rsi:.1f}으로 50 위에 있습니다.")
+        else:
+            negative.append(f"RSI는 {rsi:.1f}으로 50 아래에 있습니다.")
+
+    # 5. 볼린저 밴드 위치
+    if bb_position is not None:
+        if bb_position > 1:
+            neutral.append("종가가 볼린저 상단 밴드 위에 있습니다. 강한 추세 또는 과열 가능성을 함께 고려해야 합니다.")
+        elif bb_position < 0:
+            neutral.append("종가가 볼린저 하단 밴드 아래에 있습니다. 약세 지속과 기술적 반등 가능성을 구분해야 합니다.")
+        elif bb_position >= 0.8:
+            neutral.append("종가가 볼린저 밴드 상단 영역에 있습니다.")
+        elif bb_position <= 0.2:
+            neutral.append("종가가 볼린저 밴드 하단 영역에 있습니다.")
+        else:
+            neutral.append("종가는 볼린저 밴드 중간 영역에 있습니다.")
+
+    if bb_width is not None:
+        neutral.append(f"볼린저 밴드 폭은 {bb_width:.2f}%입니다. 과거 폭과 비교해야 수축·확대를 판단할 수 있습니다.")
+
+    # 6. 거래량
+    if volume_ratio is not None:
+        if volume_ratio >= 1.5:
+            neutral.append(f"거래량이 20일 평균의 {volume_ratio:.2f}배로 증가했습니다. 가격 방향과 함께 확인해야 합니다.")
+        elif volume_ratio <= 0.7:
+            neutral.append(f"거래량이 20일 평균의 {volume_ratio:.2f}배로 낮습니다.")
+        else:
+            neutral.append(f"거래량은 20일 평균의 {volume_ratio:.2f}배입니다.")
+
+    # 7. ATR은 방향이 아닌 변동성
+    if atr_pct is not None:
+        neutral.append(f"ATR은 종가의 {atr_pct:.2f}%입니다. 이는 변동 폭 참고치이며 방향 신호는 아닙니다.")
+
+    # 종합 판정: 점수는 방향 예측 확률이 아니라 단순 신호 집계
+    if valid_signals < 3:
+        verdict = "자료 부족 · 종합 판정 보류"
+    elif score >= 3:
+        verdict = "상승 우위 신호"
+    elif score <= -3:
+        verdict = "하락 우위 신호"
+    else:
+        verdict = "혼합 신호 · 방향 불명확"
+
+    if valid_signals:
+        score_text = f"{score:+d}점 / 유효 신호 {valid_signals}개"
+    else:
+        score_text = "유효 신호 없음"
+
+    result = {
+        "date": analysis_date,
         "ticker": ticker,
-        "stock_name": stock_name,
-        "price_data_as_of": str(prices.index[-1].date()),
-        "indicator_values_latest": current,
-        "recent_20_sessions": recent_data,
+        "name": stock_name,
+        "close": close,
+        "verdict": verdict,
+        "score": score_text,
+        "positive": positive,
+        "negative": negative,
+        "neutral": neutral,
+        "return20": return20,
+        "return60": return60,
+        "rsi": rsi,
+        "volume_ratio": volume_ratio,
+        "atr_pct": atr_pct,
+        "bb_upper": bb_upper,
+        "bb_lower": bb_lower,
+        "ma20": ma20,
+        "ma60": ma60,
+        "ma120": ma120,
+        "ma200": ma200,
     }
 
-    instructions = """
-너는 투자 리서치 보조 분석가다. 제공된 데이터만 근거로 한국어로 분석한다.
+    return result, None
 
-반드시 다음 순서로 작성한다.
-1. 핵심 요약: 추세와 모멘텀의 현재 상태
-2. 상승을 지지하는 근거: 실제 입력값을 인용
-3. 하락 또는 반대 근거: 실제 입력값을 인용
-4. 변동성 및 거래량: 위험과 해석 한계
-5. 조건부 시나리오: 어떤 관측이 나오면 현재 해석이 강화되거나 약화되는지
-6. 데이터 한계와 신뢰도: 누락 데이터, 기준일, 해석상 제약
-
-규칙:
-- 입력에 없는 가격, 실적, 뉴스, 수급, 목표가를 만들지 않는다.
-- 지표값과 해석을 구분한다.
-- RSI 70/30, 볼린저 밴드 접촉, MACD 교차만으로 반전을 확정하지 않는다.
-- ATR은 방향이 아니라 변동 폭을 나타낸다.
-- 상승 근거와 하락 근거가 충돌하면 이를 명시한다.
-- 매수·매도를 단정하지 말고 조건부로 설명한다.
-- 미래 가격이나 수익률을 확정적으로 예측하지 않는다.
-- 입력 데이터가 부족하면 판단을 보류한다.
-- 제공된 데이터의 마지막 날짜를 분석 기준일로 명시한다.
-"""
-
-    request_body = {
-        "model": "gpt-6.1-sol",
-        "instructions": instructions,
-        "input": json.dumps(prompt_data, ensure_ascii=False, allow_nan=False),
-        "max_output_tokens": 1400,
-    }
-
-    request = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
-        data=json.dumps(request_body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            result = json.loads(response.read().decode("utf-8"))
-
-        output_text = result.get("output_text", "").strip()
-        if not output_text:
-            parts = []
-            for item in result.get("output", []):
-                for content in item.get("content", []):
-                    if content.get("type") == "output_text":
-                        parts.append(content.get("text", ""))
-            output_text = "\n".join(parts).strip()
-
-        if not output_text:
-            return None, "AI 응답에 분석 본문이 없습니다."
-
-        return output_text, None
-
-    except urllib.error.HTTPError as e:
-        details = e.read().decode("utf-8", errors="replace")[:1000]
-        return None, f"OpenAI API 오류 ({e.code}): {details}"
-    except Exception as e:
-        return None, f"AI 분석 요청 실패: {type(e).__name__}: {e}"
 
 
 def render_fundamentals(ticker):
@@ -1316,34 +1394,114 @@ with tab_chart:
 
     
     st.divider()
-    st.subheader("AI 차트 해석")
+    
+    st.divider()
+    st.subheader("규칙 기반 기술적 분석")
     st.caption(
-        "선택 종목의 가격과 계산된 기술 지표를 AI가 해석합니다. "
-        "분석은 마지막 가격 데이터 날짜를 기준으로 하며, "
-        "연결되지 않은 뉴스·수급·재무정보는 분석 근거로 사용하지 않습니다."
+        "외부 AI API 없이 가격과 계산된 지표를 종합합니다. "
+        "점수는 확률이나 예상 수익률이 아닙니다."
     )
 
     if st.button(
-        "현재 종목 AI 분석 실행",
-        key=f"ai_chart_analysis_{ticker}_{period}",
+        "현재 종목 무료 분석 실행",
+        key=f"rule_chart_analysis_{ticker}_{period}",
         type="primary",
     ):
-        with st.spinner("지표를 종합해 AI가 분석 중입니다..."):
-            ai_result, ai_error = analyze_chart_with_openai(
-                ticker,
-                selected_stock_name,
-                prices,
+        analysis, analysis_error = analyze_chart_rules(
+            ticker,
+            selected_stock_name,
+            prices,
+        )
+
+        if analysis_error:
+            st.error(analysis_error)
+        else:
+            st.markdown(
+                f"### {analysis['name']} · {analysis['verdict']}"
+            )
+            st.caption(
+                f"티커: {analysis['ticker']} · "
+                f"기준일: {analysis['date']} · "
+                f"최근 종가: {analysis['close']:,.2f}"
+            )
+            st.write(
+                f"**단순 신호 집계:** {analysis['score']}"
             )
 
-        if ai_error:
-            st.error(ai_error)
-        else:
-            st.markdown(f"**분석 기준일:** {prices.index[-1].date()}")
-            st.markdown(ai_result)
-            st.caption(
-                "AI 분석은 제공된 데이터에 기반한 참고 자료입니다. "
-                "계산 오류나 해석 오류가 있을 수 있으며 투자 판단을 보장하지 않습니다."
+            col1, col2, col3 = st.columns(3)
+            col1.metric(
+                "RSI(14)",
+                f"{analysis['rsi']:.1f}"
+                if analysis["rsi"] is not None else "자료 부족",
             )
+            col2.metric(
+                "20일 수익률",
+                f"{analysis['return20']:+.2f}%"
+                if analysis["return20"] is not None else "자료 부족",
+            )
+            col3.metric(
+                "ATR / 종가",
+                f"{analysis['atr_pct']:.2f}%"
+                if analysis["atr_pct"] is not None else "자료 부족",
+            )
+
+            st.markdown("#### 상승을 지지하는 근거")
+            if analysis["positive"]:
+                for item in analysis["positive"]:
+                    st.write(f"- {item}")
+            else:
+                st.write("- 확인된 상승 근거가 없거나 데이터가 부족합니다.")
+
+            st.markdown("#### 하락 또는 약세 근거")
+            if analysis["negative"]:
+                for item in analysis["negative"]:
+                    st.write(f"- {item}")
+            else:
+                st.write("- 확인된 하락 근거가 없거나 데이터가 부족합니다.")
+
+            st.markdown("#### 추가 관측 및 해석 한계")
+            if analysis["neutral"]:
+                for item in analysis["neutral"]:
+                    st.write(f"- {item}")
+            else:
+                st.write("- 추가 관측 신호가 없습니다.")
+
+            st.markdown("#### 주요 가격 기준")
+            price_levels = []
+            for label, key in [
+                ("MA20", "ma20"),
+                ("MA60", "ma60"),
+                ("MA120", "ma120"),
+                ("MA200", "ma200"),
+                ("볼린저 상단", "bb_upper"),
+                ("볼린저 하단", "bb_lower"),
+            ]:
+                val = analysis[key]
+                if val is not None:
+                    price_levels.append({
+                        "기준": label,
+                        "가격": round(val, 4),
+                        "종가와 차이(%)": round(
+                            (val / analysis["close"] - 1) * 100, 2
+                        ) if analysis["close"] else None,
+                    })
+
+            if price_levels:
+                st.dataframe(
+                    pd.DataFrame(price_levels),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.info("가격 기준선을 계산할 데이터가 부족합니다.")
+
+            st.caption(
+                "이 결과는 사전에 정의한 규칙의 기계적 집계입니다. "
+                "백테스트로 검증된 매매 전략이나 매수·매도 권고가 아닙니다."
+            )
+
+    rsi_fig = go.Figure()
+
 
     rsi_fig = go.Figure()
     rsi_fig.add_trace(
