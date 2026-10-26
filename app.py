@@ -1151,59 +1151,34 @@ with tab_market:
                 if pd.notna(volume_ratio) and volume_ratio >= 1.5 and weak_momentum:
                     downside_evidence.append("약세 구간에서 거래량 증가")
 
-                if len(overheating_evidence) >= 2:
-                    psychology_read = "상승 과열 가능성 점검 필요"
-                    psychology_detail = "가격 행동에서 상승 탄력·평균선 이격·거래량 중 여러 신호가 겹칩니다. 이것만으로 고점이나 하락 전환을 뜻하지는 않습니다."
-                    st.warning(psychology_read + " — " + psychology_detail)
-                    confidence_note = "가격 행동 신호 일부가 같은 방향을 가리킴. 직접 심리·수급 자료가 없어 신뢰도는 제한적."
-                elif len(downside_evidence) >= 2:
-                    psychology_read = "약세·위험 회피 가능성 점검 필요"
-                    psychology_detail = "하락 탄력과 추세 약화가 함께 관측됩니다. 단기 반등 여부만으로 국면 전환을 확정하지 않습니다."
-                    st.warning(psychology_read + " — " + psychology_detail)
-                    confidence_note = "약세 관련 가격 행동 신호가 겹침. 직접 심리·수급 자료가 없어 신뢰도는 제한적."
-                else:
-                    psychology_read = "심리 국면 판단 보류"
-                    psychology_detail = "현재 연결된 가격 행동만으로 과열 또는 공포가 충분히 확인되지 않습니다. 수급·심리 조사·실적 등 독립 근거가 필요합니다."
-                    st.info(psychology_read + " — " + psychology_detail)
-                    confidence_note = "판단을 뒷받침할 독립적인 심리·수급 자료가 아직 연결되지 않음."
+                
+                # 가격 행동을 연속 좌표로 변환한다.
+                # 좌표는 시각화용 정규화 값이며 실제 투자심리를 직접 측정하지 않는다.
+                def bounded_ratio(value, scale):
+                    if value is None or pd.isna(value):
+                        return 0.0
+                    return max(-1.0, min(1.0, float(value) / scale))
 
-                st.markdown("**판단 근거**")
-                if overheating_evidence:
-                    st.write("상승·과열 후보 신호: " + "; ".join(overheating_evidence))
-                if downside_evidence:
-                    st.write("약세 후보 신호: " + "; ".join(downside_evidence))
-                if not overheating_evidence and not downside_evidence:
-                    st.write("현재 규칙에서 여러 신호가 동시에 충족되지 않았습니다.")
-                st.caption("판단 신뢰도: " + confidence_note)
+                # 60거래일 수익률이 양수일수록 회복 쪽,
+                # 음수일수록 약세 쪽으로 표시한다.
+                egg_x = 0.50 - 0.32 * bounded_ratio(ret60, 30)
 
-                # 2) 코스톨라니 달걀: 이론적 틀과 관측 자료를 분리
-                st.subheader("② 코스톨라니 달걀 관점")
-                st.caption(
-                    "아래 표시는 코스톨라니의 실제 심리 단계를 측정한 결과가 아니라, "
-                    "현재 가격 행동을 이론적 틀과 비교하기 위한 참고용 요약입니다."
-                )
-                egg_fig = go.Figure()
-                egg_fig.add_shape(type="circle", x0=0.12, y0=0.10, x1=0.88, y1=0.90,
-                                  line=dict(color="#64748B", width=2), fillcolor="rgba(148,163,184,0.08)")
-                egg_fig.add_shape(type="line", x0=0.50, y0=0.12, x1=0.50, y1=0.88,
-                                  line=dict(color="#94A3B8", dash="dot"))
-                egg_fig.add_shape(type="line", x0=0.14, y0=0.50, x1=0.86, y1=0.50,
-                                  line=dict(color="#94A3B8", dash="dot"))
-                egg_fig.add_trace(go.Scatter(
-                    x=[0.30, 0.50, 0.70, 0.50, 0.30], y=[0.70, 0.82, 0.50, 0.18, 0.70],
-                    mode="lines+markers", name="개념적 사이클",
-                    line=dict(color="#64748B", width=2), marker=dict(size=7), hoverinfo="skip"
-                ))
+                # 120일선보다 높을수록 위쪽,
+                # 낮을수록 아래쪽에 표시한다.
+                egg_y = 0.50 + 0.32 * bounded_ratio(distance_ma120, 30)
+
+                # 국면 설명은 기존 가격 행동 규칙을 유지한다.
                 if len(overheating_evidence) >= 2:
-                    egg_stage, egg_x, egg_y = "상승 과열 가능성 점검", 0.70, 0.75
+                    egg_stage = "상승 과열 가능성 점검"
                 elif len(downside_evidence) >= 2:
-                    egg_stage, egg_x, egg_y = "약세 가능성 점검", 0.68, 0.28
+                    egg_stage = "약세 가능성 점검"
                 elif above_ma20 and above_ma60:
-                    egg_stage, egg_x, egg_y = "상승 추세 관측 · 심리 판단 보류", 0.36, 0.72
+                    egg_stage = "상승 추세 관측 · 심리 판단 보류"
                 elif below_short_medium:
-                    egg_stage, egg_x, egg_y = "약세 추세 관측 · 심리 판단 보류", 0.64, 0.28
+                    egg_stage = "약세 추세 관측 · 심리 판단 보류"
                 else:
-                    egg_stage, egg_x, egg_y = "전환·혼합 · 판단 보류", 0.50, 0.50
+                    egg_stage = "전환·혼합 · 판단 보류"
+
                 egg_fig.add_trace(go.Scatter(
                     x=[egg_x], y=[egg_y], mode="markers+text", name="가격 행동 참고 위치",
                     text=[market_name], textposition="top center",
