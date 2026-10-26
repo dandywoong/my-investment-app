@@ -1061,6 +1061,7 @@ with tab_market:
                     "가격은 Yahoo Finance 제공 데이터이며 장중·장후 현재가와 다를 수 있습니다."
                 )
 
+                
                 # 핵심 요약
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("최근 일봉 종가", f"{market_close:,.2f}")
@@ -1068,21 +1069,25 @@ with tab_market:
                 m3.metric("60거래일 수익률", f"{ret60:+.2f}%" if pd.notna(ret60) else "자료 부족")
                 m4.metric("거래량 / 20일 평균", f"{volume_ratio:.2f}배" if pd.notna(volume_ratio) else "자료 부족")
 
-                # 차트는 국면 판단 화면 상단에 배치해 국면 근거와 함께 확인할 수 있게 함
+                # 차트는 선택 종목별로 렌더링
                 st.subheader("가격 행동: 차트와 거래량")
                 market_mas = st.multiselect(
                     "차트 이동평균선",
                     [5, 20, 60, 120, 200],
                     default=[20, 60, 120],
                     format_func=lambda n: f"{n}일선",
-                    key="market_regime_mas"
+                    key=f"market_regime_mas_{market_ticker}",
                 )
-                market_volume = st.checkbox("차트에 거래량 표시", True, key="market_regime_volume")
+                market_volume = st.checkbox(
+                    "차트에 거래량 표시",
+                    True,
+                    key=f"market_regime_volume_{market_ticker}",
+                )
                 st.plotly_chart(
                     make_chart(market_prices, market_mas, market_volume),
                     use_container_width=True,
                     config={"scrollZoom": True, "displaylogo": False, "responsive": True},
-                    key="market_regime_price_chart"
+                    key=f"market_regime_price_chart_{market_ticker}",
                 )
 
                 # 1) 가격 행동: 심리를 직접 측정하지 않고, 시장 행동에 남은 흔적을 관측
