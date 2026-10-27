@@ -1161,7 +1161,7 @@ with tab_portfolio:
                 else:
                     save_holding(hticker, hname.strip(), hqty, havg, hcurrency, haccount)
                     st.success("보유 정보가 저장되었습니다. 같은 티커는 기존 보유 정보를 갱신합니다.")
-                    st.rerun()
+                    
     holdings = load_holdings()
     if holdings.empty:
         st.info("등록된 보유 종목이 없습니다. 위에서 종목명·코드·수량·평단을 입력하세요.")
