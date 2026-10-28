@@ -516,7 +516,6 @@ def save_trade(traded_at, ticker, name, side, quantity, price, fee, account, not
                 ))
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_prices(ticker, period):
@@ -619,8 +618,6 @@ def get_prices(ticker, period):
     return df, elapsed
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-
 @st.cache_data(ttl=300, show_spinner=False)
 def latest_close(ticker):
     """최근 종가와 해당 거래일을 반환한다."""
@@ -641,6 +638,7 @@ def latest_close(ticker):
     except Exception:
         return None, None
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_fundamentals(ticker):
     return yf.Ticker(ticker).info
 
@@ -1094,12 +1092,7 @@ with st.sidebar:
             ticker
         )
     )
-    st.write("🔧 종목 선택 진단")
-    st.write("chosen:", chosen)
-    st.write("sidebar_tickers[chosen]:", sidebar_tickers.get(chosen))
-    st.write("custom:", repr(custom))
-    st.write("use_custom_ticker:", use_custom_ticker)
-    st.write("최종 ticker:", ticker)
+    
     period_name = st.selectbox(
         "차트 기간",
         list(PERIODS.keys()),
