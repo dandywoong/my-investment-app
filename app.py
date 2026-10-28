@@ -1186,11 +1186,8 @@ tab_portfolio, tab_chart, tab_market, tab_company, tab_journal, tab_raw, tab_sup
     on_change="rerun",
     key="eggfolio_main_tabs",
 )
-tab_portfolio, tab_chart, tab_market, tab_company, tab_journal, tab_raw, tab_supervisor = st.tabs(
-    ...
-)
 
-# 여기에 아래 감독실 코드를 붙여넣기
+
 
 with tab_portfolio:
     st.subheader("내 보유 종목")
