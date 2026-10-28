@@ -2022,20 +2022,34 @@ if tab_journal.open:
 
 if tab_raw.open:
     with tab_raw:
-    
-    cols = [
-        "Open", "High", "Low", "Close", "Volume",
-        "MA5", "MA20", "MA60", "MA120", "MA200",
-        "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
-        "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
-        "ATR14", "ATR14_Pct", "VolumeRatio20",
-    ]
+        cols = [
+            "Open", "High", "Low", "Close", "Volume",
+            "MA5", "MA20", "MA60", "MA120", "MA200",
+            "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
+            "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
+            "ATR14", "ATR14_Pct", "VolumeRatio20",
+        ]
 
-    st.dataframe(prices[[c for c in cols if c in prices.columns]].tail(20).sort_index(ascending=False),
-                 use_container_width=True)
-    st.download_button("전체 가격 데이터 CSV 다운로드", prices.to_csv(index=True).encode("utf-8-sig"),
-                       f"{ticker}_{period}_prices.csv", "text/csv")
-    st.caption("Yahoo Finance는 비공식 데이터 경로입니다. 지연·누락·수정·접속 제한이 발생할 수 있습니다. 값이 없으면 임의의 숫자를 만들지 않습니다.")
+        st.dataframe(
+            prices[[c for c in cols if c in prices.columns]]
+            .tail(20)
+            .sort_index(ascending=False),
+            use_container_width=True,
+        )
+
+        st.download_button(
+            "전체 가격 데이터 CSV 다운로드",
+            prices.to_csv(index=True).encode("utf-8-sig"),
+            f"{ticker}_{period}_prices.csv",
+            "text/csv",
+        )
+
+        st.caption(
+            "Yahoo Finance는 비공식 데이터 경로입니다. 지연·누락·수정·접속 제한이 발생할 수 있습니다. "
+            "값이 없으면 임의의 숫자를 만들지 않습니다."
+        )
 
 st.divider()
-st.caption("Eggfolio는 투자 리서치 및 기록 도구이며 매수·매도 지시를 제공하지 않습니다.")
+st.caption(
+    "Eggfolio는 투자 리서치 및 기록 도구이며 매수·매도 지시를 제공하지 않습니다."
+)
