@@ -1160,9 +1160,8 @@ tab_portfolio, tab_chart, tab_market, tab_company, tab_journal, tab_raw = st.tab
     key="eggfolio_main_tabs",
 )
 
-if tab_portfolio.open:
-    with tab_portfolio:
-        st.subheader("내 보유 종목")
+with tab_portfolio:
+    st.subheader("내 보유 종목")
     st.caption("보유 수량·평단·평가손익은 입력한 거래와 조회된 가격을 기준으로 계산합니다. 가격 제공자는 Yahoo Finance이며 삼성증권 계좌와 직접 연결된 것이 아닙니다.")
     with st.expander("➕ 보유 종목 직접 등록 / 수정", expanded=not bool(len(load_holdings()))):
         hname, hticker = stock_search_widget("holding_search")
@@ -1199,8 +1198,8 @@ if tab_portfolio.open:
                 pnl = (px-avg)*qty if px is not None else None
                 pnl_pct = (px/avg-1)*100 if px is not None and avg else None
                 rows.append({"종목":h["name"],"코드":h.ticker,"계좌":h.account,"수량":qty,
-                             "평단":avg,"현재가":px,"평가금액":market_value,"평가손익":pnl,
-                             "수익률(%)":pnl_pct,"가격 기준일":pxdate or "자료 없음","통화":h.currency})
+                            "평단":avg,"현재가":px,"평가금액":market_value,"평가손익":pnl,
+                            "수익률(%)":pnl_pct,"가격 기준일":pxdate or "자료 없음","통화":h.currency})
         pf = pd.DataFrame(rows)
         valid = pf.dropna(subset=["평가금액"])
         total_value = valid["평가금액"].sum() if not valid.empty else None
@@ -1438,7 +1437,7 @@ if tab_portfolio.open:
                 st.caption("작은 조각은 라벨이 숨겨질 수 있습니다. 해당 조각에 마우스를 올리면 종목명·평가금액·전체 비중이 표시됩니다. 자동 카테고리는 종목명과 티커를 바탕으로 한 추정이며, 미분류 항목은 별도 확인이 필요합니다.")
         st.caption("주의: 통화가 다른 종목의 합계는 환산 전 값이 섞일 수 있으므로 총액·손익 합계는 KRW와 USD를 분리해 해석해야 합니다. 가격 기준일과 제공자 데이터의 지연 가능성을 확인하세요. 세금·배당·환전 비용은 아직 반영하지 않습니다.")
         st.download_button("보유 현황 CSV 다운로드", pf.to_csv(index=False).encode("utf-8-sig"), "eggfolio_portfolio.csv", "text/csv")
-       
+        
         st.subheader("보유 종목 개별 삭제")
         st.caption("잘못 등록한 종목만 선택해 삭제할 수 있습니다. 삭제 후에는 복구할 수 없으므로 종목 코드와 이름을 확인하세요.")
         for _, item in holdings.iterrows():
@@ -1484,26 +1483,25 @@ if tab_portfolio.open:
         st.download_button("거래 내역 CSV 다운로드", trades.to_csv(index=False).encode("utf-8-sig"), "eggfolio_trades.csv", "text/csv")
 
 
-if tab_chart.open:
-    with tab_chart:
-        mas = st.multiselect(
-            "이동평균선",
-            [5, 20, 60, 120, 200],
-            default=[20, 60, 120],
-            format_func=lambda n: f"{n}일선",
-        )
-        volume = st.checkbox("거래량 표시", True)
-        show_bollinger = st.checkbox("볼린저 밴드 표시", True)
+with tab_chart:
+    mas = st.multiselect(
+        "이동평균선",
+        [5, 20, 60, 120, 200],
+        default=[20, 60, 120],
+        format_func=lambda n: f"{n}일선",
+    )
+    volume = st.checkbox("거래량 표시", True)
+    show_bollinger = st.checkbox("볼린저 밴드 표시", True)
 
-        st.plotly_chart(
-            make_chart(prices, mas, volume, show_bollinger),
-            use_container_width=True,
-            config={
-                "scrollZoom": True,
-                "displaylogo": False,
-                "responsive": True,
-            },
-        )
+    st.plotly_chart(
+        make_chart(prices, mas, volume, show_bollinger),
+        use_container_width=True,
+        config={
+            "scrollZoom": True,
+            "displaylogo": False,
+            "responsive": True,
+        },
+    )
     st.caption(
         "상승 빨강 / 하락 파랑. 볼린저 밴드는 20일 평균과 표준편차를 "
         "이용합니다. 밴드 접촉만으로 매수·매도 신호를 확정하지 않습니다."
@@ -1522,9 +1520,6 @@ if tab_chart.open:
         else "• 거래량 평균을 계산하기에 데이터가 부족합니다."
     )
 
-    
-    st.divider()
-    
     st.divider()
     st.subheader("규칙 기반 기술적 분석")
     st.caption(
@@ -1629,10 +1624,8 @@ if tab_chart.open:
                 "이 결과는 사전에 정의한 규칙의 기계적 집계입니다. "
                 "백테스트로 검증된 매매 전략이나 매수·매도 권고가 아닙니다."
             )
+
     rsi = prices["RSI14"]
-    rsi_fig = go.Figure()
-
-
     rsi_fig = go.Figure()
     rsi_fig.add_trace(
         go.Scatter(
@@ -1749,20 +1742,15 @@ if tab_chart.open:
     )
 
 
-
-
-if tab_market.open:
-    with tab_market:
-        render_investor_flow_check(ticker)
-        st.subheader("시장 국면 분석")
-        
+with tab_market:
+    render_investor_flow_check(ticker)
+    st.subheader("시장 국면 분석")
     st.caption(
         "시장 심리를 중심에 두고, 가격 행동으로 간접 관측한 뒤 "
         "수급·실적·거시 자료로 검증해 나가는 분석 화면입니다. "
         "현재 연결된 가격 자료만으로 실제 대중심리를 확정하지 않습니다."
     )
 
-    # 사이드바 공통 종목 선택값 사용
     market_ticker = ticker
     market_name = chosen
 
@@ -1798,15 +1786,12 @@ if tab_market.open:
                     "가격은 Yahoo Finance 제공 데이터이며 장중·장후 현재가와 다를 수 있습니다."
                 )
 
-                
-                # 핵심 요약
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("최근 일봉 종가", f"{market_close:,.2f}")
                 m2.metric("20거래일 수익률", f"{ret20:+.2f}%" if pd.notna(ret20) else "자료 부족")
                 m3.metric("60거래일 수익률", f"{ret60:+.2f}%" if pd.notna(ret60) else "자료 부족")
                 m4.metric("거래량 / 20일 평균", f"{volume_ratio:.2f}배" if pd.notna(volume_ratio) else "자료 부족")
 
-                # 차트는 선택 종목별로 렌더링
                 st.subheader("가격 행동: 차트와 거래량")
                 market_mas = st.multiselect(
                     "차트 이동평균선",
@@ -1827,7 +1812,6 @@ if tab_market.open:
                     key=f"market_regime_price_chart_{market_ticker}",
                 )
 
-                # 1) 가격 행동: 심리를 직접 측정하지 않고, 시장 행동에 남은 흔적을 관측
                 st.subheader("① 시장 심리의 간접 신호")
                 trend_label, trend_desc, trend_signals = market_read(market_prices)
                 st.markdown(f"**가격 추세 판독: {trend_label}**")
@@ -1857,7 +1841,6 @@ if tab_market.open:
                     hide_index=True
                 )
 
-                # 단일 지표가 아니라 서로 다른 가격 행동 신호가 겹치는지 확인
                 overheating_evidence = []
                 if strong_momentum:
                     overheating_evidence.append("20·60거래일 수익률이 모두 강한 상승 구간")
@@ -1874,23 +1857,14 @@ if tab_market.open:
                 if pd.notna(volume_ratio) and volume_ratio >= 1.5 and weak_momentum:
                     downside_evidence.append("약세 구간에서 거래량 증가")
 
-                
-                # 가격 행동을 연속 좌표로 변환한다.
-                # 좌표는 시각화용 정규화 값이며 실제 투자심리를 직접 측정하지 않는다.
                 def bounded_ratio(value, scale):
                     if value is None or pd.isna(value):
                         return 0.0
                     return max(-1.0, min(1.0, float(value) / scale))
 
-                # 60거래일 수익률이 양수일수록 회복 쪽,
-                # 음수일수록 약세 쪽으로 표시한다.
                 egg_x = 0.50 - 0.32 * bounded_ratio(ret60, 30)
-
-                # 120일선보다 높을수록 위쪽,
-                # 낮을수록 아래쪽에 표시한다.
                 egg_y = 0.50 + 0.32 * bounded_ratio(distance_ma120, 30)
 
-                # 국면 설명은 기존 가격 행동 규칙을 유지한다.
                 if len(overheating_evidence) >= 2:
                     egg_stage = "상승 과열 가능성 점검"
                 elif len(downside_evidence) >= 2:
@@ -1902,7 +1876,6 @@ if tab_market.open:
                 else:
                     egg_stage = "전환·혼합 · 판단 보류"
 
-                # 달걀 그래프 생성 및 기본 도형
                 egg_fig = go.Figure()
                 egg_fig.add_shape(
                     type="circle", x0=0.12, y0=0.10, x1=0.88, y1=0.90,
@@ -1926,7 +1899,6 @@ if tab_market.open:
                     marker=dict(size=7),
                     hoverinfo="skip"
                 ))
-
                 egg_fig.add_trace(go.Scatter(
                     x=[egg_x], y=[egg_y], mode="markers+text", name="가격 행동 참고 위치",
                     text=[market_name], textposition="top center",
@@ -1945,7 +1917,6 @@ if tab_market.open:
                 st.markdown(f"**현재 가격 행동 참고: {egg_stage}**")
                 st.write("이 판단은 가격·거래량 기반의 간접 관측입니다. 실제 대중심리·자금 흐름 자료가 연결되기 전에는 코스톨라니 국면을 확정하지 않습니다.")
 
-                # 3) 민스키는 가격 차트만으로 분류하지 않음
                 st.subheader("③ 민스키 금융 불안정 관점")
                 st.info(
                     "현재 종목별 신용·레버리지·부채 상환 능력 자료가 연결되지 않아 "
@@ -1953,7 +1924,6 @@ if tab_market.open:
                     "투기 금융·폰지 금융 단계라고 분류하지 않습니다."
                 )
 
-                # 4) 다음 데이터 연결 시 검증할 항목을 명시
                 st.subheader("④ 다음 검증 단계")
                 review_rows = [
                     ["가격 행동", "연결됨", "추세·수익률·거래량으로 간접 관측"],
@@ -1963,7 +1933,7 @@ if tab_market.open:
                     ["거시·신용 자료", "미연결", "금리·유동성·신용 팽창과 레버리지 위험"],
                 ]
                 st.dataframe(pd.DataFrame(review_rows, columns=["분석 영역", "연결 상태", "활용 목적"]),
-                             use_container_width=True, hide_index=True)
+                           use_container_width=True, hide_index=True)
                 st.caption(
                     "이 화면은 매수·매도 신호나 수익 보장을 제공하지 않습니다. "
                     "데이터가 늘어날 때마다 과거 사례에서 경고의 적시성·오경보 빈도를 검증하고, "
@@ -1973,63 +1943,58 @@ if tab_market.open:
             st.error(f"시장 국면 데이터를 불러오지 못했습니다: {e}")
             st.caption("종목 코드, Yahoo Finance 응답, 데이터 제공 상태를 확인해 주세요.")
 
-if tab_raw.open:
-    with tab_raw:
-        st.subheader("뉴스 및 외부 정보")
-        st.info("뉴스 제목을 임의로 만들지 않습니다. 우선 출처 확인이 가능한 외부 페이지를 제공합니다.")
-        st.markdown(f"[Yahoo Finance에서 {ticker} 보기](https://finance.yahoo.com/quote/{ticker}/)")
-        st.caption("외부 사이트의 기사 내용과 발표 시각을 직접 확인하세요.")
+with tab_company:
+    render_fundamentals(ticker)
 
-if tab_journal.open:
-    with tab_journal:
-        st.subheader("투자 판단 기록")
-        st.write("가설, 지지 근거, 반대 근거와 무효화 조건을 저장해 나중에 판단 품질을 검토합니다.")
+with tab_journal:
+    st.subheader("투자 판단 기록")
+    st.write("가설, 지지 근거, 반대 근거와 무효화 조건을 저장해 나중에 판단 품질을 검토합니다.")
 
-        with st.form("decision_form", clear_on_submit=True):
-            c1, c2 = st.columns(2)
+    with st.form("decision_form", clear_on_submit=True):
+        c1, c2 = st.columns(2)
 
-            with c1:
-                jt = st.text_input("종목 코드", value=ticker)
-                horizon = st.selectbox("판단 기간", ["단기", "중기", "장기"])
-                price = st.number_input("판단 당시 가격", min_value=0.0, value=close, step=0.01)
-                decision = st.selectbox(
-                    "현재 판단",
-                    ["관망", "관심 등록", "분할 매수 검토", "보유", "일부 매도 검토", "매도 검토"],
-                )
-
-            with c2:
-                thesis = st.text_area("핵심 가설", placeholder="무엇이 일어날 것으로 보는가?")
-                support = st.text_area("지지 근거", placeholder="확인된 사실과 출처")
-                against = st.text_area("반대 근거", placeholder="가설이 틀릴 수 있는 이유")
-
-            risks = st.text_area("주요 위험")
-            invalidation = st.text_area(
-                "가설 무효화 조건 (선택)",
-                placeholder="어떤 사실이 확인되면 판단을 바꿀 것인가?",
-            )
-            raw_note = st.text_area(
-                "자유 메모 (선택 · 길게 작성 가능)",
-                placeholder="생각나는 대로 적으세요. 매 기록마다 작성할 필요는 없습니다.",
+        with c1:
+            jt = st.text_input("종목 코드", value=ticker)
+            horizon = st.selectbox("판단 기간", ["단기", "중기", "장기"])
+            price = st.number_input("판단 당시 가격", min_value=0.0, value=close, step=0.01)
+            decision = st.selectbox(
+                "현재 판단",
+                ["관망", "관심 등록", "분할 매수 검토", "보유", "일부 매도 검토", "매도 검토"],
             )
 
-            submitted = st.form_submit_button("판단 기록 저장")
+        with c2:
+            thesis = st.text_area("핵심 가설", placeholder="무엇이 일어날 것으로 보는가?")
+            support = st.text_area("지지 근거", placeholder="확인된 사실과 출처")
+            against = st.text_area("반대 근거", placeholder="가설이 틀릴 수 있는 이유")
 
-            if submitted:
-                if not jt.strip() or not thesis.strip():
-                    st.error("종목 코드와 핵심 가설을 입력해 주세요.")
-                else:
-                    ai_summary_text = ""
-                    if raw_note.strip():
-                        summary_obj, summary_error = summarize_with_gemini(raw_note.strip())
-                        if summary_obj:
-                            ai_summary_text = "\n\n[AI 요약 · Gemini]\n" + json.dumps(summary_obj, ensure_ascii=False, indent=2)
-                            st.success("자유 메모의 AI 요약을 생성했습니다. 원문도 함께 저장합니다.")
-                        elif summary_error:
-                            st.warning(summary_error + " 원문과 직접 입력한 항목은 계속 저장합니다.")
-                    combined_thesis = thesis.strip() + ai_summary_text + ("\n\n[자유 메모 원문]\n" + raw_note.strip() if raw_note.strip() else "")
-                    save_decision((datetime.now(timezone.utc).isoformat(),jt.strip().upper(),horizon,float(price),
-                                   combined_thesis,support.strip(),against.strip(),risks.strip(),invalidation.strip(),decision))
-                    st.success("기록을 저장했습니다."); st.rerun()
+        risks = st.text_area("주요 위험")
+        invalidation = st.text_area(
+            "가설 무효화 조건 (선택)",
+            placeholder="어떤 사실이 확인되면 판단을 바꿀 것인가?",
+        )
+        raw_note = st.text_area(
+            "자유 메모 (선택 · 길게 작성 가능)",
+            placeholder="생각나는 대로 적으세요. 매 기록마다 작성할 필요는 없습니다.",
+        )
+
+        submitted = st.form_submit_button("판단 기록 저장")
+
+        if submitted:
+            if not jt.strip() or not thesis.strip():
+                st.error("종목 코드와 핵심 가설을 입력해 주세요.")
+            else:
+                ai_summary_text = ""
+                if raw_note.strip():
+                    summary_obj, summary_error = summarize_with_gemini(raw_note.strip())
+                    if summary_obj:
+                        ai_summary_text = "\n\n[AI 요약 · Gemini]\n" + json.dumps(summary_obj, ensure_ascii=False, indent=2)
+                        st.success("자유 메모의 AI 요약을 생성했습니다. 원문도 함께 저장합니다.")
+                    elif summary_error:
+                        st.warning(summary_error + " 원문과 직접 입력한 항목은 계속 저장합니다.")
+                combined_thesis = thesis.strip() + ai_summary_text + ("\n\n[자유 메모 원문]\n" + raw_note.strip() if raw_note.strip() else "")
+                save_decision((datetime.now(timezone.utc).isoformat(),jt.strip().upper(),horizon,float(price),
+                               combined_thesis,support.strip(),against.strip(),risks.strip(),invalidation.strip(),decision))
+                st.success("기록을 저장했습니다."); st.rerun()
     journal = load_decisions()
     if journal.empty:
         st.info("아직 기록이 없습니다.")
@@ -2039,34 +2004,38 @@ if tab_journal.open:
                            "eggfolio_decisions.csv", "text/csv")
     st.caption("종목 검색은 앱 내 기본 종목 목록을 사용하며 전체 상장 종목을 망라하지 않습니다. Streamlit Cloud의 로컬 SQLite는 재배포·환경 변경 시 영구 보존이 보장되지 않으므로 실제 자산을 입력하기 전 외부 DB 또는 백업을 추가해야 합니다.")
 
-if tab_raw.open:
-    with tab_raw:
-        cols = [
-            "Open", "High", "Low", "Close", "Volume",
-            "MA5", "MA20", "MA60", "MA120", "MA200",
-            "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
-            "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
-            "ATR14", "ATR14_Pct", "VolumeRatio20",
-        ]
+with tab_raw:
+    st.subheader("뉴스 및 외부 정보")
+    st.info("뉴스 제목을 임의로 만들지 않습니다. 우선 출처 확인이 가능한 외부 페이지를 제공합니다.")
+    st.markdown(f"[Yahoo Finance에서 {ticker} 보기](https://finance.yahoo.com/quote/{ticker}/)")
+    st.caption("외부 사이트의 기사 내용과 발표 시각을 직접 확인하세요.")
 
-        st.dataframe(
-            prices[[c for c in cols if c in prices.columns]]
-            .tail(20)
-            .sort_index(ascending=False),
-            use_container_width=True,
-        )
+    cols = [
+        "Open", "High", "Low", "Close", "Volume",
+        "MA5", "MA20", "MA60", "MA120", "MA200",
+        "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
+        "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
+        "ATR14", "ATR14_Pct", "VolumeRatio20",
+    ]
 
-        st.download_button(
-            "전체 가격 데이터 CSV 다운로드",
-            prices.to_csv(index=True).encode("utf-8-sig"),
-            f"{ticker}_{period}_prices.csv",
-            "text/csv",
-        )
+    st.dataframe(
+        prices[[c for c in cols if c in prices.columns]]
+        .tail(20)
+        .sort_index(ascending=False),
+        use_container_width=True,
+    )
 
-        st.caption(
-            "Yahoo Finance는 비공식 데이터 경로입니다. 지연·누락·수정·접속 제한이 발생할 수 있습니다. "
-            "값이 없으면 임의의 숫자를 만들지 않습니다."
-        )
+    st.download_button(
+        "전체 가격 데이터 CSV 다운로드",
+        prices.to_csv(index=True).encode("utf-8-sig"),
+        f"{ticker}_{period}_prices.csv",
+        "text/csv",
+    )
+
+    st.caption(
+        "Yahoo Finance는 비공식 데이터 경로입니다. 지연·누락·수정·접속 제한이 발생할 수 있습니다. "
+        "값이 없으면 임의의 숫자를 만들지 않습니다."
+    )
 
 st.divider()
 st.caption(
