@@ -517,6 +517,25 @@ def save_trade(traded_at, ticker, name, side, quantity, price, fee, account, not
 
 
 
+def summarize_with_gemini(raw_note):
+    """Optional AI summary. Requires GEMINI_API_KEY in Streamlit secrets or environment."""
+    key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
+    if not key:
+        return None, "AI 요약을 사용하려면 Streamlit Secrets에 GEMINI_API_KEY를 설정해야 합니다. 키를 설정하지 않아도 원문과 직접 작성한 요약은 저장할 수 있습니다."
+    try:
+        import requests
+        prompt = "다음 투자 메모를 한국어로 요약해 JSON으로 반환하세요. 키는 thesis, supporting_evidence, opposing_evidence, risks, invalidation_conditions, follow_up_questions 입니다. 사실을 추가하거나 추정하지 말고, 메모에 없는 항목은 빈 문자열 또는 빈 목록으로 두세요. JSON 외 텍스트는 쓰지 마세요.\n메모:\n" + raw_note
+        response = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            params={"key": key}, json={"contents":[{"parts":[{"text":prompt}]}], "generationConfig":{"responseMimeType":"application/json"}}, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        result = data["candidates"][0]["content"]["parts"][0]["text"]
+        return json.loads(result), None
+    except Exception as e:
+        return None, f"AI 요약에 실패했습니다. 원문은 유지됩니다. 오류: {e}"
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def get_prices(ticker, period):
     t0 = time.time()
@@ -1998,21 +2017,19 @@ if tab_journal.open:
             if submitted:
                 if not jt.strip() or not thesis.strip():
                     st.error("종목 코드와 핵심 가설을 입력해 주세요.")
-                # 아래에 있던 기존 저장 처리 코드는
-                # 이 if submitted: 블록 안에 그대로 유지
-            else:
-                ai_summary_text = ""
-                if raw_note.strip():
-                    summary_obj, summary_error = summarize_with_gemini(raw_note.strip())
-                    if summary_obj:
-                        ai_summary_text = "\n\n[AI 요약 · Gemini]\n" + json.dumps(summary_obj, ensure_ascii=False, indent=2)
-                        st.success("자유 메모의 AI 요약을 생성했습니다. 원문도 함께 저장합니다.")
-                    elif summary_error:
-                        st.warning(summary_error + " 원문과 직접 입력한 항목은 계속 저장합니다.")
-                combined_thesis = thesis.strip() + ai_summary_text + ("\n\n[자유 메모 원문]\n" + raw_note.strip() if raw_note.strip() else "")
-                save_decision((datetime.now(timezone.utc).isoformat(),jt.strip().upper(),horizon,float(price),
-                               combined_thesis,support.strip(),against.strip(),risks.strip(),invalidation.strip(),decision))
-                st.success("기록을 저장했습니다."); st.rerun()
+                else:
+                    ai_summary_text = ""
+                    if raw_note.strip():
+                        summary_obj, summary_error = summarize_with_gemini(raw_note.strip())
+                        if summary_obj:
+                            ai_summary_text = "\n\n[AI 요약 · Gemini]\n" + json.dumps(summary_obj, ensure_ascii=False, indent=2)
+                            st.success("자유 메모의 AI 요약을 생성했습니다. 원문도 함께 저장합니다.")
+                        elif summary_error:
+                            st.warning(summary_error + " 원문과 직접 입력한 항목은 계속 저장합니다.")
+                    combined_thesis = thesis.strip() + ai_summary_text + ("\n\n[자유 메모 원문]\n" + raw_note.strip() if raw_note.strip() else "")
+                    save_decision((datetime.now(timezone.utc).isoformat(),jt.strip().upper(),horizon,float(price),
+                                   combined_thesis,support.strip(),against.strip(),risks.strip(),invalidation.strip(),decision))
+                    st.success("기록을 저장했습니다."); st.rerun()
     journal = load_decisions()
     if journal.empty:
         st.info("아직 기록이 없습니다.")
