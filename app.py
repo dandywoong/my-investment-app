@@ -1952,8 +1952,9 @@ with tab_market:
             st.error(f"시장 국면 데이터를 불러오지 못했습니다: {e}")
             st.caption("종목 코드, Yahoo Finance 응답, 데이터 제공 상태를 확인해 주세요.")
 
-if tab_company.open:
-    with tab_company:
+if tab_raw.open:
+    with tab_raw:
+        st.subheader("뉴스 및 외부 정보")
         # 기존 기업 기초체력 탭 코드 전체
     st.subheader("뉴스 및 외부 정보")
     st.info("뉴스 제목을 임의로 만들지 않습니다. 우선 출처 확인이 가능한 외부 페이지를 제공합니다.")
