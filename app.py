@@ -1732,9 +1732,11 @@ if tab_chart.open:
 
 
 
-with tab_market:
-    render_investor_flow_check(ticker)
-    st.subheader("시장 국면 분석")
+if tab_market.open:
+    with tab_market:
+        render_investor_flow_check(ticker)
+        st.subheader("시장 국면 분석")
+        
     st.caption(
         "시장 심리를 중심에 두고, 가격 행동으로 간접 관측한 뒤 "
         "수급·실적·거시 자료로 검증해 나가는 분석 화면입니다. "
