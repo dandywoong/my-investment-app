@@ -1952,14 +1952,16 @@ with tab_market:
             st.error(f"시장 국면 데이터를 불러오지 못했습니다: {e}")
             st.caption("종목 코드, Yahoo Finance 응답, 데이터 제공 상태를 확인해 주세요.")
 
-with tab_company:
-    render_fundamentals(ticker)
+if tab_company.open:
+    with tab_company:
+        # 기존 기업 기초체력 탭 코드 전체
     st.subheader("뉴스 및 외부 정보")
     st.info("뉴스 제목을 임의로 만들지 않습니다. 우선 출처 확인이 가능한 외부 페이지를 제공합니다.")
     st.markdown(f"[Yahoo Finance에서 {ticker} 보기](https://finance.yahoo.com/quote/{ticker}/)")
     st.caption("외부 사이트의 기사 내용과 발표 시각을 직접 확인하세요.")
 
-with tab_journal:
+if tab_journal.open:
+    with tab_journal:
     st.subheader("투자 판단 기록")
     st.write("가설, 지지 근거, 반대 근거와 무효화 조건을 저장해 나중에 판단 품질을 검토합니다.")
     with st.form("decision_form", clear_on_submit=True):
@@ -2002,7 +2004,8 @@ with tab_journal:
                            "eggfolio_decisions.csv", "text/csv")
     st.caption("종목 검색은 앱 내 기본 종목 목록을 사용하며 전체 상장 종목을 망라하지 않습니다. Streamlit Cloud의 로컬 SQLite는 재배포·환경 변경 시 영구 보존이 보장되지 않으므로 실제 자산을 입력하기 전 외부 DB 또는 백업을 추가해야 합니다.")
 
-with tab_raw:
+if tab_raw.open:
+    with tab_raw:
     
     cols = [
         "Open", "High", "Low", "Close", "Volume",
