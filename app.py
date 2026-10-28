@@ -1128,9 +1128,18 @@ m3.metric("표시 거래일", f"{len(prices):,}")
 m4.metric("최근 데이터 날짜", prices.index[-1].strftime("%Y-%m-%d"))
 st.caption(f"조회 소요 {elapsed:.2f}초 · 화면 시각 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · 일봉은 장중 체결가와 다를 수 있습니다.")
 
-tab_portfolio,tab_chart,tab_market,tab_company,tab_journal,tab_raw = st.tabs([
-    "💼 내 포트폴리오", "📈 차트","🥚 시장 국면 참고","🏢 기업 기초체력","📝 판단 기록","🧾 원자료"
-])
+tab_portfolio, tab_chart, tab_market, tab_company, tab_journal, tab_raw = st.tabs(
+    [
+        "💼 내 포트폴리오",
+        "📈 차트",
+        "🥚 시장 국면 참고",
+        "🏢 기업 기초체력",
+        "📝 판단 기록",
+        "🧾 원자료",
+    ],
+    on_change="rerun",
+    key="eggfolio_main_tabs",
+)
 
 with tab_portfolio:
     st.subheader("내 보유 종목")
@@ -1455,7 +1464,8 @@ with tab_portfolio:
         st.download_button("거래 내역 CSV 다운로드", trades.to_csv(index=False).encode("utf-8-sig"), "eggfolio_trades.csv", "text/csv")
 
 
-with tab_chart:
+if tab_chart.open:
+    with tab_chart:
     mas = st.multiselect(
         "이동평균선",
         [5, 20, 60, 120, 200],
