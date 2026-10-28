@@ -1466,20 +1466,24 @@ with tab_portfolio:
 
 if tab_chart.open:
     with tab_chart:
-    mas = st.multiselect(
-        "이동평균선",
-        [5, 20, 60, 120, 200],
-        default=[20, 60, 120],
-        format_func=lambda n: f"{n}일선",
-    )
-    volume = st.checkbox("거래량 표시", True)
-    show_bollinger = st.checkbox("볼린저 밴드 표시", True)
+        mas = st.multiselect(
+            "이동평균선",
+            [5, 20, 60, 120, 200],
+            default=[20, 60, 120],
+            format_func=lambda n: f"{n}일선",
+        )
+        volume = st.checkbox("거래량 표시", True)
+        show_bollinger = st.checkbox("볼린저 밴드 표시", True)
 
-    st.plotly_chart(
-        make_chart(prices, mas, volume, show_bollinger),
-        use_container_width=True,
-        config={"scrollZoom": True, "displaylogo": False, "responsive": True},
-    )
+        st.plotly_chart(
+            make_chart(prices, mas, volume, show_bollinger),
+            use_container_width=True,
+            config={
+                "scrollZoom": True,
+                "displaylogo": False,
+                "responsive": True,
+            },
+        )
     st.caption(
         "상승 빨강 / 하락 파랑. 볼린저 밴드는 20일 평균과 표준편차를 "
         "이용합니다. 밴드 접촉만으로 매수·매도 신호를 확정하지 않습니다."
