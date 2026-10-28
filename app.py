@@ -1955,34 +1955,49 @@ with tab_market:
 if tab_raw.open:
     with tab_raw:
         st.subheader("뉴스 및 외부 정보")
-        # 기존 기업 기초체력 탭 코드 전체
-    st.subheader("뉴스 및 외부 정보")
-    st.info("뉴스 제목을 임의로 만들지 않습니다. 우선 출처 확인이 가능한 외부 페이지를 제공합니다.")
-    st.markdown(f"[Yahoo Finance에서 {ticker} 보기](https://finance.yahoo.com/quote/{ticker}/)")
-    st.caption("외부 사이트의 기사 내용과 발표 시각을 직접 확인하세요.")
+        st.info("뉴스 제목을 임의로 만들지 않습니다. 우선 출처 확인이 가능한 외부 페이지를 제공합니다.")
+        st.markdown(f"[Yahoo Finance에서 {ticker} 보기](https://finance.yahoo.com/quote/{ticker}/)")
+        st.caption("외부 사이트의 기사 내용과 발표 시각을 직접 확인하세요.")
 
 if tab_journal.open:
     with tab_journal:
-    st.subheader("투자 판단 기록")
-    st.write("가설, 지지 근거, 반대 근거와 무효화 조건을 저장해 나중에 판단 품질을 검토합니다.")
-    with st.form("decision_form", clear_on_submit=True):
-        c1,c2 = st.columns(2)
-        with c1:
-            jt = st.text_input("종목 코드", value=ticker)
-            horizon = st.selectbox("판단 기간", ["단기","중기","장기"])
-            price = st.number_input("판단 당시 가격", min_value=0.0, value=close, step=0.01)
-            decision = st.selectbox("현재 판단", ["관망","관심 등록","분할 매수 검토","보유","일부 매도 검토","매도 검토"])
-        with c2:
-            thesis = st.text_area("핵심 가설", placeholder="무엇이 일어날 것으로 보는가?")
-            support = st.text_area("지지 근거", placeholder="확인된 사실과 출처")
-            against = st.text_area("반대 근거", placeholder="가설이 틀릴 수 있는 이유")
-        risks = st.text_area("주요 위험")
-        invalidation = st.text_area("가설 무효화 조건 (선택)", placeholder="어떤 사실이 확인되면 판단을 바꿀 것인가?")
-        raw_note = st.text_area("자유 메모 (선택 · 길게 작성 가능)", placeholder="생각나는 대로 적으세요. 매 기록마다 작성할 필요는 없습니다.")
-        submitted = st.form_submit_button("판단 기록 저장")
-        if submitted:
-            if not jt.strip() or not thesis.strip():
-                st.error("종목 코드와 핵심 가설을 입력해 주세요.")
+        st.subheader("투자 판단 기록")
+        st.write("가설, 지지 근거, 반대 근거와 무효화 조건을 저장해 나중에 판단 품질을 검토합니다.")
+
+        with st.form("decision_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+
+            with c1:
+                jt = st.text_input("종목 코드", value=ticker)
+                horizon = st.selectbox("판단 기간", ["단기", "중기", "장기"])
+                price = st.number_input("판단 당시 가격", min_value=0.0, value=close, step=0.01)
+                decision = st.selectbox(
+                    "현재 판단",
+                    ["관망", "관심 등록", "분할 매수 검토", "보유", "일부 매도 검토", "매도 검토"],
+                )
+
+            with c2:
+                thesis = st.text_area("핵심 가설", placeholder="무엇이 일어날 것으로 보는가?")
+                support = st.text_area("지지 근거", placeholder="확인된 사실과 출처")
+                against = st.text_area("반대 근거", placeholder="가설이 틀릴 수 있는 이유")
+
+            risks = st.text_area("주요 위험")
+            invalidation = st.text_area(
+                "가설 무효화 조건 (선택)",
+                placeholder="어떤 사실이 확인되면 판단을 바꿀 것인가?",
+            )
+            raw_note = st.text_area(
+                "자유 메모 (선택 · 길게 작성 가능)",
+                placeholder="생각나는 대로 적으세요. 매 기록마다 작성할 필요는 없습니다.",
+            )
+
+            submitted = st.form_submit_button("판단 기록 저장")
+
+            if submitted:
+                if not jt.strip() or not thesis.strip():
+                    st.error("종목 코드와 핵심 가설을 입력해 주세요.")
+                # 아래에 있던 기존 저장 처리 코드는
+                # 이 if submitted: 블록 안에 그대로 유지
             else:
                 ai_summary_text = ""
                 if raw_note.strip():
