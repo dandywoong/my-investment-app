@@ -1196,710 +1196,346 @@ if tab_supervisor.open:
     with tab_supervisor:
         st.header("🎯 포트폴리오 감독실")
         st.caption(
-            "보유 현황·가격 상태·분할 진입 계획·위험 차단 조건을 함께 관리합니다. "
-            "표시된 가격 범위는 검증된 매매 신호가 아니라 검토용 계획입니다."
+            "보유 현황, 가격 추세, 기업 기초체력, 수급을 종합해 "
+            "현재 판단과 다음 행동 조건을 제시합니다."
         )
 
-        # 1. 현재 선택 종목의 데이터 상태
-        sup_last = prices.iloc[-1]
-        sup_close = float(sup_last["Close"])
-        sup_date = str(prices.index[-1].date())
-
-        def sup_num(column):
-            if column not in prices.columns:
-                return None
-            value = sup_last[column]
-            return None if pd.isna(value) else float(value)
-
-        sup_ma20 = sup_num("MA20")
-        sup_ma60 = sup_num("MA60")
-        sup_ma120 = sup_num("MA120")
-        sup_rsi = sup_num("RSI14")
-        sup_atr = sup_num("ATR14")
-        sup_atr_pct = sup_num("ATR14_Pct")
-        sup_ret20 = sup_num("Return20")
-        sup_ret60 = sup_num("Return60")
-
-        st.subheader(f"{selected_stock_name} · {ticker}")
-        st.caption(
-            f"가격 기준일: {sup_date} · "
-            "가격 출처: Yahoo Finance 일봉 · "
-            "실시간 체결가가 아닐 수 있습니다."
-        )
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("최근 종가", f"{sup_close:,.2f}")
-        c2.metric("20일 수익률", f"{sup_ret20:+.2f}%" if sup_ret20 is not None else "자료 부족")
-        c3.metric("RSI(14)", f"{sup_rsi:.1f}" if sup_rsi is not None else "자료 부족")
-        c4.metric("ATR / 종가", f"{sup_atr_pct:.2f}%" if sup_atr_pct is not None else "자료 부족")
-
-        # 2. 기술적 상태 요약
-        st.subheader("① 현재 상태 점검")
-
-        if sup_ma20 is None or sup_ma60 is None:
-            trend_status = "자료 부족 · 추세 판단 보류"
-        elif sup_close > sup_ma20 > sup_ma60:
-            trend_status = "상승 추세 구조 관측"
-        elif sup_close < sup_ma20 < sup_ma60:
-            trend_status = "하락 추세 구조 관측"
-        else:
-            trend_status = "혼합 추세 · 방향 불명확"
-
-        st.write(f"**추세:** {trend_status}")
-
-        ma_rows = []
-        for label, value in [
-            ("MA20", sup_ma20),
-            ("MA60", sup_ma60),
-            ("MA120", sup_ma120),
-        ]:
-            ma_rows.append({
-                "관측 항목": label,
-                "가격": round(value, 4) if value is not None else None,
-                "종가 대비(%)": round((sup_close / value - 1) * 100, 2)
-                if value else None,
-            })
-
-        st.dataframe(
-            pd.DataFrame(ma_rows),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        if sup_atr is None or sup_atr <= 0:
-            st.warning(
-                "ATR 데이터가 부족합니다. 변동성 기반 가격 범위의 자동 초안을 "
-                "계산할 수 없습니다."
-            )
-        else:
-            st.info(
-                f"최근 ATR(14)은 {sup_atr:,.2f}입니다. "
-                "ATR은 통상적인 변동 폭의 참고치이며 방향 예측값은 아닙니다."
-            )
-
-        # 3. 기존 보유 데이터 확인
-        st.subheader("② 선택 종목의 보유 현황")
+        # 1. 포트폴리오 전체 현황
+        st.subheader("① 내 포트폴리오")
 
         try:
             sup_holdings = load_holdings()
-            sup_match = (
-                sup_holdings[sup_holdings["ticker"].astype(str).str.upper() == ticker.upper()]
-                if not sup_holdings.empty else pd.DataFrame()
-            )
 
-            if sup_match.empty:
-                st.info("현재 포트폴리오 DB에 이 종목의 보유 정보가 없습니다.")
+            if sup_holdings.empty:
+                st.info(
+                    "등록된 보유 종목이 없습니다. "
+                    "내 포트폴리오 탭에서 보유 정보를 먼저 등록하세요."
+                )
+                sup_pf = pd.DataFrame()
             else:
-                for _, h in sup_match.iterrows():
-                    qty = float(h["quantity"])
-                    avg_cost = float(h["avg_cost"])
-                    pnl = (sup_close - avg_cost) * qty
-                    pnl_pct = (sup_close / avg_cost - 1) * 100 if avg_cost else None
+                sup_rows = []
 
-                    p1, p2, p3, p4 = st.columns(4)
-                    p1.metric("계좌", str(h["account"]))
-                    p2.metric("보유 수량", f"{qty:,.4f}")
-                    p3.metric("평균 매입단가", f"{avg_cost:,.2f}")
-                    p4.metric(
-                        "평가손익(단순 계산)",
-                        f"{pnl:+,.2f}",
-                        f"{pnl_pct:+.2f}%" if pnl_pct is not None else None,
-                    )
-                st.caption(
-                    "평가손익은 선택 종목의 최근 종가로 계산한 참고값입니다. "
-                    "수수료·세금·환율 및 실시간 체결가는 반영되지 않았습니다."
-                )
-        except Exception as e:
-            st.warning(f"보유 정보를 불러오지 못했습니다: {e}")
+                with st.spinner("보유 종목 가격 확인 중..."):
+                    for _, h in sup_holdings.iterrows():
+                        h_ticker = str(h["ticker"])
+                        h_name = str(h["name"])
+                        h_qty = float(h["quantity"])
+                        h_avg = float(h["avg_cost"])
+                        h_currency = str(h["currency"])
 
-        # 4. 저장된 감독실 계획 불러오기
-        saved_plan = None
-        try:
-            with get_db_connection() as con:
-                with con.cursor() as cur:
-                    cur.execute(
-                        "SELECT * FROM supervisory_plans WHERE ticker = %s",
-                        (ticker.upper(),),
-                    )
-                    row = cur.fetchone()
-                    if row:
-                        columns = [d.name for d in cur.description]
-                        saved_plan = dict(zip(columns, row))
-        except Exception as e:
-            st.error(f"감독실 계획 조회 실패: {e}")
+                        h_price, h_date = latest_close(h_ticker)
 
-        st.divider()
-        st.subheader("③ 투자 가설과 매매 계획")
-        st.caption(
-            "계획은 종목별로 저장됩니다. 저장할 때 해당 종목의 기존 계획을 갱신합니다. "
-            "실제 주문은 실행하지 않습니다."
-        )
+                        if h_price is None:
+                            h_value = None
+                            h_pnl = None
+                            h_return = None
+                        else:
+                            h_value = h_price * h_qty
+                            h_pnl = (h_price - h_avg) * h_qty
+                            h_return = (
+                                (h_price / h_avg - 1) * 100
+                                if h_avg > 0 else None
+                            )
 
-        default_budget = float(saved_plan["total_budget"]) if saved_plan else 0.0
-        default_weight = float(saved_plan["max_weight_pct"]) if saved_plan else 10.0
+                        sup_rows.append({
+                            "종목": h_name,
+                            "티커": h_ticker,
+                            "계좌": str(h["account"]),
+                            "통화": h_currency,
+                            "수량": h_qty,
+                            "평단": h_avg,
+                            "최근 종가": h_price,
+                            "평가금액": h_value,
+                            "평가손익": h_pnl,
+                            "수익률(%)": h_return,
+                            "가격 기준일": h_date or "자료 없음",
+                        })
 
-        def saved_float(key, fallback):
-            value = saved_plan.get(key) if saved_plan else None
-            return float(value) if value is not None else float(fallback)
+                sup_pf = pd.DataFrame(sup_rows)
 
-        # 첫 진입 범위는 ATR 기반의 기계적 초안이다. 검증된 타점이 아니다.
-        auto1_low = max(0.0, sup_close - 0.5 * sup_atr) if sup_atr else sup_close * 0.98
-        auto1_high = sup_close
-        auto2_low = max(0.0, sup_close - 1.5 * sup_atr) if sup_atr else sup_close * 0.95
-        auto2_high = max(0.0, sup_close - 0.5 * sup_atr) if sup_atr else sup_close * 0.98
-        auto3_low = max(0.0, sup_close - 2.5 * sup_atr) if sup_atr else sup_close * 0.90
-        auto3_high = max(0.0, sup_close - 1.5 * sup_atr) if sup_atr else sup_close * 0.95
-
-        with st.form("supervisory_plan_form"):
-            thesis = st.text_area(
-                "핵심 투자 가설",
-                value=saved_plan.get("thesis", "") if saved_plan else "",
-                placeholder="왜 이 기업/ETF를 보유하거나 매수 후보로 보는가?",
-            )
-            counter_evidence = st.text_area(
-                "반대 근거 및 주요 위험",
-                value=saved_plan.get("counter_evidence", "") if saved_plan else "",
-                placeholder="가설이 틀릴 수 있는 이유, 실적·산업·밸류에이션 위험",
-            )
-            invalidation = st.text_area(
-                "가설 무효화 조건",
-                value=saved_plan.get("invalidation", "") if saved_plan else "",
-                placeholder="어떤 사실이 확인되면 계획을 재검토하거나 중단할 것인가?",
-            )
-
-            fc1, fc2, fc3 = st.columns(3)
-            with fc1:
-                plan_status = st.selectbox(
-                    "현재 관리 상태",
-                    ["관찰", "진입 대기", "진입 검토", "보유 관리", "추가 매수 차단", "위험 재검토", "축소 검토"],
-                    index=(
-                        ["관찰", "진입 대기", "진입 검토", "보유 관리", "추가 매수 차단", "위험 재검토", "축소 검토"].index(saved_plan["status"])
-                        if saved_plan and saved_plan.get("status") in ["관찰", "진입 대기", "진입 검토", "보유 관리", "추가 매수 차단", "위험 재검토", "축소 검토"]
-                        else 0
-                    ),
-                )
-            with fc2:
-                plan_currency = st.selectbox(
-                    "계획 통화",
-                    ["KRW", "USD"],
-                    index=1 if (saved_plan.get("currency") if saved_plan else ("USD" if not ticker.endswith((".KS", ".KQ")) and not ticker.startswith("^") else "KRW")) == "USD" else 0,
-                )
-            with fc3:
-                total_budget = st.number_input(
-                    "총 계획 예산",
-                    min_value=0.0,
-                    value=default_budget,
-                    step=100000.0 if plan_currency == "KRW" else 100.0,
+                sup_valid = sup_pf.dropna(
+                    subset=["평가금액", "평가손익"]
                 )
 
-            max_weight = st.number_input(
-                "종목 최대 비중 목표(%)",
-                min_value=0.1,
-                max_value=100.0,
-                value=min(100.0, max(0.1, default_weight)),
-                step=1.0,
-            )
+                krw = sup_valid[sup_valid["통화"] == "KRW"]
+                usd = sup_valid[sup_valid["통화"] == "USD"]
 
-            st.markdown("**1~3차 분할 진입 후보 범위**")
-            st.caption(
-                "기본값은 현재가와 ATR로 계산한 초안입니다. "
-                "가치평가·실적·수급 검증을 대체하지 않으며, 필요하면 직접 수정하세요."
-            )
+                total_krw = krw["평가금액"].sum()
+                pnl_krw = krw["평가손익"].sum()
+                total_usd = usd["평가금액"].sum()
+                pnl_usd = usd["평가손익"].sum()
 
-            def price_input(label, key, default_value):
-                return st.number_input(
-                    label,
-                    min_value=0.0,
-                    value=max(0.0, saved_float(key, default_value)),
-                    step=max(0.01, round(sup_atr / 10, 2)) if sup_atr else 1.0,
-                    format="%.4f",
+                c1, c2, c3, c4 = st.columns(4)
+
+                c1.metric("원화 평가금액", f"{total_krw:,.0f}원")
+                c2.metric(
+                    "원화 평가손익",
+                    f"{pnl_krw:+,.0f}원",
+                )
+                c3.metric("달러 평가금액", f"${total_usd:,.2f}")
+                c4.metric(
+                    "달러 평가손익",
+                    f"${pnl_usd:+,.2f}",
                 )
 
-            s1, s2, s3 = st.columns(3)
-            with s1:
-                st.markdown("**1차**")
-                s1_low = price_input("1차 하단", "stage1_low", auto1_low)
-                s1_high = price_input("1차 상단", "stage1_high", auto1_high)
-                s1_pct = st.number_input(
-                    "1차 예산 비중(%)", min_value=0.0, max_value=100.0,
-                    value=saved_float("stage1_pct", 30), step=5.0,
-                )
-            with s2:
-                st.markdown("**2차**")
-                s2_low = price_input("2차 하단", "stage2_low", auto2_low)
-                s2_high = price_input("2차 상단", "stage2_high", auto2_high)
-                s2_pct = st.number_input(
-                    "2차 예산 비중(%)", min_value=0.0, max_value=100.0,
-                    value=saved_float("stage2_pct", 30), step=5.0,
-                )
-            with s3:
-                st.markdown("**3차**")
-                s3_low = price_input("3차 하단", "stage3_low", auto3_low)
-                s3_high = price_input("3차 상단", "stage3_high", auto3_high)
-                s3_pct = st.number_input(
-                    "3차 예산 비중(%)", min_value=0.0, max_value=100.0,
-                    value=saved_float("stage3_pct", 40), step=5.0,
-                )
-
-            add_block_reason = st.text_area(
-                "추가 매수 차단 조건 / 실행 전 확인사항",
-                value=saved_plan.get("add_block_reason", "") if saved_plan else "",
-                placeholder="예: 실적 가설 훼손, 필수 데이터 미확인, 비중 한도 초과 시 추가 매수 금지",
-            )
-
-            save_plan = st.form_submit_button("감독실 계획 저장", type="primary")
-
-            if save_plan:
-                pct_total = s1_pct + s2_pct + s3_pct
-                valid_prices = (
-                    s1_low <= s1_high
-                    and s2_low <= s2_high
-                    and s3_low <= s3_high
-                )
-
-                if not thesis.strip():
-                    st.error("핵심 투자 가설을 입력해야 계획을 저장할 수 있습니다.")
-                elif not valid_prices:
-                    st.error("각 단계의 하단 가격은 상단 가격보다 클 수 없습니다.")
-                elif abs(pct_total - 100.0) > 0.01:
-                    st.error(f"분할 예산 비중 합계가 {pct_total:.1f}%입니다. 정확히 100%로 맞춰주세요.")
-                elif total_budget <= 0:
-                    st.error("총 계획 예산은 0보다 커야 합니다.")
-                else:
-                    try:
-                        with get_db_connection() as con:
-                            with con.cursor() as cur:
-                                cur.execute("""
-                                    INSERT INTO supervisory_plans (
-                                        ticker, stock_name, thesis, counter_evidence,
-                                        invalidation, status, currency, total_budget,
-                                        max_weight_pct, stage1_low, stage1_high, stage1_pct,
-                                        stage2_low, stage2_high, stage2_pct,
-                                        stage3_low, stage3_high, stage3_pct,
-                                        add_block_reason, updated_at
-                                    )
-                                    VALUES (
-                                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                                    )
-                                    ON CONFLICT (ticker) DO UPDATE SET
-                                        stock_name = EXCLUDED.stock_name,
-                                        thesis = EXCLUDED.thesis,
-                                        counter_evidence = EXCLUDED.counter_evidence,
-                                        invalidation = EXCLUDED.invalidation,
-                                        status = EXCLUDED.status,
-                                        currency = EXCLUDED.currency,
-                                        total_budget = EXCLUDED.total_budget,
-                                        max_weight_pct = EXCLUDED.max_weight_pct,
-                                        stage1_low = EXCLUDED.stage1_low,
-                                        stage1_high = EXCLUDED.stage1_high,
-                                        stage1_pct = EXCLUDED.stage1_pct,
-                                        stage2_low = EXCLUDED.stage2_low,
-                                        stage2_high = EXCLUDED.stage2_high,
-                                        stage2_pct = EXCLUDED.stage2_pct,
-                                        stage3_low = EXCLUDED.stage3_low,
-                                        stage3_high = EXCLUDED.stage3_high,
-                                        stage3_pct = EXCLUDED.stage3_pct,
-                                        add_block_reason = EXCLUDED.add_block_reason,
-                                        updated_at = EXCLUDED.updated_at
-                                """, (
-                                    ticker.upper(), selected_stock_name, thesis.strip(),
-                                    counter_evidence.strip(), invalidation.strip(),
-                                    plan_status, plan_currency, float(total_budget),
-                                    float(max_weight), float(s1_low), float(s1_high),
-                                    float(s1_pct), float(s2_low), float(s2_high),
-                                    float(s2_pct), float(s3_low), float(s3_high),
-                                    float(s3_pct), add_block_reason.strip(),
-                                    datetime.now(timezone.utc).isoformat(),
-                                ))
-                        st.success("감독실 계획을 PostgreSQL에 저장했습니다.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"계획 저장 실패: {e}")
-
-        # 5. 저장된 계획의 분할 금액과 차단 점검
-        if saved_plan:
-            st.divider()
-            st.subheader("④ 저장된 계획 요약")
-
-            budget = float(saved_plan["total_budget"])
-            stages = [
-                ("1차", saved_plan["stage1_low"], saved_plan["stage1_high"], saved_plan["stage1_pct"]),
-                ("2차", saved_plan["stage2_low"], saved_plan["stage2_high"], saved_plan["stage2_pct"]),
-                ("3차", saved_plan["stage3_low"], saved_plan["stage3_high"], saved_plan["stage3_pct"]),
-            ]
-
-            stage_rows = []
-            for label, low, high, pct in stages:
-                stage_rows.append({
-                    "단계": label,
-                    "가격 하단": low,
-                    "가격 상단": high,
-                    "예산 비중(%)": pct,
-                    "배정 예산": budget * float(pct) / 100,
-                    "현재가 대비(%)": (
-                        (float(low) / sup_close - 1) * 100
-                        if low is not None and sup_close else None
-                    ),
-                })
-
-            st.dataframe(
-                pd.DataFrame(stage_rows),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            st.subheader("⑤ 추가 매수 전 차단 점검")
-            checks = [
-                "핵심 투자 가설이 여전히 유효한가?",
-                "최근 실적·가이던스가 가설을 훼손하지 않았는가?",
-                "가격이 하락했다는 이유만으로 추가 매수하려는 것은 아닌가?",
-                "추가 매수 후 종목·섹터 집중도가 과도해지지 않는가?",
-                "현금 예산과 계좌별 제약을 확인했는가?",
-                "데이터 기준일과 출처를 확인했는가?",
-                "가설 무효화 조건이 발생하지 않았는가?",
-            ]
-
-            for i, question in enumerate(checks):
-                st.checkbox(question, key=f"supervisor_check_{ticker}_{i}")
-
-            if saved_plan.get("status") == "추가 매수 차단":
-                st.error("현재 계획 상태가 '추가 매수 차단'입니다. 재검토 전 추가 진입을 보류하세요.")
-            if saved_plan.get("invalidation"):
-                st.warning(f"가설 무효화 조건: {saved_plan['invalidation']}")
-            if saved_plan.get("counter_evidence"):
-                st.info(f"반대 근거 및 위험: {saved_plan['counter_evidence']}")
-
-            st.caption(
-                f"마지막 저장: {saved_plan.get('updated_at', '자료 없음')} · "
-                "이 화면은 주문을 내지 않으며, 실제 체결·수수료·세금은 별도로 기록해야 합니다."
-            )
-        else:
-            st.info("이 종목의 감독실 계획이 아직 없습니다. 위에서 가설과 예산을 입력해 저장하세요.")
-
-with tab_portfolio:
-    st.subheader("내 보유 종목")
-    st.caption("보유 수량·평단·평가손익은 입력한 거래와 조회된 가격을 기준으로 계산합니다. 가격 제공자는 Yahoo Finance이며 삼성증권 계좌와 직접 연결된 것이 아닙니다.")
-    with st.expander("➕ 보유 종목 직접 등록 / 수정", expanded=not bool(len(load_holdings()))):
-        hname, hticker = stock_search_widget("holding_search")
-        with st.form("holding_form"):
-            hc1, hc2 = st.columns(2)
-            with hc1:
-                st.text_input("선택한 종목명", value=hname, disabled=True)
-                st.text_input("종목 코드", value=hticker, disabled=True)
-                hqty = st.number_input("현재 보유 수량", min_value=0.0, step=1.0, format="%.4f")
-            with hc2:
-                havg = st.number_input("평균 매입단가", min_value=0.0, step=100.0, format="%.4f")
-                hcurrency = st.selectbox("통화", ["KRW", "USD"], index=0 if hticker.endswith((".KS", ".KQ")) or hticker.startswith("^") else 1)
-                haccount = st.selectbox("계좌 구분", ["삼성증권 ISA", "삼성증권 일반계좌", "삼성증권 CMA", "기타 계좌"])
-            hsubmit = st.form_submit_button("보유 정보 저장")
-            if hsubmit:
-                if not hticker or not hname.strip() or hqty <= 0 or havg <= 0:
-                    st.error("검색 결과 또는 종목명·티커·보유 수량·평단을 확인해 주세요.")
-                else:
-                    save_holding(hticker, hname.strip(), hqty, havg, hcurrency, haccount)
-                    st.success("보유 정보가 저장되었습니다. 같은 티커는 기존 보유 정보를 갱신합니다.")
-                    
-    holdings = load_holdings()
-    if holdings.empty:
-        st.info("등록된 보유 종목이 없습니다. 위에서 종목명·코드·수량·평단을 입력하세요.")
-    else:
-        if st.button("🔄 보유 종목 가격 새로고침"):
-            latest_close.clear()
-        rows=[]
-        with st.spinner("보유 종목 가격 조회 중..."):
-            for _, h in holdings.iterrows():
-                px, pxdate = latest_close(str(h.ticker))
-                qty, avg = float(h.quantity), float(h.avg_cost)
-                market_value = px*qty if px is not None else None
-                pnl = (px-avg)*qty if px is not None else None
-                pnl_pct = (px/avg-1)*100 if px is not None and avg else None
-                rows.append({"종목":h["name"],"코드":h.ticker,"계좌":h.account,"수량":qty,
-                            "평단":avg,"현재가":px,"평가금액":market_value,"평가손익":pnl,
-                            "수익률(%)":pnl_pct,"가격 기준일":pxdate or "자료 없음","통화":h.currency})
-        pf = pd.DataFrame(rows)
-        valid = pf.dropna(subset=["평가금액"])
-        total_value = valid["평가금액"].sum() if not valid.empty else None
-        total_pnl = valid["평가손익"].sum() if not valid.empty else None
-        k1,k2,k3 = st.columns(3)
-        k1.metric("조회 가능한 보유 종목 평가금액", fmt_large(total_value))
-        k2.metric("평가손익 합계", fmt_large(total_pnl))
-        base = valid["평가금액"].sum()-valid["평가손익"].sum() if not valid.empty else 0
-        k3.metric("가중 평가수익률", f"{total_pnl/base*100:+.2f}%" if base else "자료 없음")
-        
-        st.subheader("보유 종목 직접 편집")
-        st.caption(
-            "종목명, 수량, 평단, 통화, 계좌를 수정한 뒤 저장하세요. "
-            "종목 코드는 식별자이므로 여기서는 수정할 수 없습니다."
-        )
-
-        edit_cols = ["ticker", "name", "quantity", "avg_cost", "currency", "account"]
-        edit_df = holdings[edit_cols].copy()
-        edit_df = edit_df.rename(columns={
-            "ticker": "종목 코드",
-            "name": "종목명",
-            "quantity": "보유 수량",
-            "avg_cost": "평균 매입단가",
-            "currency": "통화",
-            "account": "계좌",
-        })
-
-        edited = st.data_editor(
-            edit_df,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            key="holdings_editor",
-            column_config={
-                "종목 코드": st.column_config.TextColumn(
-                    "종목 코드", disabled=True
-                ),
-                "종목명": st.column_config.TextColumn("종목명"),
-                "보유 수량": st.column_config.NumberColumn(
-                    "보유 수량", min_value=0.0, format="%.4f"
-                ),
-                "평균 매입단가": st.column_config.NumberColumn(
-                    "평균 매입단가", min_value=0.0, format="%.4f"
-                ),
-                "통화": st.column_config.SelectboxColumn(
-                    "통화", options=["KRW", "USD"]
-                ),
-                "계좌": st.column_config.SelectboxColumn(
-                    "계좌",
-                    options=[
-                        "삼성증권 ISA",
-                        "삼성증권 일반계좌",
-                        "삼성증권 CMA",
-                        "기타 계좌",
-                    ],
-                ),
-            },
-        )
-
-        if st.button("변경사항 저장", key="save_holdings_edits"):
-            try:
-                if edited["종목명"].astype(str).str.strip().eq("").any():
-                    st.error("종목명은 비워둘 수 없습니다.")
-                elif (
-                    (edited["보유 수량"] <= 0).any()
-                    or (edited["평균 매입단가"] <= 0).any()
-                ):
-                    st.error("보유 수량과 평균 매입단가는 0보다 커야 합니다.")
-                else:
-                    for _, row in edited.iterrows():
-                        save_holding(
-                            str(row["종목 코드"]),
-                            str(row["종목명"]).strip(),
-                            float(row["보유 수량"]),
-                            float(row["평균 매입단가"]),
-                            str(row["통화"]),
-                            str(row["계좌"]),
-                        )
-
-                    st.success("보유 종목 변경사항을 저장했습니다.")
-                    st.rerun()
-            except Exception as e:
-                st.error(f"변경사항 저장에 실패했습니다: {e}")
-
-        
-        st.subheader("계좌별 보유 현황")
-
-        display_cols = [
-            "종목", "코드", "수량", "평단",
-            "현재가", "평가금액", "평가손익", "수익률(%)"
-        ]
-
-        account_order = [
-            "삼성증권 ISA",
-            "삼성증권 일반계좌",
-            "삼성증권 CMA",
-            "기타 계좌",
-        ]
-
-        for account_name in account_order:
-            account_pf = pf[pf["계좌"] == account_name].copy()
-
-            if account_pf.empty:
-                continue
-
-            account_value = account_pf["평가금액"].sum(min_count=1)
-            account_pnl = account_pf["평가손익"].sum(min_count=1)
-
-            with st.expander(
-                f"{account_name} · 평가금액 {fmt_large(account_value)} · "
-                f"평가손익 {fmt_large(account_pnl)}",
-                expanded=True,
-            ):
                 st.dataframe(
-                    account_pf[display_cols],
+                    sup_pf,
                     use_container_width=True,
                     hide_index=True,
-                    column_config={
-                        "수량": st.column_config.NumberColumn(
-                            "수량", format="%.4f"
-                        ),
-                        "평단": st.column_config.NumberColumn(
-                            "평단", format="%.2f"
-                        ),
-                        "현재가": st.column_config.NumberColumn(
-                            "현재가", format="%.2f"
-                        ),
-                        "평가금액": st.column_config.NumberColumn(
-                            "평가금액", format="%.0f"
-                        ),
-                        "평가손익": st.column_config.NumberColumn(
-                            "평가손익", format="%.0f"
-                        ),
-                        "수익률(%)": st.column_config.NumberColumn(
-                            "수익률(%)", format="%.2f%%"
-                        ),
-                    },
                 )
 
-        st.subheader("포트폴리오 비중")
-        st.caption("통화별로 차트를 분리했습니다. 안쪽은 자산 카테고리, 바깥쪽은 개별 종목입니다. 조각을 누르거나 마우스를 올리면 평가금액과 전체 비중을 확인할 수 있습니다.")
+                # 통화별로 따로 비중 계산: KRW와 USD를 직접 합산하지 않음
+                for currency in ["KRW", "USD"]:
+                    subset = sup_valid[
+                        (sup_valid["통화"] == currency)
+                        & (sup_valid["평가금액"] > 0)
+                    ].copy()
 
-        category_colors = {
-            "반도체·하드웨어": "#2563EB",
-            "기술·성장주": "#7C3AED",
-            "시장 지수 ETF": "#0D9488",
-            "시장 지수": "#0F766E",
-            "경기 방어주": "#16A34A",
-            "헬스케어": "#22A06B",
-            "금융·지주": "#D97706",
-            "경기 민감주": "#EA580C",
-            "배당 ETF": "#65A30D",
-            "채권": "#64748B",
-            "기타·분류 확인 필요": "#9CA3AF",
-        }
-        # 같은 종목이 여러 계좌에 있으면 차트에서는 한 종목으로 합산합니다.
-        chart_cols = st.columns(2)
-        for col, currency in zip(chart_cols, ["KRW", "USD"]):
-            subset = pf[(pf["통화"] == currency) & pf["평가금액"].notna() & (pf["평가금액"] > 0)].copy()
-            with col:
-                st.markdown(f"**{currency} 자산 비중**")
-                if subset.empty:
-                    st.info(f"{currency} 평가 가능한 자산이 없습니다.")
-                    continue
+                    if subset.empty:
+                        continue
 
-                subset["카테고리"] = subset.apply(
-                    lambda row: classify_holding(row["종목"], row["코드"]), axis=1
-                )
-                chart_data = (
-                    subset.groupby(["카테고리", "코드", "종목"], as_index=False)["평가금액"]
-                    .sum()
-                    .sort_values("평가금액", ascending=False)
-                )
-                total_value_chart = float(chart_data["평가금액"].sum())
-                category_totals = chart_data.groupby("카테고리")["평가금액"].sum().sort_values(ascending=False)
-
-                labels, ids, parents, values, colors, hover_text = [], [], [], [], [], []
-                for category, category_value in category_totals.items():
-                    category_id = f"category::{currency}::{category}"
-                    category_weight = float(category_value) / total_value_chart
-                    labels.append(f"{category} · {category_weight:.1%}")
-                    ids.append(category_id)
-                    parents.append("")
-                    values.append(float(category_value))
-                    base_color = category_colors.get(category, "#9CA3AF")
-                    colors.append(base_color)
-                    hover_text.append(
-                        f"<b>{category}</b><br>평가금액: {category_value:,.2f} {currency}"
-                        f"<br>전체 비중: {category_weight:.2%}"
+                    subset["비중(%)"] = (
+                        subset["평가금액"]
+                        / subset["평가금액"].sum()
+                        * 100
                     )
 
-                    children = chart_data[chart_data["카테고리"] == category]
-                    for _, stock in children.iterrows():
-                        stock_value = float(stock["평가금액"])
-                        stock_weight = stock_value / total_value_chart
-                        
-                        stock_ticker = str(stock["코드"])
-                        stock_name = str(stock["종목"])
-                        stock_id = f"stock::{currency}::{category}::{stock_ticker}"
-                        # 차트 라벨은 티커 대신 사용자가 등록한 종목명을 표시합니다.
-                        short_label = stock_name if len(stock_name) <= 16 else stock_name[:15] + "…"
-                        labels.append(f"{short_label} · {stock_weight:.1%}")
-                        ids.append(stock_id)
-                        parents.append(category_id)
-                        values.append(stock_value)
-                        colors.append(base_color)
-                        hover_text.append(
-                            f"<b>{stock_name} ({stock_ticker})</b><br>카테고리: {category}"
-                            f"<br>평가금액: {stock_value:,.2f} {currency}"
-                            f"<br>전체 비중: {stock_weight:.2%}"
+                    largest = subset.sort_values(
+                        "비중(%)", ascending=False
+                    ).iloc[0]
+
+                    st.write(
+                        f"**{currency} 자산 최대 종목 비중:** "
+                        f"{largest['종목']} "
+                        f"{largest['비중(%)']:.1f}%"
+                    )
+
+                    if largest["비중(%)"] >= 40:
+                        st.warning(
+                            "한 종목의 비중이 해당 통화 자산의 "
+                            "40% 이상입니다. 집중 위험을 확인하세요."
                         )
 
-
-                fig_pie = go.Figure(go.Sunburst(
-                    ids=ids,
-                    labels=labels,
-                    parents=parents,
-                    values=values,
-                    branchvalues="total",
-                    sort=False,
-                    maxdepth=2,
-                    insidetextorientation="radial",
-                    textinfo="label",
-                    marker={"colors": colors, "line": {"color": "white", "width": 1}},
-                    customdata=hover_text,
-                    hovertemplate="%{customdata}<extra></extra>",
-                ))
-                fig_pie.update_layout(
-                    height=470,
-                    margin={"l": 4, "r": 4, "t": 8, "b": 8},
-                    showlegend=False,
-                    uniformtext={"minsize": 9, "mode": "hide"},
+                st.caption(
+                    "가격 출처: Yahoo Finance. "
+                    "계좌와 직접 연결된 실시간 잔고가 아니며, "
+                    "통화 간 환산·세금·수수료는 반영하지 않습니다."
                 )
-                st.plotly_chart(fig_pie, use_container_width=True)
-                st.caption("작은 조각은 라벨이 숨겨질 수 있습니다. 해당 조각에 마우스를 올리면 종목명·평가금액·전체 비중이 표시됩니다. 자동 카테고리는 종목명과 티커를 바탕으로 한 추정이며, 미분류 항목은 별도 확인이 필요합니다.")
-        st.caption("주의: 통화가 다른 종목의 합계는 환산 전 값이 섞일 수 있으므로 총액·손익 합계는 KRW와 USD를 분리해 해석해야 합니다. 가격 기준일과 제공자 데이터의 지연 가능성을 확인하세요. 세금·배당·환전 비용은 아직 반영하지 않습니다.")
-        st.download_button("보유 현황 CSV 다운로드", pf.to_csv(index=False).encode("utf-8-sig"), "eggfolio_portfolio.csv", "text/csv")
-        
-        st.subheader("보유 종목 개별 삭제")
-        st.caption("잘못 등록한 종목만 선택해 삭제할 수 있습니다. 삭제 후에는 복구할 수 없으므로 종목 코드와 이름을 확인하세요.")
-        for _, item in holdings.iterrows():
-            delete_col1, delete_col2 = st.columns([5, 1])
-            with delete_col1:
-                st.write(f"**{item['name']}** · `{item['ticker']}` · {item['account']}")
-            with delete_col2:
-                if st.button("삭제", key=f"delete_holding_{item['ticker']}", type="secondary"):
-                    delete_holding(item["ticker"])
-                    st.rerun()
-    st.divider()
-    st.subheader("매수·매도 기록")
-    st.write("거래를 기록하면 수량과 가중평균 매입원가가 자동 갱신됩니다. 직접 등록한 보유 정보는 기준값이며, 과거 거래를 소급 계산한 값은 아닙니다.")
-    trade_name, trade_ticker = stock_search_widget("trade_search")
-    with st.form("trade_form", clear_on_submit=True):
-        tc1,tc2 = st.columns(2)
-        with tc1:
-            st.text_input("선택한 종목명", value=trade_name, disabled=True)
-            st.text_input("종목 코드", value=trade_ticker, disabled=True)
-            trade_side = st.selectbox("거래 유형", ["매수", "매도"])
-            trade_qty = st.number_input("거래 수량", min_value=0.0001, value=1.0, step=1.0)
-        with tc2:
-            trade_price = st.number_input("거래 단가", min_value=0.0001, value=1.0, step=100.0)
-            trade_fee = st.number_input("수수료 등 비용", min_value=0.0, value=0.0, step=1.0)
-            trade_account = st.selectbox("거래 계좌", ["삼성증권 ISA", "삼성증권 일반계좌", "삼성증권 CMA", "기타 계좌"])
-            trade_date = st.date_input("거래일", value=datetime.now().date())
-        trade_note = st.text_area("거래 메모 (선택)", placeholder="매매 이유나 당시 상황. 비워도 됩니다.")
-        trade_submit = st.form_submit_button("거래 저장 및 자동 계산")
-        if trade_submit:
-            if not trade_ticker or not trade_name.strip():
-                st.error("검색 결과 또는 종목명과 티커를 확인해 주세요.")
+
+        except Exception as e:
+            sup_pf = pd.DataFrame()
+            st.error(f"포트폴리오 데이터를 불러오지 못했습니다: {e}")
+
+        st.divider()
+
+        # 2. 현재 선택 종목의 시장 상태
+        st.subheader("② 시장 상태와 가격 위치")
+        st.write(f"**분석 종목:** {selected_stock_name} · `{ticker}`")
+
+        analysis, analysis_error = analyze_chart_rules(
+            ticker, selected_stock_name, prices
+        )
+
+        if analysis_error or analysis is None:
+            st.warning(
+                analysis_error or "현재 종목의 분석 자료가 부족합니다."
+            )
+        else:
+            a1, a2, a3, a4 = st.columns(4)
+
+            a1.metric(
+                "기술적 신호",
+                analysis["verdict"],
+            )
+            a2.metric(
+                "신호 집계",
+                analysis["score"],
+            )
+            a3.metric(
+                "20일 수익률",
+                f"{analysis['return20']:+.2f}%"
+                if analysis["return20"] is not None
+                else "자료 부족",
+            )
+            a4.metric(
+                "RSI(14)",
+                f"{analysis['rsi']:.1f}"
+                if analysis["rsi"] is not None
+                else "자료 부족",
+            )
+
+            st.caption(
+                f"가격 기준일: {analysis['date']} · "
+                "가격 추세 신호는 매수·매도 확률이나 "
+                "검증된 매매 전략을 의미하지 않습니다."
+            )
+
+            # 달걀의 정식 단계 계산이 아직 연결되지 않았으므로
+            # 가격 추세를 이용한 임시 국면 표시만 제공
+            if analysis["verdict"] == "상승 우위 신호":
+                phase = "상승 우위 관측"
+                phase_detail = (
+                    "가격 지표에서 상승 방향 신호가 상대적으로 많습니다."
+                )
+            elif analysis["verdict"] == "하락 우위 신호":
+                phase = "하락 우위 관측"
+                phase_detail = (
+                    "가격 지표에서 약세 방향 신호가 상대적으로 많습니다."
+                )
+            elif analysis["verdict"] == "혼합 신호 · 방향 불명확":
+                phase = "혼합 국면"
+                phase_detail = (
+                    "상승·하락 신호가 혼재되어 방향이 명확하지 않습니다."
+                )
             else:
-                try:
-                    save_trade(str(trade_date), trade_ticker, trade_name.strip(), trade_side, float(trade_qty), float(trade_price), float(trade_fee), trade_account, trade_note.strip())
-                    st.success("거래가 저장되었고 보유 수량·평단이 갱신되었습니다.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"거래를 저장하지 못했습니다: {e}")
-    trades = load_trades()
-    if not trades.empty:
-        st.subheader("최근 거래 내역")
-        st.dataframe(trades.head(100), use_container_width=True, hide_index=True)
-        st.download_button("거래 내역 CSV 다운로드", trades.to_csv(index=False).encode("utf-8-sig"), "eggfolio_trades.csv", "text/csv")
+                phase = "판단 보류"
+                phase_detail = "유효한 지표가 부족합니다."
 
+            st.markdown("### 🥚 국면 참고")
+            st.info(f"**{phase}** — {phase_detail}")
+            st.caption(
+                "임시 기술적 국면입니다. Eggfolio의 정식 달걀 단계와 "
+                "동일한 판정으로 간주하면 안 됩니다."
+            )
 
+            with st.expander("상승·하락 근거 자세히 보기"):
+                st.markdown("**상승을 지지하는 근거**")
+                for item in analysis["positive"]:
+                    st.write(f"- {item}")
+                if not analysis["positive"]:
+                    st.write("- 확인된 상승 근거가 없습니다.")
+
+                st.markdown("**약세 또는 반대 근거**")
+                for item in analysis["negative"]:
+                    st.write(f"- {item}")
+                if not analysis["negative"]:
+                    st.write("- 확인된 약세 근거가 없습니다.")
+
+                st.markdown("**추가 관측 사항**")
+                for item in analysis["neutral"]:
+                    st.write(f"- {item}")
+                if not analysis["neutral"]:
+                    st.write("- 추가 관측 사항이 없습니다.")
+
+        st.divider()
+
+        # 3. 기업 기초체력과 밸류에이션
+        st.subheader("③ 기업 기초체력과 밸류에이션")
+
+        if ticker.startswith("^"):
+            st.info(
+                "시장 지수는 개별 기업이 아니므로 "
+                "기업 재무 지표를 표시하지 않습니다."
+            )
+        else:
+            try:
+                info = get_fundamentals(ticker)
+
+                if not info:
+                    st.warning("기업 재무 데이터가 제공되지 않습니다.")
+                else:
+                    f1, f2, f3, f4 = st.columns(4)
+
+                    f1.metric(
+                        "선행 PER",
+                        fmt(info.get("forwardPE")),
+                    )
+                    f2.metric(
+                        "PER(TTM)",
+                        fmt(info.get("trailingPE")),
+                    )
+                    f3.metric(
+                        "매출 성장률",
+                        f"{info['revenueGrowth'] * 100:.1f}%"
+                        if info.get("revenueGrowth") is not None
+                        else "자료 없음",
+                    )
+                    f4.metric(
+                        "이익률",
+                        f"{info['profitMargins'] * 100:.1f}%"
+                        if info.get("profitMargins") is not None
+                        else "자료 없음",
+                    )
+
+                    st.caption(
+                        "출처: Yahoo Finance. 누락되거나 지연된 값이 있을 수 "
+                        "있으며 PER만으로 고평가·저평가를 확정하지 않습니다."
+                    )
+
+            except Exception as e:
+                st.warning(f"기업 재무 데이터 조회 실패: {e}")
+
+        st.divider()
+
+        # 4. 투자자 수급
+        st.subheader("④ 투자자 수급")
+        render_investor_flow_check(ticker)
+
+        st.divider()
+
+        # 5. 핵심 전략
+        st.subheader("⑤ 감독실 핵심 전략")
+
+        if analysis is None:
+            st.warning(
+                "분석 자료가 부족해 전략 판단을 보류합니다. "
+                "데이터를 확인한 후 다시 검토하세요."
+            )
+        else:
+            if analysis["verdict"] == "상승 우위 신호":
+                st.success(
+                    "기술적 상태: 상승 우위 신호. "
+                    "보유 종목이라면 추세 유지 여부를 관찰하고, "
+                    "신규 매수는 실적·밸류에이션·포트폴리오 비중을 "
+                    "함께 검증한 뒤 검토하세요."
+                )
+                st.write(
+                    "**다음 확인 조건:** 가격이 주요 이동평균선 위에 "
+                    "머무는지, 실적 전망이 유지되는지, 현재 비중이 "
+                    "과도하지 않은지 확인합니다."
+                )
+
+            elif analysis["verdict"] == "하락 우위 신호":
+                st.error(
+                    "기술적 상태: 하락 우위 신호. "
+                    "가격 하락만을 근거로 추가 매수하지 말고, "
+                    "실적 가설과 약세 원인을 먼저 확인하세요."
+                )
+                st.write(
+                    "**다음 확인 조건:** 실적 전망 훼손 여부, "
+                    "주요 가격 추세 회복 여부, 외국인·기관 수급의 "
+                    "지속 여부를 점검합니다."
+                )
+
+            elif analysis["verdict"] == "혼합 신호 · 방향 불명확":
+                st.warning(
+                    "기술적 신호가 혼합되어 있습니다. "
+                    "성급하게 방향을 단정하기보다 새로운 데이터가 "
+                    "확인될 때까지 판단을 보류하는 편이 합리적입니다."
+                )
+                st.write(
+                    "**다음 확인 조건:** 가격 추세와 실적 전망이 "
+                    "같은 방향을 가리키는지 확인합니다."
+                )
+
+            else:
+                st.warning(
+                    "유효한 신호가 부족합니다. "
+                    "데이터가 충분해질 때까지 판단을 보류합니다."
+                )
+
+            st.markdown("**판단 시 반드시 확인할 항목**")
+            st.write(
+                "- 기술적 신호와 기업 실적이 서로 충돌하는가?\n"
+                "- 현재 보유 비중과 동일 업종 집중도가 과도한가?\n"
+                "- 수급 데이터의 기준일과 출처가 확인되었는가?\n"
+                "- 투자 가설을 훼손하는 새로운 사실이 발생했는가?"
+            )
+
+        st.caption(
+            "이 전략은 현재 연결된 데이터에 기반한 규칙형 참고 판단입니다. "
+            "아직 과거 성과 검증이나 자동 주문 기능은 없습니다."
+        )
 with tab_chart:
     mas = st.multiselect(
         "이동평균선",
