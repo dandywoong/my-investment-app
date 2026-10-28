@@ -1141,8 +1141,9 @@ tab_portfolio, tab_chart, tab_market, tab_company, tab_journal, tab_raw = st.tab
     key="eggfolio_main_tabs",
 )
 
-with tab_portfolio:
-    st.subheader("내 보유 종목")
+if tab_portfolio.open:
+    with tab_portfolio:
+        st.subheader("내 보유 종목")
     st.caption("보유 수량·평단·평가손익은 입력한 거래와 조회된 가격을 기준으로 계산합니다. 가격 제공자는 Yahoo Finance이며 삼성증권 계좌와 직접 연결된 것이 아닙니다.")
     with st.expander("➕ 보유 종목 직접 등록 / 수정", expanded=not bool(len(load_holdings()))):
         hname, hticker = stock_search_widget("holding_search")
