@@ -1091,7 +1091,7 @@ def infer_egg_phase(prices):
     직접적인 대중심리 측정값이 아니며, 백테스트 전에는
     검증된 매매 신호로 취급하지 않는다.
     """
-   if prices is None or len(prices) < 121:
+    if prices is None or len(prices) < 121:
         return {
             "stage": "자료 부족",
             "return20": None,
@@ -1106,7 +1106,6 @@ def infer_egg_phase(prices):
 
     last = prices.iloc[-1]
     prev5 = prices.iloc[-6]
-
     close = float(last["Close"])
     ma20 = last.get("MA20")
     ma60 = last.get("MA60")
