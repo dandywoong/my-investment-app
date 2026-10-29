@@ -1085,301 +1085,6 @@ def render_fundamentals(ticker):
     except Exception as e:
         st.warning("재무 데이터를 가져오지 못했습니다."); st.caption(str(e))
 
-def infer_egg_phase(prices):
-    """
-    가격·추세·거래량을 이용한 잠정 달걀 국면 추정.
-    직접적인 대중심리 측정값이 아니며, 백테스트 전에는
-    검증된 매매 신호로 취급하지 않는다.
-    """
-    if prices is None or len(prices) < 121:
-        return {
-            "stage": "자료 부족",
-            "return20": None,
-            "return60": None,
-            "atr_pct": None,
-            "position": (0.50, 0.50),
-            "confidence": 0,
-            "reasons": ["최소 121거래일의 가격 데이터가 필요합니다."],
-            "signals": {},
-            "action_bias": "판단 보류",
-        }
-
-    last = prices.iloc[-1]
-    prev5 = prices.iloc[-6]
-    close = float(last["Close"])
-    ma20 = last.get("MA20")
-    ma60 = last.get("MA60")
-    ma120 = last.get("MA120")
-    ret20 = last.get("Return20")
-    ret60 = last.get("Return60")
-    rsi = last.get("RSI14")
-    volume_ratio = last.get("VolumeRatio20")
-    atr_pct = last.get("ATR14_Pct")
-    rsi_prev = prev5.get("RSI14")
-
-  def valid(v):
-        return v is not None and pd.notna(v)
-
-    if not all(valid(v) for v in [ma20, ma60, ma120, ret20, ret60]):
-        return {
-            "stage": "자료 부족",
-            "position": (0.50, 0.50),
-            "confidence": 0,
-            "return20": None,
-            "return60": None,
-            "atr_pct": None,
-            "reasons": ["추세 지표가 충분히 계산되지 않았습니다."],
-            "signals": {},
-            "action_bias": "판단 보류",
-        }
-
-    ma20 = float(ma20)
-    ma60 = float(ma60)
-    ma120 = float(ma120)
-    ret20 = float(ret20)
-    ret60 = float(ret60)
-
-    rsi = float(rsi) if valid(rsi) else None
-    rsi_prev = float(rsi_prev) if valid(rsi_prev) else None
-    volume_ratio = (
-        float(volume_ratio) if valid(volume_ratio) else None
-    )
-    atr_pct = float(atr_pct) if valid(atr_pct) else None
-
-    distance120 = (close / ma120 - 1) * 100
-    above20 = close > ma20
-    above60 = close > ma60
-    above120 = close > ma120
-    rising_rsi = (
-        rsi is not None
-        and rsi_prev is not None
-        and rsi > rsi_prev
-    )
-    heavy_volume = (
-        volume_ratio is not None and volume_ratio >= 1.5
-    )
-
-    # 각 조건은 관측 사실이다. 조건 하나만으로 심리를 확정하지 않는다.
-    signals = {
-        "단기 추세 회복": above20,
-        "중기 추세 회복": above60,
-        "장기 추세 위": above120,
-        "20일 상승": ret20 > 0,
-        "60일 상승": ret60 > 0,
-        "RSI 상승": rising_rsi,
-        "거래량 급증": heavy_volume,
-    }
-
-    reasons = []
-
-    # 순서가 중요하다. 극단적인 하락과 과열을 먼저 검사한다.
-    capitulation = (
-        ret20 <= -12
-        and close < ma20
-        and heavy_volume
-    )
-    overheating = (
-        ret20 >= 12
-        and distance120 >= 15
-        and (rsi is not None and rsi >= 70)
-    )
-    markdown = (
-        close < ma20 < ma60
-        and ret20 < 0
-        and ret60 < 0
-    )
-    markup = (
-        close > ma20 > ma60
-        and ret20 > 0
-        and ret60 > 0
-    )
-    recovery = (
-        close > ma20
-        and ret20 > 0
-        and (rsi is None or rising_rsi)
-        and ret60 < 0
-    )
-    rebound_attempt = (
-        close < ma60
-        and ret20 > 0
-        and rising_rsi
-    )
-    weakening = (
-        close < ma20
-        and ret20 < 0
-        and ret60 > 0
-    )
-
-    if capitulation:
-        stage = "투매·공포 압력"
-        position = (0.50, 0.18)
-        action_bias = "펀더멘탈 확인 후 분할매수 후보 검토"
-        reasons.extend([
-            "20일 수익률이 -12% 이하입니다.",
-            "20일선 아래에서 거래량이 급증했습니다.",
-        ])
-    elif overheating:
-        stage = "상승 과열 경고"
-        position = (0.50, 0.82)
-        action_bias = "추격매수 제한·보유 비중 점검"
-        reasons.extend([
-            "20일 수익률이 +12% 이상입니다.",
-            "120일선 대비 이격과 RSI가 높은 구간입니다.",
-        ])
-    elif markdown:
-        stage = "하락 추세"
-        position = (0.25, 0.28)
-        action_bias = "추가매수 보류·기업 가설 재검증"
-        reasons.extend([
-            "종가가 20일선과 60일선 아래에 있습니다.",
-            "20일·60일 수익률이 모두 음수입니다.",
-        ])
-    elif markup:
-        stage = "상승 추세"
-        position = (0.75, 0.72)
-        action_bias = "보유 유지 검토·추격매수는 별도 검증"
-        reasons.extend([
-            "종가가 20일선과 60일선 위에 있습니다.",
-            "20일·60일 수익률이 모두 양수입니다.",
-        ])
-    elif recovery:
-        stage = "회복 시도"
-        position = (0.30, 0.68)
-        action_bias = "회복 지속 여부 확인 후 행동"
-        reasons.extend([
-            "20일선 위에서 단기 수익률이 양수입니다.",
-            "중기 추세는 아직 완전히 회복되지 않았습니다.",
-        ])
-    elif rebound_attempt:
-        stage = "하락 중 반등 시도"
-        position = (0.30, 0.40)
-        action_bias = "반등과 추세 전환을 구분"
-        reasons.extend([
-            "단기 가격 반등 신호가 관측됩니다.",
-            "종가가 아직 60일선 아래에 있습니다.",
-        ])
-    elif weakening:
-        stage = "상승 추세 약화"
-        position = (0.70, 0.38)
-        action_bias = "이익 실현 압력과 추세 훼손 여부 점검"
-        reasons.extend([
-            "20일선 아래에서 단기 수익률이 음수입니다.",
-            "60일 수익률은 아직 양수입니다.",
-        ])
-    else:
-        stage = "전환·혼합 국면"
-        position = (0.50, 0.50)
-        action_bias = "방향 확인 전 성급한 추가매수 제한"
-        reasons.append("추세 조건이 하나의 국면으로 정렬되지 않았습니다.")
-
-    if volume_ratio is not None:
-        reasons.append(
-            f"거래량은 20일 평균의 {volume_ratio:.2f}배입니다."
-        )
-    if rsi is not None:
-        reasons.append(f"RSI(14)는 {rsi:.1f}입니다.")
-    reasons.append(
-        f"120일선 대비 현재 가격은 {distance120:+.1f}%입니다."
-    )
-
-    # 이 값은 통계적 확률이나 승률이 아니라 지표 충족 비율이다.
-    confidence = round(
-        sum(bool(v) for v in signals.values())
-        / len(signals) * 100
-    )
-
-    return {
-        "stage": stage,
-        "position": position,
-        "confidence": confidence,
-        "reasons": reasons,
-        "signals": signals,
-        "action_bias": action_bias,
-        "close": close,
-        "ma20": ma20,
-        "ma60": ma60,
-        "ma120": ma120,
-        "atr_pct": atr_pct,
-        "return20": ret20,
-        "return60": ret60,
-        "rsi": rsi,
-        "volume_ratio": volume_ratio,
-    }
-
-
-def render_egg_figure(egg, title="종목 달걀 국면"):
-    """달걀 형태의 국면 지도와 현재 추정 위치를 표시한다."""
-    fig = go.Figure()
-
-    # 외곽 달걀과 기준선
-    fig.add_shape(
-        type="circle",
-        x0=0.12, y0=0.10, x1=0.88, y1=0.90,
-        line=dict(color="#64748B", width=2),
-        fillcolor="rgba(148,163,184,0.08)",
-    )
-    fig.add_shape(
-        type="line",
-        x0=0.50, y0=0.12, x1=0.50, y1=0.88,
-        line=dict(color="#94A3B8", dash="dot"),
-    )
-    fig.add_shape(
-        type="line",
-        x0=0.14, y0=0.50, x1=0.86, y1=0.50,
-        line=dict(color="#94A3B8", dash="dot"),
-    )
-
-    x, y = egg["position"]
-
-    fig.add_trace(go.Scatter(
-        x=[x],
-        y=[y],
-        mode="markers+text",
-        text=[egg["stage"]],
-        textposition="top center",
-        marker=dict(
-            size=20,
-            color="#F59E0B",
-            line=dict(color="#FFFFFF", width=2),
-        ),
-        name="현재 추정 국면",
-        hovertemplate=(
-            f"<b>{egg['stage']}</b><br>"
-            f"지표 충족 비율: {egg['confidence']}%"
-            "<extra></extra>"
-        ),
-    ))
-
-    labels = [
-        (0.50, 0.95, "상승·과열"),
-        (0.50, 0.04, "하락·공포"),
-        (0.04, 0.50, "회복"),
-        (0.96, 0.50, "약화·분배"),
-    ]
-    for x0, y0, label in labels:
-        fig.add_annotation(
-            x=x0, y=y0, text=label,
-            showarrow=False, font=dict(size=11),
-        )
-
-    fig.update_layout(
-        title=title,
-        height=420,
-        margin=dict(l=20, r=20, t=55, b=25),
-        template="plotly_white",
-        showlegend=False,
-        xaxis=dict(range=[0, 1], visible=False, fixedrange=True),
-        yaxis=dict(
-            range=[0, 1], visible=False,
-            fixedrange=True, scaleanchor="x", scaleratio=1,
-        ),
-    )
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        config={"displaylogo": False, "responsive": True},
-    )
-
 
 init_db()
 st.title("🥚 Eggfolio")
@@ -1665,55 +1370,33 @@ if tab_supervisor.open:
                 "검증된 매매 전략을 의미하지 않습니다."
             )
 
-           
-            # 달걀 국면 엔진: 기존 단순 상승/하락 분류를 대체
-            egg = infer_egg_phase(prices)
-
-            st.markdown("### 🥚 종목 달걀 국면")
-            render_egg_figure(
-                egg,
-                title=f"{selected_stock_name} · 달걀 국면 추정",
-            )
-
-            st.markdown(f"#### 현재 국면: {egg['stage']}")
-            st.write(f"**행동 방향:** {egg['action_bias']}")
-
-            ec1, ec2, ec3 = st.columns(3)
-            ec1.metric(
-                "20일 수익률",
-                f"{egg['return20']:+.2f}%"
-                if egg.get("return20") is not None else "자료 부족",
-            )
-            ec2.metric(
-                "60일 수익률",
-                f"{egg['return60']:+.2f}%"
-                if egg.get("return60") is not None else "자료 부족",
-            )
-            ec3.metric(
-                "지표 충족 비율",
-                f"{egg['confidence']}%",
-            )
-
-            st.markdown("**국면 판정 근거**")
-            for reason in egg["reasons"]:
-                st.write(f"- {reason}")
-
-            with st.expander("국면 판정에 사용한 지표"):
-                st.dataframe(
-                    pd.DataFrame([
-                        {"지표": name, "조건 충족": "예" if value else "아니오"}
-                        for name, value in egg["signals"].items()
-                    ]),
-                    use_container_width=True,
-                    hide_index=True,
+            # 달걀의 정식 단계 계산이 아직 연결되지 않았으므로
+            # 가격 추세를 이용한 임시 국면 표시만 제공
+            if analysis["verdict"] == "상승 우위 신호":
+                phase = "상승 우위 관측"
+                phase_detail = (
+                    "가격 지표에서 상승 방향 신호가 상대적으로 많습니다."
                 )
+            elif analysis["verdict"] == "하락 우위 신호":
+                phase = "하락 우위 관측"
+                phase_detail = (
+                    "가격 지표에서 약세 방향 신호가 상대적으로 많습니다."
+                )
+            elif analysis["verdict"] == "혼합 신호 · 방향 불명확":
+                phase = "혼합 국면"
+                phase_detail = (
+                    "상승·하락 신호가 혼재되어 방향이 명확하지 않습니다."
+                )
+            else:
+                phase = "판단 보류"
+                phase_detail = "유효한 지표가 부족합니다."
 
-            st.warning(
-                "현재 국면은 가격·추세·거래량 기반의 잠정 추정입니다. "
-                "지표 충족 비율은 승률이나 국면 판정의 통계적 정확도가 아닙니다. "
-                "직접적인 투자심리 자료와 과거 성과 검증이 추가로 필요합니다."
+            st.markdown("### 🥚 국면 참고")
+            st.info(f"**{phase}** — {phase_detail}")
+            st.caption(
+                "임시 기술적 국면입니다. Eggfolio의 정식 달걀 단계와 "
+                "동일한 판정으로 간주하면 안 됩니다."
             )
-
 
             with st.expander("상승·하락 근거 자세히 보기"):
                 st.markdown("**상승을 지지하는 근거**")
@@ -1791,170 +1474,68 @@ if tab_supervisor.open:
         st.divider()
 
         # 5. 핵심 전략
-       
-        # 5. 종목별 행동 계획
-        st.subheader("⑤ 종목별 행동 계획")
+        st.subheader("⑤ 감독실 핵심 전략")
 
-        egg = infer_egg_phase(prices)
-
-        # 현재 선택 종목이 실제 보유 종목인지 확인
-        try:
-            holdings_now = load_holdings()
-        except Exception:
-            holdings_now = pd.DataFrame()
-
-        matched = (
-            holdings_now.loc[holdings_now["ticker"] == ticker]
-            if not holdings_now.empty and "ticker" in holdings_now.columns
-            else pd.DataFrame()
-        )
-
-        holding = matched.iloc[0] if not matched.empty else None
-
-        if holding is not None:
-            qty = float(holding["quantity"])
-            avg_cost = float(holding["avg_cost"])
-            current_value = close * qty
-            pnl = (close - avg_cost) * qty
-            pnl_pct = (
-                (close / avg_cost - 1) * 100
-                if avg_cost > 0 else None
-            )
-
-            p1, p2, p3 = st.columns(3)
-            p1.metric("보유 수량", f"{qty:g}주")
-            p2.metric("평단가", f"{avg_cost:,.0f}")
-            p3.metric(
-                "평가손익",
-                f"{pnl:+,.0f}",
-                f"{pnl_pct:+.2f}%" if pnl_pct is not None else None,
-            )
-
-            st.caption(
-                f"현재가 기준 평가금액: {current_value:,.0f} "
-                f"({holding['currency']})"
-            )
-        else:
-            qty = 0.0
-            avg_cost = 0.0
-            pnl = None
-            pnl_pct = None
-            st.info(
-                "현재 선택 종목은 등록된 보유 종목과 일치하지 않습니다. "
-                "신규 매수 후보 관점으로 분석합니다."
-            )
-
-        # 변동성 기준 참고 가격대
-        # ATR은 지지선·저항선이 아니라 최근 변동 폭의 추정치다.
-        atr_pct = egg.get("atr_pct")
-        if atr_pct is not None and close > 0:
-            atr_value = close * atr_pct / 100
-            review_low = close - atr_value
-            review_high = close + atr_value
-            stress_level = close - 2 * atr_value
-
-            st.markdown("**다음 가격 확인 구간**")
-            z1, z2, z3 = st.columns(3)
-            z1.metric("하방 재검토 구간", f"{review_low:,.0f}")
-            z2.metric("현재 종가", f"{close:,.0f}")
-            z3.metric("상방 확인 구간", f"{review_high:,.0f}")
-
-            st.caption(
-                f"추가 하락 스트레스 참고 가격: {stress_level:,.0f}. "
-                "ATR 기반 관찰 구간이며 지지·저항선이나 자동 매매 가격이 아닙니다."
-            )
-        else:
-            st.info("ATR 데이터가 부족해 변동성 기준 가격대를 산출할 수 없습니다.")
-
-        # 국면에 따른 1차 행동 가이드
-        stage = egg["stage"]
-
-        st.markdown("**현재 판단과 실행 조건**")
-
-        if stage == "투매·공포 압력":
+        if analysis is None:
             st.warning(
-                "공포성 매도 가능성을 점검하는 단계입니다. "
-                "가격이 크게 하락했다는 이유만으로 매수하지 않습니다."
+                "분석 자료가 부족해 전략 판단을 보류합니다. "
+                "데이터를 확인한 후 다시 검토하세요."
             )
-            st.write(
-                "1. 실적 전망과 경쟁우위가 유지되는지 확인합니다.\n"
-                "2. 투매 거래량 이후 저점 갱신이 멈추는지 관찰합니다.\n"
-                "3. 기업 가설이 유지되고 포트폴리오 한도 내일 때만 "
-                "분할매수 후보로 검토합니다."
-            )
-
-        elif stage == "하락 추세":
-            st.error(
-                "하락 추세가 관측됩니다. 물타기보다 하락 원인과 "
-                "기업 가설의 유효성을 먼저 검증합니다."
-            )
-            st.write(
-                "1. 실적 전망 하향이나 경쟁력 훼손이 있는지 확인합니다.\n"
-                "2. 가격이 20일선 위로 회복하는지 관찰합니다.\n"
-                "3. 회복 확인 전에는 추가매수를 보류하는 것이 기본 규칙입니다."
-            )
-
-        elif stage in ("회복 시도", "하락 중 반등 시도"):
-            st.info(
-                "반등 또는 회복 초기일 수 있습니다. "
-                "단기 반등과 추세 전환을 구분해야 합니다."
-            )
-            st.write(
-                "1. 20일선 회복이 유지되는지 확인합니다.\n"
-                "2. 거래량과 외국인·기관 수급이 가격 상승을 뒷받침하는지 확인합니다.\n"
-                "3. 중기 추세가 확인되기 전에는 계획된 매수 한도를 초과하지 않습니다."
-            )
-
-        elif stage == "상승 추세":
-            st.success(
-                "상승 추세가 관측됩니다. 기업 가설이 유지된다면 "
-                "기존 보유를 지속할 근거가 될 수 있습니다."
-            )
-            st.write(
-                "1. 실적 전망과 상승 추세가 함께 유지되는지 확인합니다.\n"
-                "2. 급등 직후 추격매수는 피하고 가격 안착을 확인합니다.\n"
-                "3. 종목 비중과 업종 집중도가 한도를 넘으면 추가매수를 제한합니다."
-            )
-
-        elif stage in ("상승 과열 경고", "상승 추세 약화"):
-            st.warning(
-                "상승 과열 또는 추세 약화 가능성을 점검합니다. "
-                "추가매수보다 보유 비중과 기대수익을 먼저 재평가합니다."
-            )
-            st.write(
-                "1. 가격 상승에 비해 실적 전망이 뒤처지는지 확인합니다.\n"
-                "2. 거래량 증가와 함께 추세가 약해지는지 확인합니다.\n"
-                "3. 과도한 비중이라면 분할 축소 여부를 검토하되, "
-                "과열 신호 하나만으로 전량 매도하지 않습니다."
-            )
-
         else:
-            st.info(
-                "현재 추세 조건이 혼재되어 있습니다. "
-                "매수·매도 방향을 억지로 확정하지 않고, "
-                "다음 확인 조건을 충족할 때 판단을 갱신합니다."
-            )
-            st.write(
-                "1. 종가가 20일선과 60일선 위에 안착하는지 확인합니다.\n"
-                "2. 실적 전망과 수급이 가격 방향을 뒷받침하는지 확인합니다.\n"
-                "3. 조건 충족 전에는 기존 보유 정책을 유지하고 "
-                "추가매수를 서두르지 않습니다."
-            )
+            if analysis["verdict"] == "상승 우위 신호":
+                st.success(
+                    "기술적 상태: 상승 우위 신호. "
+                    "보유 종목이라면 추세 유지 여부를 관찰하고, "
+                    "신규 매수는 실적·밸류에이션·포트폴리오 비중을 "
+                    "함께 검증한 뒤 검토하세요."
+                )
+                st.write(
+                    "**다음 확인 조건:** 가격이 주요 이동평균선 위에 "
+                    "머무는지, 실적 전망이 유지되는지, 현재 비중이 "
+                    "과도하지 않은지 확인합니다."
+                )
 
-        st.markdown("**투자 가설 재검토 조건**")
-        st.write(
-            "- 실적 전망의 구조적 하향\n"
-            "- 핵심 제품 경쟁력 또는 시장 지위의 훼손\n"
-            "- 수요·공급 구조가 투자 가설과 반대로 변화\n"
-            "- 포트폴리오 집중도가 사전에 정한 한도 초과"
-        )
+            elif analysis["verdict"] == "하락 우위 신호":
+                st.error(
+                    "기술적 상태: 하락 우위 신호. "
+                    "가격 하락만을 근거로 추가 매수하지 말고, "
+                    "실적 가설과 약세 원인을 먼저 확인하세요."
+                )
+                st.write(
+                    "**다음 확인 조건:** 실적 전망 훼손 여부, "
+                    "주요 가격 추세 회복 여부, 외국인·기관 수급의 "
+                    "지속 여부를 점검합니다."
+                )
+
+            elif analysis["verdict"] == "혼합 신호 · 방향 불명확":
+                st.warning(
+                    "기술적 신호가 혼합되어 있습니다. "
+                    "성급하게 방향을 단정하기보다 새로운 데이터가 "
+                    "확인될 때까지 판단을 보류하는 편이 합리적입니다."
+                )
+                st.write(
+                    "**다음 확인 조건:** 가격 추세와 실적 전망이 "
+                    "같은 방향을 가리키는지 확인합니다."
+                )
+
+            else:
+                st.warning(
+                    "유효한 신호가 부족합니다. "
+                    "데이터가 충분해질 때까지 판단을 보류합니다."
+                )
+
+            st.markdown("**판단 시 반드시 확인할 항목**")
+            st.write(
+                "- 기술적 신호와 기업 실적이 서로 충돌하는가?\n"
+                "- 현재 보유 비중과 동일 업종 집중도가 과도한가?\n"
+                "- 수급 데이터의 기준일과 출처가 확인되었는가?\n"
+                "- 투자 가설을 훼손하는 새로운 사실이 발생했는가?"
+            )
 
         st.caption(
-            "이 계획은 관측 데이터 기반의 규칙형 참고 판단입니다. "
-            "가격 구간은 자동 주문선이 아니며, 전략의 승률과 기대수익은 "
-            "과거 데이터 검증 전까지 확인되지 않았습니다."
+            "이 전략은 현재 연결된 데이터에 기반한 규칙형 참고 판단입니다. "
+            "아직 과거 성과 검증이나 자동 주문 기능은 없습니다."
         )
-
 with tab_chart:
     mas = st.multiselect(
         "이동평균선",
