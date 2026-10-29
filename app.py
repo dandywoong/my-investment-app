@@ -1092,17 +1092,17 @@ def infer_egg_phase(prices):
     검증된 매매 신호로 취급하지 않는다.
     """
    if prices is None or len(prices) < 121:
-    return {
-        "stage": "자료 부족",
-        "return20": None,
-        "return60": None,
-        "atr_pct": None,
-        "position": (0.50, 0.50),
-        "confidence": 0,
-        "reasons": ["최소 121거래일의 가격 데이터가 필요합니다."],
-        "signals": {},
-        "action_bias": "판단 보류",
-    }
+        return {
+            "stage": "자료 부족",
+            "return20": None,
+            "return60": None,
+            "atr_pct": None,
+            "position": (0.50, 0.50),
+            "confidence": 0,
+            "reasons": ["최소 121거래일의 가격 데이터가 필요합니다."],
+            "signals": {},
+            "action_bias": "판단 보류",
+        }
 
     last = prices.iloc[-1]
     prev5 = prices.iloc[-6]
