@@ -1117,24 +1117,21 @@ def infer_egg_phase(prices):
     atr_pct = last.get("ATR14_Pct")
     rsi_prev = prev5.get("RSI14")
 
-    def valid(v):
+  def valid(v):
         return v is not None and pd.notna(v)
 
-if not all(valid(v) for v in [ma20, ma60, ma120, ret20, ret60]):
-    return {
-        "stage": "자료 부족",
-        "position": (0.50, 0.50),
-        "confidence": 0,
-
-        # 추가
-        "return20": None,
-        "return60": None,
-        "atr_pct": None,
-
-        "reasons": ["추세 지표가 충분히 계산되지 않았습니다."],
-        "signals": {},
-        "action_bias": "판단 보류",
-    }
+    if not all(valid(v) for v in [ma20, ma60, ma120, ret20, ret60]):
+        return {
+            "stage": "자료 부족",
+            "position": (0.50, 0.50),
+            "confidence": 0,
+            "return20": None,
+            "return60": None,
+            "atr_pct": None,
+            "reasons": ["추세 지표가 충분히 계산되지 않았습니다."],
+            "signals": {},
+            "action_bias": "판단 보류",
+        }
 
     ma20 = float(ma20)
     ma60 = float(ma60)
