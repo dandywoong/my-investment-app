@@ -1293,3 +1293,44 @@ def render_supervision(holdings, get_prices, classify, load_decisions, get_funda
     ], columns=["영역", "상태", "비고"]), use_container_width=True, hide_index=True)
     st.caption("판정은 연결된 자료만으로 계산한 것입니다. 미연결 영역이 많을수록 신뢰도가 낮아지며, 없는 자료를 긍정·중립으로 가정하지 않습니다. "
                "모든 규칙은 과거 데이터 검증 전입니다.")
+
+
+def render_single_asset(ticker, name, get_prices, get_fundamentals, load_flows):
+    """종목 분석 탭용: 보유 여부와 상관없이 선택한 종목 하나의 달걀 국면과 기업 자동 점검을 보여 준다. 읽기 전용."""
+    st.markdown("##### 선택 종목의 달걀 국면")
+    st.caption("보유하지 않은 종목도 볼 수 있습니다. 보유 종목의 행동 후보와 분할 가격대는 '🎯 감독실'에서 확인하세요. "
+               "규칙은 검증 전 후보이며 확률·승률이 아닙니다.")
+    t = str(ticker).strip().upper()
+    is_kr = t.endswith((".KS", ".KQ"))
+    flows = None
+    if is_kr:
+        try:
+            flows, _ = load_flows()
+        except Exception:  # noqa: BLE001
+            flows = None
+    vix_ext = {}
+    if not is_kr:
+        try:
+            vix_ext, _ = _vix_context(get_prices)
+        except Exception:  # noqa: BLE001
+            vix_ext = {}
+    ext = _flow_ext(t, flows) if is_kr else dict(vix_ext)
+    with st.spinner("{} 국면을 계산하는 중...".format(t)):
+        try:
+            res = analyze_series(t, get_prices, ext)
+        except Exception as e:  # noqa: BLE001
+            res = {"error": "분석 오류: " + str(e)[:120]}
+    res["ext_keys"] = tuple(ext.keys())
+    _render_egg_panel(res, name or t, "single_" + t, res["ext_keys"])
+
+    st.markdown("#### 기업 생존력 자동 점검")
+    try:
+        fund = fundamentals_check(t, get_fundamentals)
+    except Exception as e:  # noqa: BLE001
+        fund = {"gate": "자료 없음", "rows": [], "refs": [], "note": "점검 오류: " + str(e)[:100]}
+    st.write("자동 점검 결과: **{}**".format(fund["gate"]))
+    if fund["rows"]:
+        st.dataframe(pd.DataFrame(fund["rows"], columns=["항목", "값", "판정"]), use_container_width=True, hide_index=True)
+    if fund["refs"]:
+        st.caption("참고값(판정 없음): " + " · ".join("{} {}".format(a, b) for a, b in fund["refs"]))
+    st.caption(fund["note"])
