@@ -909,7 +909,7 @@ def _render_egg_panel(res, title, key, ext_present=()):
                     phase_label(top), phase_label(res["second"])))
             st.write("**심리 상태(가격·거래량으로 추정, 직접 측정 아님)** · " + PHASES[top]["mood"])
             st.write("**진입 방향** · " + res["direction"])
-            st.write("**판정 신뢰도** · {} (최고 일치도 {:.0%} · 2위와 차이 {:.0%}p)".format(
+            st.write("**판정 신뢰도** · {} (최고 일치도 {:.0%} · 2위와 차이 {:.0f}%p)".format(
                 res["confidence"], res["fits"][top], (res["margin"] or 0) * 100))
             if res.get("second") is not None:
                 st.caption("2위 후보: {} (일치도 {:.0%})".format(phase_label(res["second"]), res["fits"][res["second"]]))
