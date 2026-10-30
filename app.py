@@ -1189,353 +1189,351 @@ tab_portfolio, tab_chart, tab_market, tab_company, tab_journal, tab_raw, tab_sup
 
 
 
-with tab_portfolio:
-    st.subheader("내 보유 종목")
+if tab_portfolio.open:
+    with tab_portfolio:
+        st.subheader("내 보유 종목")
+        st.caption("보유 수량·평단·평가손익은 입력한 거래와 조회된 가격을 기준으로 계산합니다. 가격 제공자는 Yahoo Finance이며 삼성증권 계좌와 직접 연결된 것이 아닙니다.")
+        with st.expander("➕ 보유 종목 직접 등록 / 수정", expanded=not bool(len(load_holdings()))):
+            hname, hticker = stock_search_widget("holding_search")
+            with st.form("holding_form"):
+                hc1, hc2 = st.columns(2)
+                with hc1:
+                    st.text_input("선택한 종목명", value=hname, disabled=True)
+                    st.text_input("종목 코드", value=hticker, disabled=True)
+                    hqty = st.number_input("현재 보유 수량", min_value=0.0, step=1.0, format="%.4f")
+                with hc2:
+                    havg = st.number_input("평균 매입단가", min_value=0.0, step=100.0, format="%.4f")
+                    hcurrency = st.selectbox("통화", ["KRW", "USD"], index=0 if hticker.endswith((".KS", ".KQ")) or hticker.startswith("^") else 1)
+                    haccount = st.selectbox("계좌 구분", ["삼성증권 ISA", "삼성증권 일반계좌", "삼성증권 CMA", "기타 계좌"])
+                hsubmit = st.form_submit_button("보유 정보 저장")
+                if hsubmit:
+                    if not hticker or not hname.strip() or hqty <= 0 or havg <= 0:
+                        st.error("검색 결과 또는 종목명·티커·보유 수량·평단을 확인해 주세요.")
+                    else:
+                        save_holding(hticker, hname.strip(), hqty, havg, hcurrency, haccount)
+                        st.success("보유 정보가 저장되었습니다. 같은 티커는 기존 보유 정보를 갱신합니다.")
+                    
+        holdings = load_holdings()
+        if holdings.empty:
+            st.info("등록된 보유 종목이 없습니다. 위에서 종목명·코드·수량·평단을 입력하세요.")
+        else:
+            if st.button("🔄 보유 종목 가격 새로고침"):
+                latest_close.clear()
+            rows=[]
+            with st.spinner("보유 종목 가격 조회 중..."):
+                for _, h in holdings.iterrows():
+                    px, pxdate = latest_close(str(h.ticker))
+                    qty, avg = float(h.quantity), float(h.avg_cost)
+                    market_value = px*qty if px is not None else None
+                    pnl = (px-avg)*qty if px is not None else None
+                    pnl_pct = (px/avg-1)*100 if px is not None and avg else None
+                    rows.append({"종목":h["name"],"코드":h.ticker,"계좌":h.account,"수량":qty,
+                                 "평단":avg,"현재가":px,"평가금액":market_value,"평가손익":pnl,
+                                 "수익률(%)":pnl_pct,"가격 기준일":pxdate or "자료 없음","통화":h.currency})
+            pf = pd.DataFrame(rows)
+            valid = pf.dropna(subset=["평가금액"])
+            total_value = valid["평가금액"].sum() if not valid.empty else None
+            total_pnl = valid["평가손익"].sum() if not valid.empty else None
+            k1,k2,k3 = st.columns(3)
+            k1.metric("조회 가능한 보유 종목 평가금액", fmt_large(total_value))
+            k2.metric("평가손익 합계", fmt_large(total_pnl))
+            base = valid["평가금액"].sum()-valid["평가손익"].sum() if not valid.empty else 0
+            k3.metric("가중 평가수익률", f"{total_pnl/base*100:+.2f}%" if base else "자료 없음")
+        
+            st.subheader("보유 종목 직접 편집")
+            st.caption(
+                "종목명, 수량, 평단, 통화, 계좌를 수정한 뒤 저장하세요. "
+                "종목 코드는 식별자이므로 여기서는 수정할 수 없습니다."
+            )
+
+            edit_cols = ["ticker", "name", "quantity", "avg_cost", "currency", "account"]
+            edit_df = holdings[edit_cols].copy()
+            edit_df = edit_df.rename(columns={
+                "ticker": "종목 코드",
+                "name": "종목명",
+                "quantity": "보유 수량",
+                "avg_cost": "평균 매입단가",
+                "currency": "통화",
+                "account": "계좌",
+            })
+
+            edited = st.data_editor(
+                edit_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                key="holdings_editor",
+                column_config={
+                    "종목 코드": st.column_config.TextColumn(
+                        "종목 코드", disabled=True
+                    ),
+                    "종목명": st.column_config.TextColumn("종목명"),
+                    "보유 수량": st.column_config.NumberColumn(
+                        "보유 수량", min_value=0.0, format="%.4f"
+                    ),
+                    "평균 매입단가": st.column_config.NumberColumn(
+                        "평균 매입단가", min_value=0.0, format="%.4f"
+                    ),
+                    "통화": st.column_config.SelectboxColumn(
+                        "통화", options=["KRW", "USD"]
+                    ),
+                    "계좌": st.column_config.SelectboxColumn(
+                        "계좌",
+                        options=[
+                            "삼성증권 ISA",
+                            "삼성증권 일반계좌",
+                            "삼성증권 CMA",
+                            "기타 계좌",
+                        ],
+                    ),
+                },
+            )
+
+            if st.button("변경사항 저장", key="save_holdings_edits"):
+                try:
+                    if edited["종목명"].astype(str).str.strip().eq("").any():
+                        st.error("종목명은 비워둘 수 없습니다.")
+                    elif (
+                        (edited["보유 수량"] <= 0).any()
+                        or (edited["평균 매입단가"] <= 0).any()
+                    ):
+                        st.error("보유 수량과 평균 매입단가는 0보다 커야 합니다.")
+                    else:
+                        for _, row in edited.iterrows():
+                            save_holding(
+                                str(row["종목 코드"]),
+                                str(row["종목명"]).strip(),
+                                float(row["보유 수량"]),
+                                float(row["평균 매입단가"]),
+                                str(row["통화"]),
+                                str(row["계좌"]),
+                            )
+
+                        st.success("보유 종목 변경사항을 저장했습니다.")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"변경사항 저장에 실패했습니다: {e}")
+
+        
+            st.subheader("계좌별 보유 현황")
+
+            display_cols = [
+                "종목", "코드", "수량", "평단",
+                "현재가", "평가금액", "평가손익", "수익률(%)"
+            ]
+
+            account_order = [
+                "삼성증권 ISA",
+                "삼성증권 일반계좌",
+                "삼성증권 CMA",
+                "기타 계좌",
+            ]
+
+            for account_name in account_order:
+                account_pf = pf[pf["계좌"] == account_name].copy()
+
+                if account_pf.empty:
+                    continue
+
+                account_value = account_pf["평가금액"].sum(min_count=1)
+                account_pnl = account_pf["평가손익"].sum(min_count=1)
+
+                with st.expander(
+                    f"{account_name} · 평가금액 {fmt_large(account_value)} · "
+                    f"평가손익 {fmt_large(account_pnl)}",
+                    expanded=True,
+                ):
+                    st.dataframe(
+                        account_pf[display_cols],
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "수량": st.column_config.NumberColumn(
+                                "수량", format="%.4f"
+                            ),
+                            "평단": st.column_config.NumberColumn(
+                                "평단", format="%.2f"
+                            ),
+                            "현재가": st.column_config.NumberColumn(
+                                "현재가", format="%.2f"
+                            ),
+                            "평가금액": st.column_config.NumberColumn(
+                                "평가금액", format="%.0f"
+                            ),
+                            "평가손익": st.column_config.NumberColumn(
+                                "평가손익", format="%.0f"
+                            ),
+                            "수익률(%)": st.column_config.NumberColumn(
+                                "수익률(%)", format="%.2f%%"
+                            ),
+                        },
+                    )
+
+            st.subheader("포트폴리오 비중")
+            st.caption("통화별로 차트를 분리했습니다. 안쪽은 자산 카테고리, 바깥쪽은 개별 종목입니다. 조각을 누르거나 마우스를 올리면 평가금액과 전체 비중을 확인할 수 있습니다.")
+
+            category_colors = {
+                "반도체·하드웨어": "#2563EB",
+                "기술·성장주": "#7C3AED",
+                "시장 지수 ETF": "#0D9488",
+                "시장 지수": "#0F766E",
+                "경기 방어주": "#16A34A",
+                "헬스케어": "#22A06B",
+                "금융·지주": "#D97706",
+                "경기 민감주": "#EA580C",
+                "배당 ETF": "#65A30D",
+                "채권": "#64748B",
+                "기타·분류 확인 필요": "#9CA3AF",
+            }
+            # 같은 종목이 여러 계좌에 있으면 차트에서는 한 종목으로 합산합니다.
+            chart_cols = st.columns(2)
+            for col, currency in zip(chart_cols, ["KRW", "USD"]):
+                subset = pf[(pf["통화"] == currency) & pf["평가금액"].notna() & (pf["평가금액"] > 0)].copy()
+                with col:
+                    st.markdown(f"**{currency} 자산 비중**")
+                    if subset.empty:
+                        st.info(f"{currency} 평가 가능한 자산이 없습니다.")
+                        continue
+
+                    subset["카테고리"] = subset.apply(
+                        lambda row: classify_holding(row["종목"], row["코드"]), axis=1
+                    )
+                    chart_data = (
+                        subset.groupby(["카테고리", "코드", "종목"], as_index=False)["평가금액"]
+                        .sum()
+                        .sort_values("평가금액", ascending=False)
+                    )
+                    total_value_chart = float(chart_data["평가금액"].sum())
+                    category_totals = chart_data.groupby("카테고리")["평가금액"].sum().sort_values(ascending=False)
+
+                    labels, ids, parents, values, colors, hover_text = [], [], [], [], [], []
+                    for category, category_value in category_totals.items():
+                        category_id = f"category::{currency}::{category}"
+                        category_weight = float(category_value) / total_value_chart
+                        labels.append(f"{category} · {category_weight:.1%}")
+                        ids.append(category_id)
+                        parents.append("")
+                        values.append(float(category_value))
+                        base_color = category_colors.get(category, "#9CA3AF")
+                        colors.append(base_color)
+                        hover_text.append(
+                            f"<b>{category}</b><br>평가금액: {category_value:,.2f} {currency}"
+                            f"<br>전체 비중: {category_weight:.2%}"
+                        )
+
+                        children = chart_data[chart_data["카테고리"] == category]
+                        for _, stock in children.iterrows():
+                            stock_value = float(stock["평가금액"])
+                            stock_weight = stock_value / total_value_chart
+                        
+                            stock_ticker = str(stock["코드"])
+                            stock_name = str(stock["종목"])
+                            stock_id = f"stock::{currency}::{category}::{stock_ticker}"
+                            # 차트 라벨은 티커 대신 사용자가 등록한 종목명을 표시합니다.
+                            short_label = stock_name if len(stock_name) <= 16 else stock_name[:15] + "…"
+                            labels.append(f"{short_label} · {stock_weight:.1%}")
+                            ids.append(stock_id)
+                            parents.append(category_id)
+                            values.append(stock_value)
+                            colors.append(base_color)
+                            hover_text.append(
+                                f"<b>{stock_name} ({stock_ticker})</b><br>카테고리: {category}"
+                                f"<br>평가금액: {stock_value:,.2f} {currency}"
+                                f"<br>전체 비중: {stock_weight:.2%}"
+                            )
+
+
+                    fig_pie = go.Figure(go.Sunburst(
+                        ids=ids,
+                        labels=labels,
+                        parents=parents,
+                        values=values,
+                        branchvalues="total",
+                        sort=False,
+                        maxdepth=2,
+                        insidetextorientation="radial",
+                        textinfo="label",
+                        marker={"colors": colors, "line": {"color": "white", "width": 1}},
+                        customdata=hover_text,
+                        hovertemplate="%{customdata}<extra></extra>",
+                    ))
+                    fig_pie.update_layout(
+                        height=470,
+                        margin={"l": 4, "r": 4, "t": 8, "b": 8},
+                        showlegend=False,
+                        uniformtext={"minsize": 9, "mode": "hide"},
+                    )
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                    st.caption("작은 조각은 라벨이 숨겨질 수 있습니다. 해당 조각에 마우스를 올리면 종목명·평가금액·전체 비중이 표시됩니다. 자동 카테고리는 종목명과 티커를 바탕으로 한 추정이며, 미분류 항목은 별도 확인이 필요합니다.")
+            st.caption("주의: 통화가 다른 종목의 합계는 환산 전 값이 섞일 수 있으므로 총액·손익 합계는 KRW와 USD를 분리해 해석해야 합니다. 가격 기준일과 제공자 데이터의 지연 가능성을 확인하세요. 세금·배당·환전 비용은 아직 반영하지 않습니다.")
+            st.download_button("보유 현황 CSV 다운로드", pf.to_csv(index=False).encode("utf-8-sig"), "eggfolio_portfolio.csv", "text/csv")
+       
+            st.subheader("보유 종목 개별 삭제")
+            st.caption("잘못 등록한 종목만 선택해 삭제할 수 있습니다. 삭제 후에는 복구할 수 없으므로 종목 코드와 이름을 확인하세요.")
+            for _, item in holdings.iterrows():
+                delete_col1, delete_col2 = st.columns([5, 1])
+                with delete_col1:
+                    st.write(f"**{item['name']}** · `{item['ticker']}` · {item['account']}")
+                with delete_col2:
+                    if st.button("삭제", key=f"delete_holding_{item['ticker']}", type="secondary"):
+                        delete_holding(item["ticker"])
+                        st.rerun()
+        st.divider()
+        st.subheader("매수·매도 기록")
+        st.write("거래를 기록하면 수량과 가중평균 매입원가가 자동 갱신됩니다. 직접 등록한 보유 정보는 기준값이며, 과거 거래를 소급 계산한 값은 아닙니다.")
+        trade_name, trade_ticker = stock_search_widget("trade_search")
+        with st.form("trade_form", clear_on_submit=True):
+            tc1,tc2 = st.columns(2)
+            with tc1:
+                st.text_input("선택한 종목명", value=trade_name, disabled=True)
+                st.text_input("종목 코드", value=trade_ticker, disabled=True)
+                trade_side = st.selectbox("거래 유형", ["매수", "매도"])
+                trade_qty = st.number_input("거래 수량", min_value=0.0001, value=1.0, step=1.0)
+            with tc2:
+                trade_price = st.number_input("거래 단가", min_value=0.0001, value=1.0, step=100.0)
+                trade_fee = st.number_input("수수료 등 비용", min_value=0.0, value=0.0, step=1.0)
+                trade_account = st.selectbox("거래 계좌", ["삼성증권 ISA", "삼성증권 일반계좌", "삼성증권 CMA", "기타 계좌"])
+                trade_date = st.date_input("거래일", value=datetime.now().date())
+            trade_note = st.text_area("거래 메모 (선택)", placeholder="매매 이유나 당시 상황. 비워도 됩니다.")
+            trade_submit = st.form_submit_button("거래 저장 및 자동 계산")
+            if trade_submit:
+                if not trade_ticker or not trade_name.strip():
+                    st.error("검색 결과 또는 종목명과 티커를 확인해 주세요.")
+                else:
+                    try:
+                        save_trade(str(trade_date), trade_ticker, trade_name.strip(), trade_side, float(trade_qty), float(trade_price), float(trade_fee), trade_account, trade_note.strip())
+                        st.success("거래가 저장되었고 보유 수량·평단이 갱신되었습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"거래를 저장하지 못했습니다: {e}")
+        trades = load_trades()
+        if not trades.empty:
+            st.subheader("최근 거래 내역")
+            st.dataframe(trades.head(100), use_container_width=True, hide_index=True)
+            st.download_button("거래 내역 CSV 다운로드", trades.to_csv(index=False).encode("utf-8-sig"), "eggfolio_trades.csv", "text/csv")
 
 if tab_supervisor.open:
     with tab_supervisor:
-        st.header("🎯 포트폴리오 감독실")
-        st.caption(
-            "보유 현황, 가격 추세, 기업 기초체력, 수급을 종합해 "
-            "현재 판단과 다음 행동 조건을 제시합니다."
-        )
-
-        # 1. 포트폴리오 전체 현황
-        st.subheader("① 내 포트폴리오")
-
         try:
-            sup_holdings = load_holdings()
-
-            if sup_holdings.empty:
-                st.info(
-                    "등록된 보유 종목이 없습니다. "
-                    "내 포트폴리오 탭에서 보유 정보를 먼저 등록하세요."
-                )
-                sup_pf = pd.DataFrame()
-            else:
-                sup_rows = []
-
-                with st.spinner("보유 종목 가격 확인 중..."):
-                    for _, h in sup_holdings.iterrows():
-                        h_ticker = str(h["ticker"])
-                        h_name = str(h["name"])
-                        h_qty = float(h["quantity"])
-                        h_avg = float(h["avg_cost"])
-                        h_currency = str(h["currency"])
-
-                        h_price, h_date = latest_close(h_ticker)
-
-                        if h_price is None:
-                            h_value = None
-                            h_pnl = None
-                            h_return = None
-                        else:
-                            h_value = h_price * h_qty
-                            h_pnl = (h_price - h_avg) * h_qty
-                            h_return = (
-                                (h_price / h_avg - 1) * 100
-                                if h_avg > 0 else None
-                            )
-
-                        sup_rows.append({
-                            "종목": h_name,
-                            "티커": h_ticker,
-                            "계좌": str(h["account"]),
-                            "통화": h_currency,
-                            "수량": h_qty,
-                            "평단": h_avg,
-                            "최근 종가": h_price,
-                            "평가금액": h_value,
-                            "평가손익": h_pnl,
-                            "수익률(%)": h_return,
-                            "가격 기준일": h_date or "자료 없음",
-                        })
-
-                sup_pf = pd.DataFrame(sup_rows)
-
-                sup_valid = sup_pf.dropna(
-                    subset=["평가금액", "평가손익"]
-                )
-
-                krw = sup_valid[sup_valid["통화"] == "KRW"]
-                usd = sup_valid[sup_valid["통화"] == "USD"]
-
-                total_krw = krw["평가금액"].sum()
-                pnl_krw = krw["평가손익"].sum()
-                total_usd = usd["평가금액"].sum()
-                pnl_usd = usd["평가손익"].sum()
-
-                c1, c2, c3, c4 = st.columns(4)
-
-                c1.metric("원화 평가금액", f"{total_krw:,.0f}원")
-                c2.metric(
-                    "원화 평가손익",
-                    f"{pnl_krw:+,.0f}원",
-                )
-                c3.metric("달러 평가금액", f"${total_usd:,.2f}")
-                c4.metric(
-                    "달러 평가손익",
-                    f"${pnl_usd:+,.2f}",
-                )
-
-                st.dataframe(
-                    sup_pf,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                # 통화별로 따로 비중 계산: KRW와 USD를 직접 합산하지 않음
-                for currency in ["KRW", "USD"]:
-                    subset = sup_valid[
-                        (sup_valid["통화"] == currency)
-                        & (sup_valid["평가금액"] > 0)
-                    ].copy()
-
-                    if subset.empty:
-                        continue
-
-                    subset["비중(%)"] = (
-                        subset["평가금액"]
-                        / subset["평가금액"].sum()
-                        * 100
-                    )
-
-                    largest = subset.sort_values(
-                        "비중(%)", ascending=False
-                    ).iloc[0]
-
-                    st.write(
-                        f"**{currency} 자산 최대 종목 비중:** "
-                        f"{largest['종목']} "
-                        f"{largest['비중(%)']:.1f}%"
-                    )
-
-                    if largest["비중(%)"] >= 40:
-                        st.warning(
-                            "한 종목의 비중이 해당 통화 자산의 "
-                            "40% 이상입니다. 집중 위험을 확인하세요."
-                        )
-
-                st.caption(
-                    "가격 출처: Yahoo Finance. "
-                    "계좌와 직접 연결된 실시간 잔고가 아니며, "
-                    "통화 간 환산·세금·수수료는 반영하지 않습니다."
-                )
-
-        except Exception as e:
-            sup_pf = pd.DataFrame()
-            st.error(f"포트폴리오 데이터를 불러오지 못했습니다: {e}")
-
-        st.divider()
-
-        # 2. 현재 선택 종목의 시장 상태
-        st.subheader("② 시장 상태와 가격 위치")
-        st.write(f"**분석 종목:** {selected_stock_name} · `{ticker}`")
-
-        analysis, analysis_error = analyze_chart_rules(
-            ticker, selected_stock_name, prices
-        )
-
-        if analysis_error or analysis is None:
-            st.warning(
-                analysis_error or "현재 종목의 분석 자료가 부족합니다."
-            )
-        else:
-            a1, a2, a3, a4 = st.columns(4)
-
-            a1.metric(
-                "기술적 신호",
-                analysis["verdict"],
-            )
-            a2.metric(
-                "신호 집계",
-                analysis["score"],
-            )
-            a3.metric(
-                "20일 수익률",
-                f"{analysis['return20']:+.2f}%"
-                if analysis["return20"] is not None
-                else "자료 부족",
-            )
-            a4.metric(
-                "RSI(14)",
-                f"{analysis['rsi']:.1f}"
-                if analysis["rsi"] is not None
-                else "자료 부족",
-            )
-
-            st.caption(
-                f"가격 기준일: {analysis['date']} · "
-                "가격 추세 신호는 매수·매도 확률이나 "
-                "검증된 매매 전략을 의미하지 않습니다."
-            )
-
-            # 달걀의 정식 단계 계산이 아직 연결되지 않았으므로
-            # 가격 추세를 이용한 임시 국면 표시만 제공
-            if analysis["verdict"] == "상승 우위 신호":
-                phase = "상승 우위 관측"
-                phase_detail = (
-                    "가격 지표에서 상승 방향 신호가 상대적으로 많습니다."
-                )
-            elif analysis["verdict"] == "하락 우위 신호":
-                phase = "하락 우위 관측"
-                phase_detail = (
-                    "가격 지표에서 약세 방향 신호가 상대적으로 많습니다."
-                )
-            elif analysis["verdict"] == "혼합 신호 · 방향 불명확":
-                phase = "혼합 국면"
-                phase_detail = (
-                    "상승·하락 신호가 혼재되어 방향이 명확하지 않습니다."
-                )
-            else:
-                phase = "판단 보류"
-                phase_detail = "유효한 지표가 부족합니다."
-
-            st.markdown("### 🥚 국면 참고")
-            st.info(f"**{phase}** — {phase_detail}")
-            st.caption(
-                "임시 기술적 국면입니다. Eggfolio의 정식 달걀 단계와 "
-                "동일한 판정으로 간주하면 안 됩니다."
-            )
-
-            with st.expander("상승·하락 근거 자세히 보기"):
-                st.markdown("**상승을 지지하는 근거**")
-                for item in analysis["positive"]:
-                    st.write(f"- {item}")
-                if not analysis["positive"]:
-                    st.write("- 확인된 상승 근거가 없습니다.")
-
-                st.markdown("**약세 또는 반대 근거**")
-                for item in analysis["negative"]:
-                    st.write(f"- {item}")
-                if not analysis["negative"]:
-                    st.write("- 확인된 약세 근거가 없습니다.")
-
-                st.markdown("**추가 관측 사항**")
-                for item in analysis["neutral"]:
-                    st.write(f"- {item}")
-                if not analysis["neutral"]:
-                    st.write("- 추가 관측 사항이 없습니다.")
-
-        st.divider()
-
-        # 3. 기업 기초체력과 밸류에이션
-        st.subheader("③ 기업 기초체력과 밸류에이션")
-
-        if ticker.startswith("^"):
-            st.info(
-                "시장 지수는 개별 기업이 아니므로 "
-                "기업 재무 지표를 표시하지 않습니다."
-            )
+            from supervision import render_supervision
+        except Exception as sup_import_error:
+            st.error("감독실 모듈(supervision.py)을 불러오지 못했습니다. 저장소 맨 위(app.py와 같은 위치)에 supervision.py 파일이 있는지 확인하세요.")
+            st.caption(str(sup_import_error))
         else:
             try:
-                info = get_fundamentals(ticker)
-
-                if not info:
-                    st.warning("기업 재무 데이터가 제공되지 않습니다.")
-                else:
-                    f1, f2, f3, f4 = st.columns(4)
-
-                    f1.metric(
-                        "선행 PER",
-                        fmt(info.get("forwardPE")),
-                    )
-                    f2.metric(
-                        "PER(TTM)",
-                        fmt(info.get("trailingPE")),
-                    )
-                    f3.metric(
-                        "매출 성장률",
-                        f"{info['revenueGrowth'] * 100:.1f}%"
-                        if info.get("revenueGrowth") is not None
-                        else "자료 없음",
-                    )
-                    f4.metric(
-                        "이익률",
-                        f"{info['profitMargins'] * 100:.1f}%"
-                        if info.get("profitMargins") is not None
-                        else "자료 없음",
-                    )
-
-                    st.caption(
-                        "출처: Yahoo Finance. 누락되거나 지연된 값이 있을 수 "
-                        "있으며 PER만으로 고평가·저평가를 확정하지 않습니다."
-                    )
-
-            except Exception as e:
-                st.warning(f"기업 재무 데이터 조회 실패: {e}")
-
-        st.divider()
-
-        # 4. 투자자 수급
-        st.subheader("④ 투자자 수급")
-        render_investor_flow_check(ticker)
-
-        st.divider()
-
-        # 5. 핵심 전략
-        st.subheader("⑤ 감독실 핵심 전략")
-
-        if analysis is None:
-            st.warning(
-                "분석 자료가 부족해 전략 판단을 보류합니다. "
-                "데이터를 확인한 후 다시 검토하세요."
-            )
-        else:
-            if analysis["verdict"] == "상승 우위 신호":
-                st.success(
-                    "기술적 상태: 상승 우위 신호. "
-                    "보유 종목이라면 추세 유지 여부를 관찰하고, "
-                    "신규 매수는 실적·밸류에이션·포트폴리오 비중을 "
-                    "함께 검증한 뒤 검토하세요."
+                render_supervision(
+                    load_holdings(),
+                    get_prices,
+                    classify_holding,
+                    load_decisions,
+                    get_fundamentals,
+                    load_korean_investor_flows,
                 )
-                st.write(
-                    "**다음 확인 조건:** 가격이 주요 이동평균선 위에 "
-                    "머무는지, 실적 전망이 유지되는지, 현재 비중이 "
-                    "과도하지 않은지 확인합니다."
-                )
+            except Exception as sup_error:
+                st.error("감독실을 표시하는 중 오류가 났습니다. 다른 탭은 정상 작동합니다.")
+                st.exception(sup_error)
 
-            elif analysis["verdict"] == "하락 우위 신호":
-                st.error(
-                    "기술적 상태: 하락 우위 신호. "
-                    "가격 하락만을 근거로 추가 매수하지 말고, "
-                    "실적 가설과 약세 원인을 먼저 확인하세요."
-                )
-                st.write(
-                    "**다음 확인 조건:** 실적 전망 훼손 여부, "
-                    "주요 가격 추세 회복 여부, 외국인·기관 수급의 "
-                    "지속 여부를 점검합니다."
-                )
 
-            elif analysis["verdict"] == "혼합 신호 · 방향 불명확":
-                st.warning(
-                    "기술적 신호가 혼합되어 있습니다. "
-                    "성급하게 방향을 단정하기보다 새로운 데이터가 "
-                    "확인될 때까지 판단을 보류하는 편이 합리적입니다."
-                )
-                st.write(
-                    "**다음 확인 조건:** 가격 추세와 실적 전망이 "
-                    "같은 방향을 가리키는지 확인합니다."
-                )
-
-            else:
-                st.warning(
-                    "유효한 신호가 부족합니다. "
-                    "데이터가 충분해질 때까지 판단을 보류합니다."
-                )
-
-            st.markdown("**판단 시 반드시 확인할 항목**")
-            st.write(
-                "- 기술적 신호와 기업 실적이 서로 충돌하는가?\n"
-                "- 현재 보유 비중과 동일 업종 집중도가 과도한가?\n"
-                "- 수급 데이터의 기준일과 출처가 확인되었는가?\n"
-                "- 투자 가설을 훼손하는 새로운 사실이 발생했는가?"
-            )
-
-        st.caption(
-            "이 전략은 현재 연결된 데이터에 기반한 규칙형 참고 판단입니다. "
-            "아직 과거 성과 검증이나 자동 주문 기능은 없습니다."
-        )
 with tab_chart:
     mas = st.multiselect(
         "이동평균선",
