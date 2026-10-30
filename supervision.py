@@ -32,6 +32,8 @@ DEFAULTS = {
     "max_category_weight": 50.0,
     "bet_total_weight": 10.0,
     "bet_loss_limit": -30.0,
+    "use_weight": False,   # True이면 비중 한도 초과가 행동 라벨에도 영향을 준다(기본: 종목 단독 판단)
+    "sell_frac": 20.0,     # 분할 익절 1회당 보유 수량 비율(%) - 임시 가정
 }
 
 # 시장 달걀에 쓰는 지수. 야후 파이낸스에서 읽는다.
@@ -239,6 +241,11 @@ def compute_features(df, ext=None):
         return _num(df[col].iloc[-1]) if col in df.columns else None
 
     f["ma20"], f["ma60"], f["ma120"] = last("MA20"), last("MA60"), last("MA120")
+    f["atr"], f["bb_upper"], f["bb_lower"] = last("ATR14"), last("BB_Upper"), last("BB_Lower")
+    hi_s = df["High"].astype(float) if "High" in df.columns else close
+    lo_s = df["Low"].astype(float) if "Low" in df.columns else close
+    f["high60"], f["high252"] = _num(hi_s.tail(60).max()), _num(hi_s.tail(252).max())
+    f["low20"], f["low60"] = _num(lo_s.tail(20).min()), _num(lo_s.tail(60).min())
     f["rsi"], f["bb_pos"] = last("RSI14"), last("BB_Position")
     f["macd_hist"], f["vol_ratio20"] = last("MACD_Hist"), last("VolumeRatio20")
     f["ma20_slope_z"] = _slope_z(df["MA20"] if "MA20" in df.columns else None, 5, sd60)
@@ -564,79 +571,182 @@ def bet_checks(is_bet, facts, cfg):
     return items
 
 
-def build_action(facts, cfg):
-    """국면 + 기업 관문 + 비중·한도 + 보유 상태를 합쳐 '조건부 행동 후보'를 만든다. 주문이 아니다."""
-    phase = facts["phase"]
-    blockers = []
-    if not facts["price_ok"]:
-        blockers.append("가격 자료가 없거나 오래되었습니다.")
-    if phase is None:
-        blockers.append("국면 판정이 보류 상태입니다.")
-    if facts["gate"] in ("주의", "자료 부족", "자료 없음"):
-        blockers.append("기업 생존력 자동 점검이 '{}'입니다.".format(facts["gate"]))
-    if not facts["has_thesis"]:
-        blockers.append("투자 가설이 판단 기록에 없습니다.")
-    elif not facts["has_invalidation"]:
-        blockers.append("무효화 조건이 판단 기록에 없습니다.")
-    w, cw = facts.get("weight"), facts.get("cat_weight")
-    if w is not None and w > cfg["max_stock_weight"]:
-        blockers.append("종목 비중 {:.1f}%가 한도 {:.0f}%를 넘습니다.".format(w, cfg["max_stock_weight"]))
-    if cw is not None and cw > cfg["max_category_weight"]:
-        blockers.append("카테고리 비중 {:.1f}%가 한도 {:.0f}%를 넘습니다.".format(cw, cfg["max_category_weight"]))
-    bc = facts.get("bet_checks")
-    if bc is not None and not all(ok is True for _, ok in bc):
-        blockers.append("베팅 슬롯 조건이 모두 충족되지 않았습니다.")
+def _px(v, cur):
+    x = _num(v)
+    if x is None:
+        return "자료 없음"
+    return "{:,.0f}".format(x) if cur == "KRW" else "{:,.2f}".format(x)
 
+
+def build_action(facts, cfg):
+    """종목 단독 판단: 국면 + 내 평단 대비 위치 + 기업 점검 + 가격 구조로 행동 후보를 정한다.
+    포트폴리오 비중은 기본적으로 행동 라벨에 반영하지 않고 '집중도 참고'로만 보여 준다(설정으로 반영 가능)."""
+    phase, f = facts["phase"], facts.get("f") or {}
+    pnl, price = facts.get("pnl_pct"), facts.get("price")
+    w, cw = facts.get("weight"), facts.get("cat_weight")
     over = (w is not None and w > cfg["max_stock_weight"]) or (cw is not None and cw > cfg["max_category_weight"])
+    conc = []
+    if w is not None and w > cfg["max_stock_weight"]:
+        conc.append("종목 비중 {:.1f}%가 임시 한도 {:.0f}%를 넘습니다.".format(w, cfg["max_stock_weight"]))
+    if cw is not None and cw > cfg["max_category_weight"]:
+        conc.append("카테고리 비중 {:.1f}%가 임시 한도 {:.0f}%를 넘습니다.".format(cw, cfg["max_category_weight"]))
+
+    cautions, why, blockers = [], [], []
+    if conc:
+        cautions.append("집중도 참고(행동 라벨에는 " + ("반영됨" if cfg.get("use_weight") else "반영하지 않음") + "): " + " ".join(conc))
+    if not facts["has_thesis"]:
+        cautions.append("판단 기록 없음 — 가설·무효화 조건을 '📝 판단 기록' 탭에 남기면 연결됩니다.")
+    elif not facts["has_invalidation"]:
+        cautions.append("최근 판단 기록에 무효화 조건이 비어 있습니다.")
+    if facts["gate"] in ("자료 부족", "자료 없음"):
+        cautions.append("기업 생존력 자동 점검 자료가 부족합니다(판정에 반영하지 못함).")
+
     if phase is None or not facts["price_ok"]:
         label = "판단 보류"
+        why.append("국면 판정 또는 가격 자료가 부족하거나 오래되어 행동 후보를 제시하지 않습니다.")
     elif facts["gate"] == "주의":
         label = "기업 가설 재검증"
-    elif over or phase == 5:
+        why.append("기업 생존력 자동 점검에서 주의 항목(적자·현금흐름 음수·매출 감소 등)이 있습니다. 가격 국면보다 먼저 확인하세요.")
+    elif cfg.get("use_weight") and over:
         label = "비중 축소 검토"
-    elif phase == 6:
-        label = "기업 가설 재검증"
-    elif phase == 4:
-        label = "보유 유지"
-    else:
-        label = "추가매수 검토" if not blockers else "추가매수 보류"
-
-    if phase is None:
-        headline = "국면 판정 보류 — 행동 후보를 제시하지 않습니다."
-        confirm, stop = [], []
-    else:
-        act = ACTIONS[phase]
-        confirm, stop = act["confirm"], act["stop"]
-        if phase in (1, 2, 3):
-            headline = act["candidate"] if not blockers else "추가 매수 보류 — 아래 해소 조건을 먼저 확인하세요."
-        elif phase == 4:
-            headline = "보유 유지 · 추가 매수 제한(비중 한도 초과)" if over else act["candidate"]
+        why.extend(conc)
+    elif phase == 5:
+        if pnl is not None and pnl > 0:
+            label = "분할 익절 검토"
+            why.append("과열 국면이고 평단 대비 {:+.1f}% 수익 구간입니다. 일부 수익 실현을 검토할 수 있습니다(전량 매도 아님).".format(pnl))
         else:
-            headline = act["candidate"]
-        if label == "기업 가설 재검증" and facts["gate"] == "주의":
-            headline = "기업 가설 재검증 — 기업 생존력 자동 점검에서 주의 항목이 있습니다. 국면보다 먼저 확인하세요."
-        elif label == "비중 축소 검토" and over and phase != 5:
-            headline = "비중 축소 검토 — 비중 한도를 넘었습니다(국면과 별개의 집중 위험)."
+            label = "보유 유지"
+            why.append("과열 국면이지만 평단 이하라 익절 대상이 아닙니다. 평단 회복 여부와 기업 논리를 점검하며 보유합니다.")
+    elif phase == 6:
+        if pnl is not None and pnl > 0:
+            label = "분할 익절 검토"
+            why.append("상승 동력 약화·하락 전환 징후이고 평단 대비 {:+.1f}% 수익 구간입니다. 수익 일부 보전을 검토할 수 있습니다.".format(pnl))
+        else:
+            label = "기업 가설 재검증"
+            why.append("하락 전환 징후이고 평단 이하입니다. 매수 근거(투자 가설)가 아직 유효한지 먼저 확인하세요.")
+    elif phase == 4:
+        ma20 = f.get("ma20")
+        if price is not None and ma20 and price <= ma20 * 1.01:
+            label = "추가매수 검토"
+            why.append("상승 추세 중 가격이 20일선 근처로 눌려 있습니다(눌림목). 가격대 표의 매수 후보 구간을 참고하세요.")
+        else:
+            label = "보유 유지"
+            why.append("상승 추세 국면이며 가격이 20일선보다 위에 있어 추격 매수 근거는 약합니다. 보유를 유지합니다.")
+    else:  # 1·2·3: 하락~회복 초기
+        if facts.get("confidence") == "낮음":
+            blockers.append("국면 판정 신뢰도가 낮습니다(두 국면의 근거가 비슷).")
+        if phase == 1:
+            lo10, lp = f.get("low10"), f.get("low_prior20")
+            if lo10 is not None and lp is not None and lo10 < lp:
+                blockers.append("최근 10거래일에 저점을 갱신했습니다(하락 가속) — 갱신이 멈출 때까지 대기.")
+        bc = facts.get("bet_checks")
+        if bc is not None and not all(ok is True for _, ok in bc):
+            blockers.append("베팅 슬롯 조건이 모두 충족되지 않았습니다.")
+        if blockers:
+            label = "추가매수 보류"
+            why.extend(blockers)
+        else:
+            label = "추가매수 검토"
+            why.append("{} 국면이고 하락 가속·신뢰도 부족 신호가 없습니다. 소규모 분할로만 접근할 후보입니다.".format(phase_label(phase)))
 
-    # 보유 수량·평단·비중 기반 구체 숫자(가정 계산)
+    headlines = {
+        "추가매수 검토": "추가매수 검토 — 아래 가격대에서 소규모 분할로 접근할 후보(예측·권유 아님)",
+        "추가매수 보류": "추가매수 보류 — 아래 조건이 해소될 때까지 기다립니다",
+        "보유 유지": "보유 유지",
+        "분할 익절 검토": "분할 익절 검토 — 아래 가격대에서 일부만 수익 실현할 후보(전량 매도 아님)",
+        "비중 축소 검토": "비중 축소 검토(집중도 반영 설정이 켜져 있음)",
+        "기업 가설 재검증": "기업 가설 재검증 — 보유·추가 근거를 먼저 확인",
+        "판단 보류": "판단 보류",
+    }
+    confirm = ACTIONS[phase]["confirm"] if phase else []
+    stop = ACTIONS[phase]["stop"] if phase else []
+
     numbers = []
-    total, value, price = facts.get("total"), facts.get("value"), facts.get("price")
+    total, value = facts.get("total"), facts.get("value")
     L = cfg["max_stock_weight"] / 100.0
-    if total and value is not None and price and L < 1:
-        if w is not None and w <= cfg["max_stock_weight"]:
-            room = (L * total - value) / (1 - L)
-            if room > 0:
-                numbers.append("종목 비중 한도({:.0f}%)까지 추가할 수 있는 금액: 약 {:,.0f} {} (현재가 기준 약 {:,.2f}주)".format(
-                    cfg["max_stock_weight"], room, facts["currency"], room / price))
-            else:
-                numbers.append("종목 비중이 이미 한도에 도달했습니다.")
-        elif w is not None:
-            excess = (value - L * total) / (1 - L)
-            numbers.append("한도 비중으로 되돌리려면 약 {:,.0f} {} (현재가 기준 약 {:,.2f}주) 줄여야 합니다. "
-                           "세금·수수료·환전 제외 가정 계산이며 매도 지시가 아닙니다.".format(
-                               excess, facts["currency"], excess / price))
-    return {"label": label, "headline": headline, "blockers": blockers, "confirm": confirm, "stop": stop,
-            "numbers": numbers}
+    if conc and total and value is not None and price and L < 1 and w is not None and w > cfg["max_stock_weight"]:
+        excess = (value - L * total) / (1 - L)
+        numbers.append("(집중도 참고) 임시 한도 비중으로 되돌리려면 약 {:,.0f} {} (약 {:,.2f}주) 규모입니다. 가정 계산이며 매도 지시가 아닙니다.".format(
+            excess, facts["currency"], excess / price))
+    return {"label": label, "headline": headlines[label], "why": why, "blockers": blockers, "cautions": cautions,
+            "confirm": confirm, "stop": stop, "numbers": numbers}
+
+
+def _merge_levels(cands, reverse, atr, limit=3):
+    """가까운 구조 가격(지지·저항)을 모으고, ATR의 0.8배 안에 겹치는 것은 하나로 합친다."""
+    cands = [(n, v) for n, v in cands if v is not None]
+    cands.sort(key=lambda x: x[1], reverse=reverse)
+    out = []
+    for n, v in cands:
+        if out and abs(out[-1][1] - v) < 0.8 * atr:
+            out[-1] = (out[-1][0] + "·" + n, out[-1][1])
+        else:
+            out.append((n, v))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def price_ladders(f, price, qty, avg, budget, sell_frac, cur):
+    """가격 구조(이동평균·저점·고점·볼린저)와 변동성(ATR)으로 분할 후보 구간을 만든다.
+    목표가·예상 수익이 아니며 검증 전 규칙이다. 금액·수량·평단은 단순 산수(수수료·세금 제외)."""
+    if price is None or not f:
+        return None
+    atr = _num(f.get("atr"))
+    if atr is None and f.get("sig_a"):
+        atr = price * f["sig_a"] / math.sqrt(252)
+    if atr is None or atr <= 0:
+        return None
+    half = 0.5 * atr
+
+    # ---- 매수 후보(현재가 이하의 지지 구조) ----
+    pool = [(n, v) for n, v in [("20일선", f.get("ma20")), ("60일선", f.get("ma60")), ("120일선", f.get("ma120")),
+                                ("20일 저점", f.get("low20")), ("60일 저점", f.get("low60")), ("볼린저 하단", f.get("bb_lower"))]
+            if v is not None and v <= price + 0.3 * atr]
+    sup = _merge_levels(pool, True, atr, 3)
+    while len(sup) < 3:
+        base = sup[-1][1] if sup else price
+        sup.append(("변동성 기준(−1.5×ATR)", base - 1.5 * atr))
+    buys, cum_cost, cum_qty = [], qty * avg, qty
+    for i, (name, v) in enumerate(sup, 1):
+        lo, hi = max(v - half, 0.0), min(v + half, price)
+        mid = (lo + hi) / 2 if hi >= lo else v
+        row = {"차수": "{}차".format(i), "구간": "{} ~ {}".format(_px(lo, cur), _px(hi, cur)), "기준": name,
+               "현재가 대비": "{:+.1f}%".format((mid / price - 1) * 100),
+               "상태": "현재가가 구간 안" if lo <= price <= hi else "대기(가격이 내려오면)"}
+        if budget and budget > 0 and mid > 0:
+            amt = budget / 3.0
+            q = amt / mid
+            cum_cost += amt
+            cum_qty += q
+            row["금액"] = _px(amt, cur)
+            row["수량"] = "{:,.2f}".format(q)
+            row["체결 후 평단"] = _px(cum_cost / cum_qty, cur)
+        buys.append(row)
+    review_below = max(sup[-1][1] - half, 0.0)
+
+    # ---- 익절 후보(평단 위 수익 구간에서만) ----
+    sells, sell_note = [], None
+    if avg and price > avg:
+        res_ = _merge_levels([(n, v) for n, v in [("볼린저 상단", f.get("bb_upper")), ("60일 고점", f.get("high60")),
+                                                  ("52주 고점", f.get("high252"))] if v is not None and v >= price - 0.3 * atr],
+                             False, atr, 3)
+        k = 1
+        while len(res_) < 3:
+            base = res_[-1][1] if res_ else price
+            res_.append(("변동성 기준(+{}×ATR)".format(1.5 if res_ else 1.0), base + (1.5 if res_ else 1.0) * atr))
+            k += 1
+        for i, (name, v) in enumerate(res_, 1):
+            lo, hi = max(v - half, price), v + half
+            mid = (lo + hi) / 2
+            q = qty * sell_frac / 100.0
+            sells.append({"차수": "{}차".format(i), "구간": "{} ~ {}".format(_px(lo, cur), _px(hi, cur)), "기준": name,
+                          "현재가 대비": "{:+.1f}%".format((mid / price - 1) * 100),
+                          "수량(보유의 {:.0f}%)".format(sell_frac): "{:,.2f}".format(q),
+                          "평단 대비 구간 수익(세전)": "{:+.1f}%".format((mid / avg - 1) * 100)})
+    else:
+        sell_note = "평단({}) 이하라 익절 구간을 제시하지 않습니다. 평단 회복이 첫 기준입니다.".format(_px(avg, cur))
+    return {"atr": atr, "buys": buys, "sells": sells, "sell_note": sell_note, "review_below": review_below}
 
 
 def reason_lines(it, cfg):
@@ -663,7 +773,7 @@ def reason_lines(it, cfg):
         out.append("수급: 자료 없음/미연결 (미국 종목이거나 조회 실패) — 판정에 반영되지 않음")
     out.append("기업 기초체력: 자동 점검 '{}' — {}".format(fund["gate"], fund["note"]))
     if fa["weight"] is not None:
-        out.append("집중도: 종목 비중 {:.1f}%(한도 {:.0f}%) · 카테고리 '{}' {:.1f}%(한도 {:.0f}%)".format(
+        out.append("집중도(참고용, 행동 라벨 기본 미반영): 종목 비중 {:.1f}%(임시 한도 {:.0f}%) · 카테고리 '{}' {:.1f}%(임시 한도 {:.0f}%)".format(
             fa["weight"], cfg["max_stock_weight"], it["category"], fa["cat_weight"] or 0.0, cfg["max_category_weight"]))
     if it["pnl_pct"] is not None:
         out.append("내 포지션: {}주 · 평단 {:,.2f} · 현재가 {} · 평가손익률 {:+.1f}%".format(
@@ -871,6 +981,12 @@ def _settings_panel(holdings):
         with c2:
             max_cat = st.number_input("한 카테고리 최대 비중(%)", min_value=1.0, max_value=100.0,
                                       value=DEFAULTS["max_category_weight"], step=5.0, key="sv_max_cat")
+        c5, c6 = st.columns(2)
+        with c5:
+            use_weight = st.checkbox("비중 한도 초과를 행동 라벨에도 반영 (기본: 꺼짐 = 종목 단독 판단)", value=DEFAULTS["use_weight"], key="sv_use_weight")
+        with c6:
+            sell_frac = st.number_input("분할 익절 1회당 보유 수량 비율(%)", min_value=1.0, max_value=100.0,
+                                        value=DEFAULTS["sell_frac"], step=5.0, key="sv_sell_frac")
         st.markdown("**베팅 슬롯** — 생존 가능성이 불확실해도 감수하려는 고위험 종목(최대 2개). 한도와 최대 손실을 미리 정해야 합니다.")
         options = [str(t) for t in holdings["ticker"]]
         names = {str(r["ticker"]): "{} ({})".format(r["name"], r["ticker"]) for _, r in holdings.iterrows()}
@@ -886,7 +1002,8 @@ def _settings_panel(holdings):
             bet_loss = st.number_input("베팅 종목 최대 손실 한도(평단 대비 %)", min_value=-100.0, max_value=-1.0,
                                        value=DEFAULTS["bet_loss_limit"], step=5.0, key="sv_bet_loss")
     return {"max_stock_weight": float(max_stock), "max_category_weight": float(max_cat),
-            "bet_total_weight": float(bet_total), "bet_loss_limit": float(bet_loss), "bets": [str(b) for b in bets]}
+            "bet_total_weight": float(bet_total), "bet_loss_limit": float(bet_loss), "bets": [str(b) for b in bets],
+            "use_weight": bool(use_weight), "sell_frac": float(sell_frac)}
 
 
 # --------------------------------------------------------------------------
@@ -1005,6 +1122,7 @@ def render_supervision(holdings, get_prices, classify, load_decisions, get_funda
             "gate": it["fund"]["gate"], "weight": it["weight"], "cat_weight": it["cat_weight"],
             "total": it.get("total"), "value": it["value"], "price": it["price"], "currency": it["currency"],
             "pnl_pct": it["pnl_pct"], "slot_weight": it.get("slot_weight"),
+            "f": res.get("features") or {}, "confidence": res.get("confidence"),
         }
         rec = latest.get(it["key"])
         facts["has_thesis"] = bool(rec is not None and str(rec.get("thesis", "") or "").strip())
@@ -1012,6 +1130,18 @@ def render_supervision(holdings, get_prices, classify, load_decisions, get_funda
         facts["bet_checks"] = bet_checks(it["ticker"] in cfg["bets"], facts, cfg)
         it["facts"], it["rec"] = facts, rec
         it["action"] = build_action(facts, cfg)
+        try:
+            it["lad"] = price_ladders(facts["f"], it["price"], it["qty"], it["avg"], 0.0, cfg["sell_frac"], it["currency"])
+        except Exception:  # noqa: BLE001
+            it["lad"] = None
+        nxt = "-"
+        lab = it["action"]["label"]
+        if it["lad"]:
+            if lab in ("추가매수 검토", "추가매수 보류") and it["lad"]["buys"]:
+                nxt = "1차 매수 후보 " + it["lad"]["buys"][0]["구간"]
+            elif lab == "분할 익절 검토" and it["lad"]["sells"]:
+                nxt = "1차 익절 후보 " + it["lad"]["sells"][0]["구간"]
+        it["next_zone"] = nxt
         mres = market_res.get(it["market"], {})
         it["market_phase"] = mres.get("top") if not mres.get("error") else None
         summary.append({
@@ -1020,16 +1150,16 @@ def render_supervision(holdings, get_prices, classify, load_decisions, get_funda
             "현재 국면": phase_label(facts["phase"]) if facts["phase"] else "판단 보류",
             "진입 방향": res.get("direction", "-") if not res.get("error") else "자료 없음",
             "행동": it["action"]["label"],
+            "다음 가격대": it["next_zone"],
             "신뢰도": res.get("confidence", "-") if not res.get("error") else "-",
             "소속 시장 · 국면": "{} · {}".format(it["market"], phase_label(it["market_phase"]) if it["market_phase"] else "판단 보류"),
             "기업 점검": it["fund"]["gate"],
-            "비중(%)": it["weight"],
-            "행동 후보": it["action"]["headline"],
+            "비중(%, 참고)": it["weight"],
         })
     st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True,
                  column_config={"수량": st.column_config.NumberColumn("수량", format="%.4f"),
                                 "평단": st.column_config.NumberColumn("평단", format="%.2f"),
-                                "비중(%)": st.column_config.NumberColumn("비중(%)", format="%.1f")})
+                                "비중(%, 참고)": st.column_config.NumberColumn("비중(%, 참고)", format="%.1f")})
 
     # 통화별 국면 분포
     dist_rows = []
@@ -1068,18 +1198,49 @@ def render_supervision(holdings, get_prices, classify, load_decisions, get_funda
                 else:
                     st.caption("시장({})과 같은 국면으로 판정되었습니다.".format(it["market"]))
 
-            st.markdown("#### 내 포지션 기준 행동 조건")
+            st.markdown("#### 내 포지션 기준 행동 (이 종목만 봤을 때)")
             pnl_text = "자료 없음" if it["pnl_pct"] is None else "{:+.1f}%".format(it["pnl_pct"])
-            st.write("- 보유 {}주 · 평단 {:,.2f} · 현재가 {} · 평가손익률 {} · 비중 {} (한도 {:.0f}%)".format(
-                _fmt(it["qty"], 4).rstrip("0").rstrip("."), it["avg"], _fmt(it["price"], 2), pnl_text,
-                _fmt(it["weight"], 1, "%"), cfg["max_stock_weight"]))
-            st.write("**행동 후보:** " + act["headline"])
+            st.write("- 보유 {}주 · 평단 {} · 현재가 {} · 평단 대비 {}".format(
+                _fmt(it["qty"], 4).rstrip("0").rstrip("."), _px(it["avg"], it["currency"]), _px(it["price"], it["currency"]), pnl_text))
+            st.write("**{}**".format(act["headline"]))
+            for t in act["why"]:
+                st.write("- 이유: " + t)
+            if act["cautions"]:
+                st.markdown("**⚠️ 참고·주의 (행동 라벨을 바꾸지 않는 항목 포함)**")
+                for t in act["cautions"]:
+                    st.write("- " + t)
             for t in act["numbers"]:
                 st.write("- " + t)
-            if act["blockers"]:
-                st.markdown("**🚫 추가 매수 보류 사유(해소해야 할 조건)**")
-                for b in act["blockers"]:
-                    st.write("- " + b)
+
+            lad = it.get("lad")
+            if lad:
+                st.markdown("#### 분할 가격대 (후보 구간 · 예측·목표가 아님)")
+                st.caption("가격 구조(이동평균·저점·고점·볼린저)와 변동성(ATR14 {})으로 계산한 규칙 기반 후보이며 백테스트 전입니다. "
+                           "구간 폭은 기준 가격 ±0.5×ATR입니다.".format(_px(lad["atr"], it["currency"])))
+                budget = st.number_input("추가로 넣을 계획 금액 ({}) — 입력하면 차수별 금액·수량·체결 후 평단을 계산합니다(저장 안 됨)".format(it["currency"]),
+                                         min_value=0.0, value=0.0, step=100000.0 if it["currency"] == "KRW" else 100.0,
+                                         key="sv_budget_" + it["key"])
+                try:
+                    lad2 = price_ladders(fa["f"], it["price"], it["qty"], it["avg"], float(budget), cfg["sell_frac"], it["currency"])
+                except Exception:  # noqa: BLE001
+                    lad2 = lad
+                lad2 = lad2 or lad
+                st.markdown("**분할 매수 후보** (균등 3분할 가정 · 현재 행동: {})".format(act["label"]))
+                st.dataframe(pd.DataFrame(lad2["buys"]), use_container_width=True, hide_index=True)
+                st.caption("종가가 {} 아래로 마감하면 분할을 멈추고 투자 논리를 재검토하는 기준으로 볼 수 있습니다(손절 주문이 아님).".format(
+                    _px(lad2["review_below"], it["currency"])))
+                if act["label"] not in ("추가매수 검토",):
+                    st.caption("현재 행동이 '추가매수 검토'가 아니므로 위 매수 구간은 참고용입니다.")
+                st.markdown("**분할 익절 후보**")
+                if lad2["sells"]:
+                    st.dataframe(pd.DataFrame(lad2["sells"]), use_container_width=True, hide_index=True)
+                    if act["label"] != "분할 익절 검토":
+                        st.caption("현재 행동이 '분할 익절 검토'가 아니므로 위 구간은 참고용입니다. 세금·수수료는 반영하지 않았습니다.")
+                else:
+                    st.write(lad2["sell_note"] or "자료 없음")
+            else:
+                st.info("가격 구조 자료가 부족해 분할 가격대를 계산하지 못했습니다(판단 보류).")
+
             if act["confirm"]:
                 st.markdown("**확인할 조건**")
                 for t in act["confirm"]:
