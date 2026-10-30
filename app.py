@@ -824,233 +824,8 @@ def make_chart(df, mas, volume, show_bollinger=False):
 
 
 
-def market_read(df):
-    last = df.iloc[-1]
-    close = float(last.Close)
-    signals = []
-    for n, label in [(20,"단기"),(60,"중기"),(120,"장기")]:
-        ma = last[f"MA{n}"]
-        signals.append((f"{label} 가격 위치", f"{n}일선 위" if pd.notna(ma) and close > ma else
-                        (f"{n}일선 아래" if pd.notna(ma) else "관측 기간 부족")))
-    for n in (20,60):
-        v = last[f"Return{n}"]
-        signals.append((f"{n}거래일 수익률", f"{v:+.2f}%" if pd.notna(v) else "자료 부족"))
-    vr = last["VolumeRatio20"]
-    signals.append(("거래량 / 20일 평균", f"{vr:.2f}배" if pd.notna(vr) else "자료 부족"))
-    ma20, ma60 = last["MA20"], last["MA60"]
-    if pd.notna(ma20) and pd.notna(ma60) and close > ma20 > ma60:
-        label, desc = "상승 추세 신호", "종가가 20일선과 60일선 위이며 단기 평균이 중기 평균보다 높습니다."
-    elif pd.notna(ma20) and pd.notna(ma60) and close < ma20 < ma60:
-        label, desc = "하락 추세 신호", "종가가 20일선과 60일선 아래이며 단기 평균이 중기 평균보다 낮습니다."
-    else:
-        label, desc = "혼합 / 방향 불명확", "이동평균선 관계가 한 방향으로 정렬되지 않았습니다."
-    return label, desc, signals
 
 
-def analyze_chart_rules(ticker, stock_name, prices):
-    """외부 API 없이 가격과 기술 지표를 종합하는 규칙 기반 분석."""
-
-    if prices is None or prices.empty:
-        return None, "분석할 가격 데이터가 없습니다."
-
-    last = prices.iloc[-1]
-    close = float(last["Close"])
-    analysis_date = str(prices.index[-1].date())
-
-    def value(name):
-        if name not in last.index:
-            return None
-        v = last[name]
-        if pd.isna(v):
-            return None
-        return float(v)
-
-    def pct_distance(price, ma):
-        if ma is None or ma == 0:
-            return None
-        return (price / ma - 1) * 100
-
-    ma20 = value("MA20")
-    ma60 = value("MA60")
-    ma120 = value("MA120")
-    ma200 = value("MA200")
-    rsi = value("RSI14")
-    macd = value("MACD")
-    macd_signal = value("MACD_Signal")
-    macd_hist = value("MACD_Hist")
-    bb_upper = value("BB_Upper")
-    bb_lower = value("BB_Lower")
-    bb_position = value("BB_Position")
-    bb_width = value("BB_Width")
-    volume_ratio = value("VolumeRatio20")
-    atr_pct = value("ATR14_Pct")
-    return20 = value("Return20")
-    return60 = value("Return60")
-
-    positive = []
-    negative = []
-    neutral = []
-    score = 0
-    valid_signals = 0
-
-    # 1. 추세: 종가와 이동평균선의 관계
-    if ma20 is not None:
-        valid_signals += 1
-        if close > ma20:
-            score += 1
-            positive.append(
-                f"종가가 20일 이동평균선 위입니다 "
-                f"(종가 {close:,.2f}, MA20 {ma20:,.2f})."
-            )
-        else:
-            score -= 1
-            negative.append(
-                f"종가가 20일 이동평균선 아래입니다 "
-                f"(종가 {close:,.2f}, MA20 {ma20:,.2f})."
-            )
-
-    if ma20 is not None and ma60 is not None:
-        valid_signals += 1
-        if ma20 > ma60:
-            score += 1
-            positive.append("20일선이 60일선 위에 있어 단·중기 추세가 우위 방향입니다.")
-        elif ma20 < ma60:
-            score -= 1
-            negative.append("20일선이 60일선 아래에 있어 단기 추세가 약합니다.")
-        else:
-            neutral.append("20일선과 60일선이 거의 같은 수준입니다.")
-
-    if ma60 is not None and ma120 is not None:
-        valid_signals += 1
-        if ma60 > ma120:
-            score += 1
-            positive.append("60일선이 120일선 위에 있습니다.")
-        elif ma60 < ma120:
-            score -= 1
-            negative.append("60일선이 120일선 아래에 있습니다.")
-        else:
-            neutral.append("60일선과 120일선의 관계가 중립적입니다.")
-
-    # 2. 중기 수익률
-    if return20 is not None:
-        valid_signals += 1
-        if return20 > 0:
-            score += 1
-            positive.append(f"20거래일 수익률이 {return20:+.2f}%입니다.")
-        elif return20 < 0:
-            score -= 1
-            negative.append(f"20거래일 수익률이 {return20:+.2f}%입니다.")
-        else:
-            neutral.append("20거래일 수익률이 거의 0%입니다.")
-
-    if return60 is not None:
-        valid_signals += 1
-        if return60 > 0:
-            score += 1
-            positive.append(f"60거래일 수익률이 {return60:+.2f}%입니다.")
-        elif return60 < 0:
-            score -= 1
-            negative.append(f"60거래일 수익률이 {return60:+.2f}%입니다.")
-        else:
-            neutral.append("60거래일 수익률이 거의 0%입니다.")
-
-    # 3. MACD 모멘텀
-    if macd is not None and macd_signal is not None:
-        valid_signals += 1
-        if macd > macd_signal:
-            score += 1
-            positive.append("MACD가 시그널선 위에 있습니다.")
-        elif macd < macd_signal:
-            score -= 1
-            negative.append("MACD가 시그널선 아래에 있습니다.")
-        else:
-            neutral.append("MACD와 시그널선이 같은 수준입니다.")
-
-    if macd_hist is not None:
-        if macd_hist > 0:
-            positive.append(f"MACD 히스토그램이 양수입니다 ({macd_hist:.4f}).")
-        elif macd_hist < 0:
-            negative.append(f"MACD 히스토그램이 음수입니다 ({macd_hist:.4f}).")
-
-    # 4. RSI: 과매수·과매도는 반전 확정 신호가 아님
-    if rsi is not None:
-        if rsi >= 70:
-            neutral.append(f"RSI는 {rsi:.1f}으로 과매수 참고 구간입니다. 강한 상승 추세가 지속될 수도 있습니다.")
-        elif rsi <= 30:
-            neutral.append(f"RSI는 {rsi:.1f}으로 과매도 참고 구간입니다. 추가 하락 가능성도 배제할 수 없습니다.")
-        elif rsi >= 50:
-            positive.append(f"RSI는 {rsi:.1f}으로 50 위에 있습니다.")
-        else:
-            negative.append(f"RSI는 {rsi:.1f}으로 50 아래에 있습니다.")
-
-    # 5. 볼린저 밴드 위치
-    if bb_position is not None:
-        if bb_position > 1:
-            neutral.append("종가가 볼린저 상단 밴드 위에 있습니다. 강한 추세 또는 과열 가능성을 함께 고려해야 합니다.")
-        elif bb_position < 0:
-            neutral.append("종가가 볼린저 하단 밴드 아래에 있습니다. 약세 지속과 기술적 반등 가능성을 구분해야 합니다.")
-        elif bb_position >= 0.8:
-            neutral.append("종가가 볼린저 밴드 상단 영역에 있습니다.")
-        elif bb_position <= 0.2:
-            neutral.append("종가가 볼린저 밴드 하단 영역에 있습니다.")
-        else:
-            neutral.append("종가는 볼린저 밴드 중간 영역에 있습니다.")
-
-    if bb_width is not None:
-        neutral.append(f"볼린저 밴드 폭은 {bb_width:.2f}%입니다. 과거 폭과 비교해야 수축·확대를 판단할 수 있습니다.")
-
-    # 6. 거래량
-    if volume_ratio is not None:
-        if volume_ratio >= 1.5:
-            neutral.append(f"거래량이 20일 평균의 {volume_ratio:.2f}배로 증가했습니다. 가격 방향과 함께 확인해야 합니다.")
-        elif volume_ratio <= 0.7:
-            neutral.append(f"거래량이 20일 평균의 {volume_ratio:.2f}배로 낮습니다.")
-        else:
-            neutral.append(f"거래량은 20일 평균의 {volume_ratio:.2f}배입니다.")
-
-    # 7. ATR은 방향이 아닌 변동성
-    if atr_pct is not None:
-        neutral.append(f"ATR은 종가의 {atr_pct:.2f}%입니다. 이는 변동 폭 참고치이며 방향 신호는 아닙니다.")
-
-    # 종합 판정: 점수는 방향 예측 확률이 아니라 단순 신호 집계
-    if valid_signals < 3:
-        verdict = "자료 부족 · 종합 판정 보류"
-    elif score >= 3:
-        verdict = "상승 우위 신호"
-    elif score <= -3:
-        verdict = "하락 우위 신호"
-    else:
-        verdict = "혼합 신호 · 방향 불명확"
-
-    if valid_signals:
-        score_text = f"{score:+d}점 / 유효 신호 {valid_signals}개"
-    else:
-        score_text = "유효 신호 없음"
-
-    result = {
-        "date": analysis_date,
-        "ticker": ticker,
-        "name": stock_name,
-        "close": close,
-        "verdict": verdict,
-        "score": score_text,
-        "positive": positive,
-        "negative": negative,
-        "neutral": neutral,
-        "return20": return20,
-        "return60": return60,
-        "rsi": rsi,
-        "volume_ratio": volume_ratio,
-        "atr_pct": atr_pct,
-        "bb_upper": bb_upper,
-        "bb_lower": bb_lower,
-        "ma20": ma20,
-        "ma60": ma60,
-        "ma120": ma120,
-        "ma200": ma200,
-    }
-
-    return result, None
 
 
 
@@ -1095,7 +870,7 @@ st.caption("투자 리서치 워크벤치 · 관측 데이터와 해석을 구�
 with st.sidebar:
     st.header("조회 설정")
     st.caption(
-        "여기서 선택한 종목은 차트·시장 국면·기업 기초체력·판단 기록의 공통 기준입니다."
+        "여기서 선택한 종목은 '종목 분석' 탭과 판단 기록의 기준입니다. 감독실은 보유 종목 전체를 자동으로 분석합니다."
     )
 
     # 기본 종목과 확장 종목 목록 통합
@@ -1149,45 +924,41 @@ with st.sidebar:
 
     st.caption("한국 종목은 .KS 또는 .KQ 접미사가 필요할 수 있습니다.")
 
-
-try:
-    with st.spinner(f"{ticker} 가격 데이터 조회 중..."):
-        prices, elapsed = get_prices(ticker, period)
-except Exception as e:
-    st.error("가격 데이터를 불러오지 못했습니다.")
-    st.write(f"종목 코드: `{ticker}`")
-    st.write(f"오류: {e}")
-    st.info("종목 코드와 데이터 제공자 상태를 확인한 뒤 새로고침해 주세요.")
-    st.stop()
-
-last = prices.iloc[-1]
-close = float(last.Close)
-prev = float(prices.Close.iloc[-2]) if len(prices)>1 else close
-change = close-prev
-pct = change/prev*100 if prev else 0
-m1,m2,m3,m4 = st.columns(4)
-m1.metric("최근 종가", fmt(close), f"{change:+,.2f} ({pct:+.2f}%)")
-m2.metric("거래량", f"{int(last.Volume):,}")
-m3.metric("표시 거래일", f"{len(prices):,}")
-m4.metric("최근 데이터 날짜", prices.index[-1].strftime("%Y-%m-%d"))
-st.caption(f"조회 소요 {elapsed:.2f}초 · 화면 시각 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · 일봉은 장중 체결가와 다를 수 있습니다.")
-
-
-tab_portfolio, tab_chart, tab_market, tab_company, tab_journal, tab_raw, tab_supervisor = st.tabs(
+tab_supervisor, tab_portfolio, tab_analysis, tab_journal = st.tabs(
     [
-        "💼 내 포트폴리오",
-        "📈 차트",
-        "🥚 시장 국면 참고",
-        "🏢 기업 기초체력",
-        "📝 판단 기록",
-        "🧾 원자료",
         "🎯 감독실",
+        "💼 내 포트폴리오",
+        "🔎 종목 분석",
+        "📝 판단 기록",
     ],
     on_change="rerun",
-    key="eggfolio_main_tabs",
+    key="eggfolio_main_tabs_v2",
 )
 
 
+
+
+
+if tab_supervisor.open:
+    with tab_supervisor:
+        try:
+            from supervision import render_supervision
+        except Exception as sup_import_error:
+            st.error("감독실 모듈(supervision.py)을 불러오지 못했습니다. 저장소 맨 위(app.py와 같은 위치)에 supervision.py 파일이 있는지 확인하세요.")
+            st.caption(str(sup_import_error))
+        else:
+            try:
+                render_supervision(
+                    load_holdings(),
+                    get_prices,
+                    classify_holding,
+                    load_decisions,
+                    get_fundamentals,
+                    load_korean_investor_flows,
+                )
+            except Exception as sup_error:
+                st.error("감독실을 표시하는 중 오류가 났습니다. 다른 탭은 정상 작동합니다.")
+                st.exception(sup_error)
 
 if tab_portfolio.open:
     with tab_portfolio:
@@ -1512,581 +1283,313 @@ if tab_portfolio.open:
             st.dataframe(trades.head(100), use_container_width=True, hide_index=True)
             st.download_button("거래 내역 CSV 다운로드", trades.to_csv(index=False).encode("utf-8-sig"), "eggfolio_trades.csv", "text/csv")
 
-if tab_supervisor.open:
-    with tab_supervisor:
-        try:
-            from supervision import render_supervision
-        except Exception as sup_import_error:
-            st.error("감독실 모듈(supervision.py)을 불러오지 못했습니다. 저장소 맨 위(app.py와 같은 위치)에 supervision.py 파일이 있는지 확인하세요.")
-            st.caption(str(sup_import_error))
-        else:
+if tab_analysis.open:
+    with tab_analysis:
+        st.subheader(f"🔎 종목 분석 · {selected_stock_name} ({ticker})")
+        st.caption("기준 종목과 차트 기간은 왼쪽 사이드바에서 바꿉니다. 보유 종목 전체의 판단과 행동 후보는 '🎯 감독실'에서 봅니다.")
+        section = st.radio(
+            "보기",
+            ["🥚 달걀 국면", "📈 차트·지표", "🏢 기업 기초체력", "💱 수급", "🧾 원자료"],
+            horizontal=True,
+            key="analysis_section",
+            label_visibility="collapsed",
+        )
+
+        prices, elapsed = None, 0.0
+        if section in ("📈 차트·지표", "🧾 원자료"):
             try:
-                render_supervision(
-                    load_holdings(),
-                    get_prices,
-                    classify_holding,
-                    load_decisions,
-                    get_fundamentals,
-                    load_korean_investor_flows,
-                )
-            except Exception as sup_error:
-                st.error("감독실을 표시하는 중 오류가 났습니다. 다른 탭은 정상 작동합니다.")
-                st.exception(sup_error)
+                with st.spinner(f"{ticker} 가격 데이터 조회 중..."):
+                    prices, elapsed = get_prices(ticker, period)
+            except Exception as e:
+                st.error("가격 데이터를 불러오지 못했습니다.")
+                st.write(f"종목 코드: `{ticker}` · 오류: {e}")
+                st.info("종목 코드와 데이터 제공자 상태를 확인한 뒤 새로고침해 주세요.")
 
-
-with tab_chart:
-    mas = st.multiselect(
-        "이동평균선",
-        [5, 20, 60, 120, 200],
-        default=[20, 60, 120],
-        format_func=lambda n: f"{n}일선",
-    )
-    volume = st.checkbox("거래량 표시", True)
-    show_bollinger = st.checkbox("볼린저 밴드 표시", True)
-
-    st.plotly_chart(
-        make_chart(prices, mas, volume, show_bollinger),
-        use_container_width=True,
-        config={
-            "scrollZoom": True,
-            "displaylogo": False,
-            "responsive": True,
-        },
-    )
-    st.caption(
-        "상승 빨강 / 하락 파랑. 볼린저 밴드는 20일 평균과 표준편차를 "
-        "이용합니다. 밴드 접촉만으로 매수·매도 신호를 확정하지 않습니다."
-    )
-
-    st.subheader("기술적 관측")
-    for n in (20, 60, 120, 200):
-        ma = last[f"MA{n}"]
-        if pd.notna(ma):
-            st.write(f"• 종가는 {n}일선 {'위' if close > ma else '아래'}입니다.")
-
-    vr = last["VolumeRatio20"]
-    st.write(
-        f"• 거래량은 20일 평균 대비 {vr:.2f}배입니다."
-        if pd.notna(vr)
-        else "• 거래량 평균을 계산하기에 데이터가 부족합니다."
-    )
-
-    st.divider()
-    st.subheader("규칙 기반 기술적 분석")
-    st.caption(
-        "외부 AI API 없이 가격과 계산된 지표를 종합합니다. "
-        "점수는 확률이나 예상 수익률이 아닙니다."
-    )
-
-    if st.button(
-        "현재 종목 무료 분석 실행",
-        key=f"rule_chart_analysis_{ticker}_{period}",
-        type="primary",
-    ):
-        analysis, analysis_error = analyze_chart_rules(
-            ticker,
-            selected_stock_name,
-            prices,
-        )
-
-        if analysis_error:
-            st.error(analysis_error)
+        if section == "🥚 달걀 국면":
+            try:
+                from supervision import render_single_asset
+            except Exception as sup_import_error:
+                st.error("감독실 모듈(supervision.py)을 불러오지 못했습니다.")
+                st.caption(str(sup_import_error))
+            else:
+                try:
+                    render_single_asset(ticker, selected_stock_name, get_prices, get_fundamentals, load_korean_investor_flows)
+                except Exception as sup_error:
+                    st.error("달걀 국면을 표시하는 중 오류가 났습니다. 다른 보기는 정상 작동합니다.")
+                    st.exception(sup_error)
+        elif section == "💱 수급":
+            render_investor_flow_check(ticker)
+        elif section == "🏢 기업 기초체력":
+            render_fundamentals(ticker)
+        elif prices is None:
+            st.info("가격 자료가 없어 이 보기를 표시할 수 없습니다.")
         else:
-            st.markdown(
-                f"### {analysis['name']} · {analysis['verdict']}"
-            )
-            st.caption(
-                f"티커: {analysis['ticker']} · "
-                f"기준일: {analysis['date']} · "
-                f"최근 종가: {analysis['close']:,.2f}"
-            )
-            st.write(
-                f"**단순 신호 집계:** {analysis['score']}"
-            )
+            last = prices.iloc[-1]
+            close = float(last.Close)
+            prev = float(prices.Close.iloc[-2]) if len(prices) > 1 else close
+            change = close - prev
+            pct = change / prev * 100 if prev else 0
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("최근 종가", fmt(close), f"{change:+,.2f} ({pct:+.2f}%)")
+            m2.metric("거래량", f"{int(last.Volume):,}")
+            m3.metric("표시 거래일", f"{len(prices):,}")
+            m4.metric("최근 데이터 날짜", prices.index[-1].strftime("%Y-%m-%d"))
+            st.caption(f"조회 소요 {elapsed:.2f}초(가격 조회 구간만) · 일봉은 장중 체결가와 다를 수 있습니다.")
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric(
-                "RSI(14)",
-                f"{analysis['rsi']:.1f}"
-                if analysis["rsi"] is not None else "자료 부족",
-            )
-            col2.metric(
-                "20일 수익률",
-                f"{analysis['return20']:+.2f}%"
-                if analysis["return20"] is not None else "자료 부족",
-            )
-            col3.metric(
-                "ATR / 종가",
-                f"{analysis['atr_pct']:.2f}%"
-                if analysis["atr_pct"] is not None else "자료 부족",
-            )
+            if section == "📈 차트·지표":
 
-            st.markdown("#### 상승을 지지하는 근거")
-            if analysis["positive"]:
-                for item in analysis["positive"]:
-                    st.write(f"- {item}")
-            else:
-                st.write("- 확인된 상승 근거가 없거나 데이터가 부족합니다.")
-
-            st.markdown("#### 하락 또는 약세 근거")
-            if analysis["negative"]:
-                for item in analysis["negative"]:
-                    st.write(f"- {item}")
-            else:
-                st.write("- 확인된 하락 근거가 없거나 데이터가 부족합니다.")
-
-            st.markdown("#### 추가 관측 및 해석 한계")
-            if analysis["neutral"]:
-                for item in analysis["neutral"]:
-                    st.write(f"- {item}")
-            else:
-                st.write("- 추가 관측 신호가 없습니다.")
-
-            st.markdown("#### 주요 가격 기준")
-            price_levels = []
-            for label, key in [
-                ("MA20", "ma20"),
-                ("MA60", "ma60"),
-                ("MA120", "ma120"),
-                ("MA200", "ma200"),
-                ("볼린저 상단", "bb_upper"),
-                ("볼린저 하단", "bb_lower"),
-            ]:
-                val = analysis[key]
-                if val is not None:
-                    price_levels.append({
-                        "기준": label,
-                        "가격": round(val, 4),
-                        "종가와 차이(%)": round(
-                            (val / analysis["close"] - 1) * 100, 2
-                        ) if analysis["close"] else None,
-                    })
-
-            if price_levels:
-                st.dataframe(
-                    pd.DataFrame(price_levels),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.info("가격 기준선을 계산할 데이터가 부족합니다.")
-
-            st.caption(
-                "이 결과는 사전에 정의한 규칙의 기계적 집계입니다. "
-                "백테스트로 검증된 매매 전략이나 매수·매도 권고가 아닙니다."
-            )
-
-    rsi = prices["RSI14"]
-    rsi_fig = go.Figure()
-    rsi_fig.add_trace(
-        go.Scatter(
-            x=prices.index, y=rsi, mode="lines",
-            name="RSI(14)", line={"color": "#7C3AED", "width": 2},
-        )
-    )
-    rsi_fig.add_hline(y=70, line_dash="dash", line_color="#E53935")
-    rsi_fig.add_hline(y=30, line_dash="dash", line_color="#1E88E5")
-    rsi_fig.update_yaxes(range=[0, 100], title_text="RSI")
-    rsi_fig.update_layout(
-        height=260, template="plotly_white",
-        margin={"l": 10, "r": 10, "t": 20, "b": 10},
-        showlegend=False, hovermode="x unified",
-    )
-    st.plotly_chart(rsi_fig, use_container_width=True)
-
-    current_rsi = rsi.iloc[-1]
-    if pd.isna(current_rsi):
-        st.info("RSI: 계산에 필요한 가격 데이터가 부족합니다.")
-    elif current_rsi >= 70:
-        st.write(f"RSI(14)는 {current_rsi:.1f}입니다. 전통적인 과매수 참고 구간입니다.")
-    elif current_rsi <= 30:
-        st.write(f"RSI(14)는 {current_rsi:.1f}입니다. 전통적인 과매도 참고 구간입니다.")
-    else:
-        st.write(f"RSI(14)는 {current_rsi:.1f}입니다. 30~70 사이입니다.")
-
-    st.caption(
-        "RSI 70·30은 참고 기준이지 반전 보장이 아닙니다. 강한 추세에서는 "
-        "과매수·과매도 구간이 장기간 유지될 수 있습니다."
-    )
-
-    st.divider()
-    st.subheader("MACD · 추세 모멘텀")
-    macd_fig = go.Figure()
-    macd_fig.add_trace(
-        go.Bar(
-            x=prices.index, y=prices["MACD_Hist"],
-            name="히스토그램",
-            marker_color=[
-                UP if pd.notna(v) and v >= 0 else DOWN
-                for v in prices["MACD_Hist"]
-            ],
-        )
-    )
-    macd_fig.add_trace(
-        go.Scatter(
-            x=prices.index, y=prices["MACD"],
-            mode="lines", name="MACD",
-            line={"color": "#2563EB", "width": 1.8},
-        )
-    )
-    macd_fig.add_trace(
-        go.Scatter(
-            x=prices.index, y=prices["MACD_Signal"],
-            mode="lines", name="시그널",
-            line={"color": "#F59E0B", "width": 1.5},
-        )
-    )
-    macd_fig.add_hline(y=0, line_dash="dot", line_color="#64748B")
-    macd_fig.update_layout(
-        height=320, template="plotly_white",
-        margin={"l": 10, "r": 10, "t": 20, "b": 10},
-        hovermode="x unified",
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02,
-                "xanchor": "left", "x": 0},
-    )
-    st.plotly_chart(macd_fig, use_container_width=True)
-
-    macd_value = last["MACD"]
-    signal_value = last["MACD_Signal"]
-    hist_value = last["MACD_Hist"]
-    if pd.isna(macd_value) or pd.isna(signal_value):
-        st.info("MACD: 계산에 필요한 가격 데이터가 부족합니다.")
-    else:
-        relation = "MACD가 시그널선 위" if macd_value > signal_value else (
-            "MACD가 시그널선 아래" if macd_value < signal_value else
-            "MACD와 시그널선이 동일"
-        )
-        st.write(
-            f"• {relation}. 히스토그램: {hist_value:+.4f}. "
-            "교차 하나만으로 추세 전환을 확정하지 않습니다."
-        )
-
-    st.divider()
-    st.subheader("ATR · 변동성")
-    atr = last["ATR14"]
-    atr_pct = last["ATR14_Pct"]
-    atr_col1, atr_col2 = st.columns(2)
-    atr_col1.metric("ATR(14)", fmt(atr, 4))
-    atr_col2.metric("ATR / 종가", f"{atr_pct:.2f}%" if pd.notna(atr_pct) else "자료 부족")
-
-    st.caption(
-        "ATR은 변동 폭을 측정하며 상승·하락 방향을 나타내지 않습니다. "
-        "종목별 가격 수준이 다르므로 ATR과 ATR/종가 비율을 함께 확인합니다."
-    )
-
-    st.divider()
-    st.subheader("최근 지표 데이터")
-    indicator_cols = [
-        "Close", "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
-        "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
-        "ATR14", "ATR14_Pct", "VolumeRatio20",
-    ]
-    indicator_table = prices[
-        [c for c in indicator_cols if c in prices.columns]
-    ].tail(20).sort_index(ascending=False)
-    st.dataframe(indicator_table, use_container_width=True)
-    st.download_button(
-        "지표 데이터 CSV 다운로드",
-        prices.to_csv(index=True).encode("utf-8-sig"),
-        f"{ticker}_{period}_indicators.csv",
-        "text/csv",
-    )
-
-
-with tab_market:
-    render_investor_flow_check(ticker)
-    st.subheader("시장 국면 분석")
-    st.caption(
-        "시장 심리를 중심에 두고, 가격 행동으로 간접 관측한 뒤 "
-        "수급·실적·거시 자료로 검증해 나가는 분석 화면입니다. "
-        "현재 연결된 가격 자료만으로 실제 대중심리를 확정하지 않습니다."
-    )
-
-    market_ticker = ticker
-    market_name = chosen
-
-    market_period_label = st.selectbox(
-        "분석 기간",
-        list(PERIODS.keys()),
-        index=list(PERIODS.keys()).index("1년"),
-        key="market_regime_period"
-    )
-    market_period = PERIODS[market_period_label]
-
-    if not market_ticker:
-        st.warning("먼저 분석할 종목을 검색하고 선택해 주세요.")
-    else:
-        try:
-            market_prices, fetch_elapsed = get_prices(market_ticker, market_period)
-            if market_prices is None or market_prices.empty:
-                st.warning("선택한 종목의 가격 데이터가 없습니다.")
-            else:
-                market_last = market_prices.iloc[-1]
-                market_close = float(market_last["Close"])
-                market_date = str(market_prices.index[-1].date())
-                ma20 = market_last["MA20"]
-                ma60 = market_last["MA60"]
-                ma120 = market_last["MA120"]
-                ret20 = market_last["Return20"]
-                ret60 = market_last["Return60"]
-                volume_ratio = market_last["VolumeRatio20"]
-
-                st.markdown(f"### {market_name} (`{market_ticker}`)")
-                st.caption(
-                    f"가격 데이터 기준일: {market_date} · 조회 소요: {fetch_elapsed:.2f}초 · "
-                    "가격은 Yahoo Finance 제공 데이터이며 장중·장후 현재가와 다를 수 있습니다."
-                )
-
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("최근 일봉 종가", f"{market_close:,.2f}")
-                m2.metric("20거래일 수익률", f"{ret20:+.2f}%" if pd.notna(ret20) else "자료 부족")
-                m3.metric("60거래일 수익률", f"{ret60:+.2f}%" if pd.notna(ret60) else "자료 부족")
-                m4.metric("거래량 / 20일 평균", f"{volume_ratio:.2f}배" if pd.notna(volume_ratio) else "자료 부족")
-
-                st.subheader("가격 행동: 차트와 거래량")
-                market_mas = st.multiselect(
-                    "차트 이동평균선",
+                mas = st.multiselect(
+                    "이동평균선",
                     [5, 20, 60, 120, 200],
                     default=[20, 60, 120],
                     format_func=lambda n: f"{n}일선",
-                    key=f"market_regime_mas_{market_ticker}",
                 )
-                market_volume = st.checkbox(
-                    "차트에 거래량 표시",
-                    True,
-                    key=f"market_regime_volume_{market_ticker}",
-                )
+                volume = st.checkbox("거래량 표시", True)
+                show_bollinger = st.checkbox("볼린저 밴드 표시", True)
+
                 st.plotly_chart(
-                    make_chart(market_prices, market_mas, market_volume),
+                    make_chart(prices, mas, volume, show_bollinger),
                     use_container_width=True,
-                    config={"scrollZoom": True, "displaylogo": False, "responsive": True},
-                    key=f"market_regime_price_chart_{market_ticker}",
+                    config={
+                        "scrollZoom": True,
+                        "displaylogo": False,
+                        "responsive": True,
+                    },
                 )
-
-                st.subheader("① 시장 심리의 간접 신호")
-                trend_label, trend_desc, trend_signals = market_read(market_prices)
-                st.markdown(f"**가격 추세 판독: {trend_label}**")
-                st.write(trend_desc)
-
-                distance_ma120 = (
-                    (market_close / float(ma120) - 1) * 100
-                    if pd.notna(ma120) and float(ma120) != 0 else None
-                )
-                above_ma20 = bool(pd.notna(ma20) and market_close > float(ma20))
-                above_ma60 = bool(pd.notna(ma60) and market_close > float(ma60))
-                above_ma120 = bool(pd.notna(ma120) and market_close > float(ma120))
-                strong_momentum = bool(pd.notna(ret20) and pd.notna(ret60) and ret20 > 8 and ret60 > 15)
-                volume_spike = bool(pd.notna(volume_ratio) and volume_ratio >= 1.5)
-                weak_momentum = bool(pd.notna(ret20) and pd.notna(ret60) and ret20 < 0 and ret60 < 0)
-                below_short_medium = bool(pd.notna(ma20) and pd.notna(ma60) and market_close < ma20 and market_close < ma60)
-
-                signal_rows = [
-                    ["추세 구조", "20·60일선 위" if above_ma20 and above_ma60 else ("20·60일선 아래" if pd.notna(ma20) and pd.notna(ma60) and not above_ma20 and not above_ma60 else "혼합 / 자료 부족"), "추세 방향을 관측하며 심리 자체를 확정하지 않음"],
-                    ["중기 추세 대비 위치", f"120일선 대비 {distance_ma120:+.1f}%" if distance_ma120 is not None else "자료 부족", "장기 평균에서 멀어진 정도를 확인"],
-                    ["최근 상승 탄력", "강한 상승 탄력 관측" if strong_momentum else ("20·60일 수익률 모두 음수" if weak_momentum else "뚜렷한 극단 신호 없음"), "강한 추세와 과열을 동일시하지 않음"],
-                    ["거래량 반응", f"20일 평균의 {volume_ratio:.2f}배" if pd.notna(volume_ratio) else "자료 부족", "거래량 급증은 방향만으로 해석하지 않음"],
-                ]
-                st.dataframe(
-                    pd.DataFrame(signal_rows, columns=["관측 영역", "현재 관측", "해석 원칙"]),
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-                overheating_evidence = []
-                if strong_momentum:
-                    overheating_evidence.append("20·60거래일 수익률이 모두 강한 상승 구간")
-                if distance_ma120 is not None and distance_ma120 >= 20:
-                    overheating_evidence.append("종가가 120일선보다 20% 이상 위")
-                if volume_spike:
-                    overheating_evidence.append("거래량이 20일 평균의 1.5배 이상")
-
-                downside_evidence = []
-                if weak_momentum:
-                    downside_evidence.append("20·60거래일 수익률이 모두 음수")
-                if below_short_medium:
-                    downside_evidence.append("종가가 20일선과 60일선 아래")
-                if pd.notna(volume_ratio) and volume_ratio >= 1.5 and weak_momentum:
-                    downside_evidence.append("약세 구간에서 거래량 증가")
-
-                def bounded_ratio(value, scale):
-                    if value is None or pd.isna(value):
-                        return 0.0
-                    return max(-1.0, min(1.0, float(value) / scale))
-
-                egg_x = 0.50 - 0.32 * bounded_ratio(ret60, 30)
-                egg_y = 0.50 + 0.32 * bounded_ratio(distance_ma120, 30)
-
-                if len(overheating_evidence) >= 2:
-                    egg_stage = "상승 과열 가능성 점검"
-                elif len(downside_evidence) >= 2:
-                    egg_stage = "약세 가능성 점검"
-                elif above_ma20 and above_ma60:
-                    egg_stage = "상승 추세 관측 · 심리 판단 보류"
-                elif below_short_medium:
-                    egg_stage = "약세 추세 관측 · 심리 판단 보류"
-                else:
-                    egg_stage = "전환·혼합 · 판단 보류"
-
-                egg_fig = go.Figure()
-                egg_fig.add_shape(
-                    type="circle", x0=0.12, y0=0.10, x1=0.88, y1=0.90,
-                    line=dict(color="#64748B", width=2),
-                    fillcolor="rgba(148,163,184,0.08)"
-                )
-                egg_fig.add_shape(
-                    type="line", x0=0.50, y0=0.12, x1=0.50, y1=0.88,
-                    line=dict(color="#94A3B8", dash="dot")
-                )
-                egg_fig.add_shape(
-                    type="line", x0=0.14, y0=0.50, x1=0.86, y1=0.50,
-                    line=dict(color="#94A3B8", dash="dot")
-                )
-                egg_fig.add_trace(go.Scatter(
-                    x=[0.30, 0.50, 0.70, 0.50, 0.30],
-                    y=[0.70, 0.82, 0.50, 0.18, 0.70],
-                    mode="lines+markers",
-                    name="개념적 사이클",
-                    line=dict(color="#64748B", width=2),
-                    marker=dict(size=7),
-                    hoverinfo="skip"
-                ))
-                egg_fig.add_trace(go.Scatter(
-                    x=[egg_x], y=[egg_y], mode="markers+text", name="가격 행동 참고 위치",
-                    text=[market_name], textposition="top center",
-                    marker=dict(size=18, color="#F59E0B", line=dict(color="#FFFFFF", width=2)),
-                    hovertemplate=f"<b>{market_name}</b><br>참고 해석: {egg_stage}<br>기준일: {market_date}<extra></extra>"
-                ))
-                for x, y, label in [(0.50, 0.96, "상승·낙관 가능 영역"), (0.50, 0.04, "하락·공포 가능 영역"), (0.04, 0.50, "회복"), (0.96, 0.50, "약세")]:
-                    egg_fig.add_annotation(x=x, y=y, text=label, showarrow=False)
-                egg_fig.update_layout(
-                    height=420, template="plotly_white", margin=dict(l=20, r=20, t=40, b=30),
-                    xaxis=dict(range=[0, 1], visible=False, fixedrange=True),
-                    yaxis=dict(range=[0, 1], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1),
-                    showlegend=True
-                )
-                st.plotly_chart(egg_fig, use_container_width=True, key="market_egg_cycle")
-                st.markdown(f"**현재 가격 행동 참고: {egg_stage}**")
-                st.write("이 판단은 가격·거래량 기반의 간접 관측입니다. 실제 대중심리·자금 흐름 자료가 연결되기 전에는 코스톨라니 국면을 확정하지 않습니다.")
-
-                st.subheader("③ 민스키 금융 불안정 관점")
-                st.info(
-                    "현재 종목별 신용·레버리지·부채 상환 능력 자료가 연결되지 않아 "
-                    "민스키 국면은 **판단 보류**입니다. 주가 상승이나 거래량 증가만으로 "
-                    "투기 금융·폰지 금융 단계라고 분류하지 않습니다."
-                )
-
-                st.subheader("④ 다음 검증 단계")
-                review_rows = [
-                    ["가격 행동", "연결됨", "추세·수익률·거래량으로 간접 관측"],
-                    ["직접 심리 자료", "미연결", "투자심리 조사·변동성·시장 심리 지표"],
-                    ["수급 자료", "미연결", "외국인·기관·개인 흐름, 공매도·대차"],
-                    ["실적·밸류에이션", "미연결", "가격 상승이 이익 전망으로 뒷받침되는지 검증"],
-                    ["거시·신용 자료", "미연결", "금리·유동성·신용 팽창과 레버리지 위험"],
-                ]
-                st.dataframe(pd.DataFrame(review_rows, columns=["분석 영역", "연결 상태", "활용 목적"]),
-                           use_container_width=True, hide_index=True)
                 st.caption(
-                    "이 화면은 매수·매도 신호나 수익 보장을 제공하지 않습니다. "
-                    "데이터가 늘어날 때마다 과거 사례에서 경고의 적시성·오경보 빈도를 검증하고, "
-                    "판단 개선에 도움이 되는 자료만 추가합니다."
+                    "상승 빨강 / 하락 파랑. 볼린저 밴드는 20일 평균과 표준편차를 "
+                    "이용합니다. 밴드 접촉만으로 매수·매도 신호를 확정하지 않습니다."
                 )
-        except Exception as e:
-            st.error(f"시장 국면 데이터를 불러오지 못했습니다: {e}")
-            st.caption("종목 코드, Yahoo Finance 응답, 데이터 제공 상태를 확인해 주세요.")
 
-with tab_company:
-    render_fundamentals(ticker)
+                st.subheader("기술적 관측")
+                for n in (20, 60, 120, 200):
+                    ma = last[f"MA{n}"]
+                    if pd.notna(ma):
+                        st.write(f"• 종가는 {n}일선 {'위' if close > ma else '아래'}입니다.")
 
-with tab_journal:
-    st.subheader("투자 판단 기록")
-    st.write("가설, 지지 근거, 반대 근거와 무효화 조건을 저장해 나중에 판단 품질을 검토합니다.")
+                vr = last["VolumeRatio20"]
+                st.write(
+                    f"• 거래량은 20일 평균 대비 {vr:.2f}배입니다."
+                    if pd.notna(vr)
+                    else "• 거래량 평균을 계산하기에 데이터가 부족합니다."
+                )
 
-    with st.form("decision_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
 
-        with c1:
-            jt = st.text_input("종목 코드", value=ticker)
-            horizon = st.selectbox("판단 기간", ["단기", "중기", "장기"])
-            price = st.number_input("판단 당시 가격", min_value=0.0, value=close, step=0.01)
-            decision = st.selectbox(
-                "현재 판단",
-                ["관망", "관심 등록", "분할 매수 검토", "보유", "일부 매도 검토", "매도 검토"],
+                st.divider()
+
+                rsi = prices["RSI14"]
+                rsi_fig = go.Figure()
+                rsi_fig.add_trace(
+                    go.Scatter(
+                        x=prices.index, y=rsi, mode="lines",
+                        name="RSI(14)", line={"color": "#7C3AED", "width": 2},
+                    )
+                )
+                rsi_fig.add_hline(y=70, line_dash="dash", line_color="#E53935")
+                rsi_fig.add_hline(y=30, line_dash="dash", line_color="#1E88E5")
+                rsi_fig.update_yaxes(range=[0, 100], title_text="RSI")
+                rsi_fig.update_layout(
+                    height=260, template="plotly_white",
+                    margin={"l": 10, "r": 10, "t": 20, "b": 10},
+                    showlegend=False, hovermode="x unified",
+                )
+                st.plotly_chart(rsi_fig, use_container_width=True)
+
+                current_rsi = rsi.iloc[-1]
+                if pd.isna(current_rsi):
+                    st.info("RSI: 계산에 필요한 가격 데이터가 부족합니다.")
+                elif current_rsi >= 70:
+                    st.write(f"RSI(14)는 {current_rsi:.1f}입니다. 전통적인 과매수 참고 구간입니다.")
+                elif current_rsi <= 30:
+                    st.write(f"RSI(14)는 {current_rsi:.1f}입니다. 전통적인 과매도 참고 구간입니다.")
+                else:
+                    st.write(f"RSI(14)는 {current_rsi:.1f}입니다. 30~70 사이입니다.")
+
+                st.caption(
+                    "RSI 70·30은 참고 기준이지 반전 보장이 아닙니다. 강한 추세에서는 "
+                    "과매수·과매도 구간이 장기간 유지될 수 있습니다."
+                )
+
+                st.divider()
+                st.subheader("MACD · 추세 모멘텀")
+                macd_fig = go.Figure()
+                macd_fig.add_trace(
+                    go.Bar(
+                        x=prices.index, y=prices["MACD_Hist"],
+                        name="히스토그램",
+                        marker_color=[
+                            UP if pd.notna(v) and v >= 0 else DOWN
+                            for v in prices["MACD_Hist"]
+                        ],
+                    )
+                )
+                macd_fig.add_trace(
+                    go.Scatter(
+                        x=prices.index, y=prices["MACD"],
+                        mode="lines", name="MACD",
+                        line={"color": "#2563EB", "width": 1.8},
+                    )
+                )
+                macd_fig.add_trace(
+                    go.Scatter(
+                        x=prices.index, y=prices["MACD_Signal"],
+                        mode="lines", name="시그널",
+                        line={"color": "#F59E0B", "width": 1.5},
+                    )
+                )
+                macd_fig.add_hline(y=0, line_dash="dot", line_color="#64748B")
+                macd_fig.update_layout(
+                    height=320, template="plotly_white",
+                    margin={"l": 10, "r": 10, "t": 20, "b": 10},
+                    hovermode="x unified",
+                    legend={"orientation": "h", "yanchor": "bottom", "y": 1.02,
+                            "xanchor": "left", "x": 0},
+                )
+                st.plotly_chart(macd_fig, use_container_width=True)
+
+                macd_value = last["MACD"]
+                signal_value = last["MACD_Signal"]
+                hist_value = last["MACD_Hist"]
+                if pd.isna(macd_value) or pd.isna(signal_value):
+                    st.info("MACD: 계산에 필요한 가격 데이터가 부족합니다.")
+                else:
+                    relation = "MACD가 시그널선 위" if macd_value > signal_value else (
+                        "MACD가 시그널선 아래" if macd_value < signal_value else
+                        "MACD와 시그널선이 동일"
+                    )
+                    st.write(
+                        f"• {relation}. 히스토그램: {hist_value:+.4f}. "
+                        "교차 하나만으로 추세 전환을 확정하지 않습니다."
+                    )
+
+                st.divider()
+                st.subheader("ATR · 변동성")
+                atr = last["ATR14"]
+                atr_pct = last["ATR14_Pct"]
+                atr_col1, atr_col2 = st.columns(2)
+                atr_col1.metric("ATR(14)", fmt(atr, 4))
+                atr_col2.metric("ATR / 종가", f"{atr_pct:.2f}%" if pd.notna(atr_pct) else "자료 부족")
+
+                st.caption(
+                    "ATR은 변동 폭을 측정하며 상승·하락 방향을 나타내지 않습니다. "
+                    "종목별 가격 수준이 다르므로 ATR과 ATR/종가 비율을 함께 확인합니다."
+                )
+
+                st.divider()
+                st.subheader("최근 지표 데이터")
+                indicator_cols = [
+                    "Close", "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
+                    "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
+                    "ATR14", "ATR14_Pct", "VolumeRatio20",
+                ]
+                indicator_table = prices[
+                    [c for c in indicator_cols if c in prices.columns]
+                ].tail(20).sort_index(ascending=False)
+                st.dataframe(indicator_table, use_container_width=True)
+                st.download_button(
+                    "지표 데이터 CSV 다운로드",
+                    prices.to_csv(index=True).encode("utf-8-sig"),
+                    f"{ticker}_{period}_indicators.csv",
+                    "text/csv",
+                )
+
+            else:
+                st.subheader("뉴스 및 외부 정보")
+                st.info("뉴스 제목을 임의로 만들지 않습니다. 우선 출처 확인이 가능한 외부 페이지를 제공합니다.")
+                st.markdown(f"[Yahoo Finance에서 {ticker} 보기](https://finance.yahoo.com/quote/{ticker}/)")
+                st.caption("외부 사이트의 기사 내용과 발표 시각을 직접 확인하세요.")
+
+                cols = [
+                    "Open", "High", "Low", "Close", "Volume",
+                    "MA5", "MA20", "MA60", "MA120", "MA200",
+                    "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
+                    "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
+                    "ATR14", "ATR14_Pct", "VolumeRatio20",
+                ]
+
+                st.dataframe(
+                    prices[[c for c in cols if c in prices.columns]]
+                    .tail(20)
+                    .sort_index(ascending=False),
+                    use_container_width=True,
+                )
+
+                st.download_button(
+                    "전체 가격 데이터 CSV 다운로드",
+                    prices.to_csv(index=True).encode("utf-8-sig"),
+                    f"{ticker}_{period}_prices.csv",
+                    "text/csv",
+                )
+
+                st.caption(
+                    "Yahoo Finance는 비공식 데이터 경로입니다. 지연·누락·수정·접속 제한이 발생할 수 있습니다. "
+                    "값이 없으면 임의의 숫자를 만들지 않습니다."
+                )
+
+if tab_journal.open:
+    with tab_journal:
+        try:
+            _jp, _ = get_prices(ticker, period)
+            close = float(_jp["Close"].iloc[-1])
+        except Exception:
+            close = 0.0
+
+        st.subheader("투자 판단 기록")
+        st.write("가설, 지지 근거, 반대 근거와 무효화 조건을 저장해 나중에 판단 품질을 검토합니다.")
+
+        with st.form("decision_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+
+            with c1:
+                jt = st.text_input("종목 코드", value=ticker)
+                horizon = st.selectbox("판단 기간", ["단기", "중기", "장기"])
+                price = st.number_input("판단 당시 가격", min_value=0.0, value=close, step=0.01)
+                decision = st.selectbox(
+                    "현재 판단",
+                    ["관망", "관심 등록", "분할 매수 검토", "보유", "일부 매도 검토", "매도 검토"],
+                )
+
+            with c2:
+                thesis = st.text_area("핵심 가설", placeholder="무엇이 일어날 것으로 보는가?")
+                support = st.text_area("지지 근거", placeholder="확인된 사실과 출처")
+                against = st.text_area("반대 근거", placeholder="가설이 틀릴 수 있는 이유")
+
+            risks = st.text_area("주요 위험")
+            invalidation = st.text_area(
+                "가설 무효화 조건 (선택)",
+                placeholder="어떤 사실이 확인되면 판단을 바꿀 것인가?",
+            )
+            raw_note = st.text_area(
+                "자유 메모 (선택 · 길게 작성 가능)",
+                placeholder="생각나는 대로 적으세요. 매 기록마다 작성할 필요는 없습니다.",
             )
 
-        with c2:
-            thesis = st.text_area("핵심 가설", placeholder="무엇이 일어날 것으로 보는가?")
-            support = st.text_area("지지 근거", placeholder="확인된 사실과 출처")
-            against = st.text_area("반대 근거", placeholder="가설이 틀릴 수 있는 이유")
+            submitted = st.form_submit_button("판단 기록 저장")
 
-        risks = st.text_area("주요 위험")
-        invalidation = st.text_area(
-            "가설 무효화 조건 (선택)",
-            placeholder="어떤 사실이 확인되면 판단을 바꿀 것인가?",
-        )
-        raw_note = st.text_area(
-            "자유 메모 (선택 · 길게 작성 가능)",
-            placeholder="생각나는 대로 적으세요. 매 기록마다 작성할 필요는 없습니다.",
-        )
-
-        submitted = st.form_submit_button("판단 기록 저장")
-
-        if submitted:
-            if not jt.strip() or not thesis.strip():
-                st.error("종목 코드와 핵심 가설을 입력해 주세요.")
-            else:
-                ai_summary_text = ""
-                if raw_note.strip():
-                    summary_obj, summary_error = summarize_with_gemini(raw_note.strip())
-                    if summary_obj:
-                        ai_summary_text = "\n\n[AI 요약 · Gemini]\n" + json.dumps(summary_obj, ensure_ascii=False, indent=2)
-                        st.success("자유 메모의 AI 요약을 생성했습니다. 원문도 함께 저장합니다.")
-                    elif summary_error:
-                        st.warning(summary_error + " 원문과 직접 입력한 항목은 계속 저장합니다.")
-                combined_thesis = thesis.strip() + ai_summary_text + ("\n\n[자유 메모 원문]\n" + raw_note.strip() if raw_note.strip() else "")
-                save_decision((datetime.now(timezone.utc).isoformat(),jt.strip().upper(),horizon,float(price),
-                               combined_thesis,support.strip(),against.strip(),risks.strip(),invalidation.strip(),decision))
-                st.success("기록을 저장했습니다."); st.rerun()
-    journal = load_decisions()
-    if journal.empty:
-        st.info("아직 기록이 없습니다.")
-    else:
-        st.dataframe(journal, use_container_width=True, hide_index=True)
-        st.download_button("판단 기록 CSV 다운로드", journal.to_csv(index=False).encode("utf-8-sig"),
-                           "eggfolio_decisions.csv", "text/csv")
-    st.caption("종목 검색은 앱 내 기본 종목 목록을 사용하며 전체 상장 종목을 망라하지 않습니다. Streamlit Cloud의 로컬 SQLite는 재배포·환경 변경 시 영구 보존이 보장되지 않으므로 실제 자산을 입력하기 전 외부 DB 또는 백업을 추가해야 합니다.")
-
-with tab_raw:
-    st.subheader("뉴스 및 외부 정보")
-    st.info("뉴스 제목을 임의로 만들지 않습니다. 우선 출처 확인이 가능한 외부 페이지를 제공합니다.")
-    st.markdown(f"[Yahoo Finance에서 {ticker} 보기](https://finance.yahoo.com/quote/{ticker}/)")
-    st.caption("외부 사이트의 기사 내용과 발표 시각을 직접 확인하세요.")
-
-    cols = [
-        "Open", "High", "Low", "Close", "Volume",
-        "MA5", "MA20", "MA60", "MA120", "MA200",
-        "RSI14", "MACD", "MACD_Signal", "MACD_Hist",
-        "BB_Upper", "BB_Middle", "BB_Lower", "BB_Width",
-        "ATR14", "ATR14_Pct", "VolumeRatio20",
-    ]
-
-    st.dataframe(
-        prices[[c for c in cols if c in prices.columns]]
-        .tail(20)
-        .sort_index(ascending=False),
-        use_container_width=True,
-    )
-
-    st.download_button(
-        "전체 가격 데이터 CSV 다운로드",
-        prices.to_csv(index=True).encode("utf-8-sig"),
-        f"{ticker}_{period}_prices.csv",
-        "text/csv",
-    )
-
-    st.caption(
-        "Yahoo Finance는 비공식 데이터 경로입니다. 지연·누락·수정·접속 제한이 발생할 수 있습니다. "
-        "값이 없으면 임의의 숫자를 만들지 않습니다."
-    )
+            if submitted:
+                if not jt.strip() or not thesis.strip():
+                    st.error("종목 코드와 핵심 가설을 입력해 주세요.")
+                else:
+                    ai_summary_text = ""
+                    if raw_note.strip():
+                        summary_obj, summary_error = summarize_with_gemini(raw_note.strip())
+                        if summary_obj:
+                            ai_summary_text = "\n\n[AI 요약 · Gemini]\n" + json.dumps(summary_obj, ensure_ascii=False, indent=2)
+                            st.success("자유 메모의 AI 요약을 생성했습니다. 원문도 함께 저장합니다.")
+                        elif summary_error:
+                            st.warning(summary_error + " 원문과 직접 입력한 항목은 계속 저장합니다.")
+                    combined_thesis = thesis.strip() + ai_summary_text + ("\n\n[자유 메모 원문]\n" + raw_note.strip() if raw_note.strip() else "")
+                    save_decision((datetime.now(timezone.utc).isoformat(),jt.strip().upper(),horizon,float(price),
+                                   combined_thesis,support.strip(),against.strip(),risks.strip(),invalidation.strip(),decision))
+                    st.success("기록을 저장했습니다."); st.rerun()
+        journal = load_decisions()
+        if journal.empty:
+            st.info("아직 기록이 없습니다.")
+        else:
+            st.dataframe(journal, use_container_width=True, hide_index=True)
+            st.download_button("판단 기록 CSV 다운로드", journal.to_csv(index=False).encode("utf-8-sig"),
+                               "eggfolio_decisions.csv", "text/csv")
+        st.caption("종목 검색은 앱 내 기본 종목 목록을 사용하며 전체 상장 종목을 망라하지 않습니다. Streamlit Cloud의 로컬 SQLite는 재배포·환경 변경 시 영구 보존이 보장되지 않으므로 실제 자산을 입력하기 전 외부 DB 또는 백업을 추가해야 합니다.")
 
 st.divider()
 st.caption(
