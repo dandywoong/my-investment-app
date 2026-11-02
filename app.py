@@ -417,7 +417,20 @@ def init_db():
             """)
 
 
-def save_decision(row):
+def save_decision(row, context=""):
+    if context:
+        try:
+            with get_db_connection() as con:
+                with con.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO decisions
+                        (created_at, ticker, horizon, price, thesis, evidence_for,
+                         evidence_against, risks, invalidation, decision, context)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, tuple(row) + (context,))
+            return
+        except Exception:
+            pass  # context 칸이 아직 없으면 아래 기존 방식으로 저장
     with get_db_connection() as con:
         with con.cursor() as cur:
             cur.execute("""
@@ -862,6 +875,11 @@ def render_fundamentals(ticker):
 
 
 init_db()
+try:
+    from portfolio_book import ensure_tables as _ensure_book_tables
+    _ensure_book_tables(get_db_connection)
+except Exception:
+    pass
 st.title("🥚 Eggfolio")
 st.caption("투자 리서치 워크벤치 · 관측 데이터와 해석을 구분합니다.")
 
@@ -959,6 +977,12 @@ if tab_supervisor.open:
             except Exception as sup_error:
                 st.error("감독실을 표시하는 중 오류가 났습니다. 다른 탭은 정상 작동합니다.")
                 st.exception(sup_error)
+        try:
+            from portfolio_book import render_book
+            render_book(get_db_connection, load_holdings(), get_prices, load_korean_investor_flows)
+        except Exception as book_error:
+            st.error("운용 방식별 종합 점검을 표시하는 중 오류가 났습니다. 다른 화면은 정상 작동합니다.")
+            st.exception(book_error)
 
 if tab_portfolio.open:
     with tab_portfolio:
@@ -1579,8 +1603,14 @@ if tab_journal.open:
                         elif summary_error:
                             st.warning(summary_error + " 원문과 직접 입력한 항목은 계속 저장합니다.")
                     combined_thesis = thesis.strip() + ai_summary_text + ("\n\n[자유 메모 원문]\n" + raw_note.strip() if raw_note.strip() else "")
+                    try:
+                        from portfolio_book import phase_snapshot
+                        decision_context = phase_snapshot(jt.strip().upper(), get_prices, get_db_connection)
+                    except Exception:
+                        decision_context = ""
                     save_decision((datetime.now(timezone.utc).isoformat(),jt.strip().upper(),horizon,float(price),
-                                   combined_thesis,support.strip(),against.strip(),risks.strip(),invalidation.strip(),decision))
+                                   combined_thesis,support.strip(),against.strip(),risks.strip(),invalidation.strip(),decision),
+                                  decision_context)
                     st.success("기록을 저장했습니다."); st.rerun()
         journal = load_decisions()
         if journal.empty:
