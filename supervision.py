@@ -462,6 +462,23 @@ def _angle_from_fits(fits):
 
 
 def analyze_series(ticker, get_prices, ext=None):
+    """국면 판정(10분 동안 같은 입력이면 저장된 결과를 재사용해 화면이 빨라진다). 오류 결과는 저장하지 않는다."""
+    try:
+        key = tuple(sorted((ext or {}).items()))
+        return _analyze_cached(ticker, key, get_prices)
+    except Exception:  # noqa: BLE001
+        return _analyze_series_raw(ticker, get_prices, ext)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _analyze_cached(ticker, ext_key, _get_prices):
+    res = _analyze_series_raw(ticker, _get_prices, dict(ext_key))
+    if res.get("error"):
+        raise RuntimeError(res["error"])  # 예외는 저장되지 않으므로 오류가 10분간 남지 않는다
+    return res
+
+
+def _analyze_series_raw(ticker, get_prices, ext=None):
     """한 자산(지수 또는 종목)의 국면 판정과 최근 이동 경로를 계산한다."""
     df, err = _read_prices(ticker, get_prices)
     if df is None:

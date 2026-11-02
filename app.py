@@ -874,12 +874,16 @@ def render_fundamentals(ticker):
         st.warning("재무 데이터를 가져오지 못했습니다."); st.caption(str(e))
 
 
-init_db()
-try:
-    from portfolio_book import ensure_tables as _ensure_book_tables
-    _ensure_book_tables(get_db_connection)
-except Exception:
-    pass
+if not st.session_state.get("_db_init_ok"):
+    init_db()
+    st.session_state["_db_init_ok"] = True
+if not st.session_state.get("_book_tables_ok"):
+    try:
+        from portfolio_book import ensure_tables as _ensure_book_tables
+        _ensure_book_tables(get_db_connection)
+        st.session_state["_book_tables_ok"] = True
+    except Exception:
+        pass
 st.title("🥚 Eggfolio")
 st.caption("투자 리서치 워크벤치 · 관측 데이터와 해석을 구분합니다.")
 
@@ -1025,8 +1029,15 @@ if tab_portfolio.open:
                     rows.append({"종목":h["name"],"코드":h.ticker,"계좌":h.account,"수량":qty,
                                  "평단":avg,"현재가":px,"평가금액":market_value,"평가손익":pnl,
                                  "수익률(%)":pnl_pct,"가격 기준일":pxdate or "자료 없음","통화":h.currency})
+            try:
+                from portfolio_book import us_rows_for_portfolio
+                rows += us_rows_for_portfolio(get_db_connection, latest_close)
+            except Exception:
+                pass
             pf = pd.DataFrame(rows)
-            valid = pf.dropna(subset=["평가금액"])
+            valid_all = pf.dropna(subset=["평가금액"])
+            valid = valid_all[valid_all["통화"] == "KRW"]
+            valid_usd = valid_all[valid_all["통화"] == "USD"]
             total_value = valid["평가금액"].sum() if not valid.empty else None
             total_pnl = valid["평가손익"].sum() if not valid.empty else None
             k1,k2,k3 = st.columns(3)
@@ -1034,6 +1045,15 @@ if tab_portfolio.open:
             k2.metric("평가손익 합계", fmt_large(total_pnl))
             base = valid["평가금액"].sum()-valid["평가손익"].sum() if not valid.empty else 0
             k3.metric("가중 평가수익률", f"{total_pnl/base*100:+.2f}%" if base else "자료 없음")
+            st.caption("위 합계는 원화(KRW) 종목만입니다.")
+            if not valid_usd.empty:
+                u1, u2, u3 = st.columns(3)
+                usd_val, usd_pnl = valid_usd["평가금액"].sum(), valid_usd["평가손익"].sum()
+                usd_base = usd_val - usd_pnl
+                u1.metric("미국주 평가금액 (USD)", f"${usd_val:,.2f}")
+                u2.metric("미국주 평가손익 (USD)", f"${usd_pnl:,.2f}")
+                u3.metric("미국주 수익률", f"{usd_pnl/usd_base*100:+.2f}%" if usd_base else "자료 없음")
+                st.caption("환율을 섞으면 숫자가 틀어지므로 원화와 달러는 따로 보여 드립니다.")
         
             st.subheader("보유 종목 직접 편집")
             st.caption(
@@ -1110,6 +1130,13 @@ if tab_portfolio.open:
                     st.error(f"변경사항 저장에 실패했습니다: {e}")
 
         
+            try:
+                from portfolio_book import render_us_editor
+                render_us_editor(get_db_connection)
+            except Exception as us_edit_error:
+                st.error("미국주 입력 화면을 표시하지 못했습니다. 다른 화면은 정상입니다.")
+                st.caption(str(us_edit_error)[:200])
+
             st.subheader("계좌별 보유 현황")
 
             display_cols = [
@@ -1122,6 +1149,7 @@ if tab_portfolio.open:
                 "삼성증권 일반계좌",
                 "삼성증권 CMA",
                 "기타 계좌",
+                "미국주(해외 계좌)",
             ]
 
             for account_name in account_order:

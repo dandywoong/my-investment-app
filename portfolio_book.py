@@ -137,6 +137,76 @@ def read_combo(mode, top, stance, stale):
     return msg + (" (기업 상태 기록이 오래됨 → 갱신 필요)" if stale else "")
 
 
+def guideline(mode, top, stance, stale, ret, over_limit=False):
+    """국면 × 기업 상태 × 운용 방식 → (행동 후보 이름, 종류, 이유 목록). 종류: buy/sell/hold/stop/wait.
+    검증 전 규칙이며 승률·확률이 아니다. 기업 상태는 사용자가 직접 기록한 값이다."""
+    why = []
+    if stance != "미확인" and stale:
+        why.append("기업 상태 기록이 {}일 넘게 지났습니다. 최신 실적·공시로 갱신하세요.".format(STANCE_STALE_DAYS))
+    if top is None:
+        return "판단 보류", "wait", ["가격 국면을 확정하지 못했습니다."] + why
+    pn = {1: "공포·투매", 2: "바닥 다지기", 3: "회복 초기", 4: "상승 추세", 5: "과열·도취", 6: "상승 동력 약화"}[top]
+    why.insert(0, "가격 국면: {}".format(pn))
+    if stance == "미확인":
+        why.append("기업 상태가 기록되지 않았습니다. 가격만으로는 매수·매도를 결론 내지 않습니다.")
+        if mode == "적립형":
+            return "적립 유지 (기업 상태 미기록)", "hold", why
+        return "기업 상태 먼저 기록", "wait", why
+    why.append("기업 상태(직접 기록): {}".format(stance))
+    weak, rec, up, hot, fade = top in (1, 2), top == 3, top == 4, top == 5, top == 6
+
+    if mode == "적립형":
+        if stance == "훼손":
+            return "적립 축소·중단 검토 (가설 재검증 후)", "stop", why
+        if stance == "견고" and weak:
+            why.append("조정 구간이고 기업이 견고하다고 기록됨 → 예수금이 있으면 수동 추가 후보")
+            return "적립 유지 · 조정 시 수동 추가 후보", "buy", why
+        if hot:
+            return "적립 유지 · 과열 구간 속도 점검", "hold", why
+        return "적립 유지", "hold", why
+
+    if mode == "베팅":
+        if stance == "훼손" or over_limit:
+            if over_limit:
+                why.append("평단 대비 손실이 설정한 한도를 넘었습니다.")
+            return "추가 1주 보류 · 가설·손실 한도 점검", "stop", why
+        if stance == "견고" and weak:
+            return "눌림 시 1주 추가 규칙 해당 후보", "buy", why
+        if hot or fade:
+            return "추가 보류", "hold", why
+        if stance == "견고":
+            return "보유 · 추가를 서두르지 않음", "hold", why
+        return "정한 규칙대로", "hold", why
+
+    # 핵심 장기
+    if stance == "훼손":
+        if weak:
+            return "매수 금지 · 가설 재검증", "stop", why
+        if rec:
+            return "보유분 가설 재검증", "stop", why
+        if hot:
+            return "정리 검토", "sell", why
+        return "비중 축소 검토", "sell", why
+    if stance == "견고":
+        if weak:
+            return "분할 매수 후보 (소규모 1차부터)", "buy", why
+        if rec:
+            return "분할 매수 후보 (확인 후 추가)", "buy", why
+        if up:
+            return "보유 유지", "hold", why
+        if hot:
+            return "분할 익절 검토", "sell", why
+        return "보유 유지 · 추가 보류", "hold", why
+    # 보통
+    if weak:
+        return "관찰 · 소규모만", "wait", why
+    if hot:
+        return "분할 익절 검토", "sell", why
+    if fade:
+        return "추가 보류", "hold", why
+    return "보유 유지", "hold", why
+
+
 # ---------------------------------------------------------------- 가격·국면
 def _stats(t, get_prices):
     try:
@@ -149,13 +219,12 @@ def _stats(t, get_prices):
         return None
 
 
-def _phase(t, get_prices, flows):
-    """-> (top, 표시 문구). 실패하면 (None, 사유)."""
+def _phase_res(t, get_prices, flows):
+    """국면 계산 결과(dict) 또는 None. 같은 입력은 supervision 쪽에서 10분간 저장되어 재사용된다."""
     try:
         import supervision as sv
         sym = _yf_symbol(t)
-        is_kr = sym.endswith((".KS", ".KQ"))
-        if is_kr:
+        if sym.endswith((".KS", ".KQ")):
             ext = sv._flow_ext(sym, flows) if flows is not None else {}
         else:
             try:
@@ -163,20 +232,25 @@ def _phase(t, get_prices, flows):
             except Exception:  # noqa: BLE001
                 ext = {}
         res = sv.analyze_series(sym, get_prices, ext)
-        if res.get("error"):
-            return None, "계산 불가"
-        top = res.get("top")
-        if top is None:
-            return None, "판단 보류"
-        return top, "{} · {}".format(sv.phase_label(top), res.get("confidence", ""))
-    except Exception as e:  # noqa: BLE001
-        return None, "계산 오류"
+        return None if res.get("error") else res
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _phase_text(res):
+    if res is None:
+        return None, "계산 불가"
+    top = res.get("top")
+    if top is None:
+        return None, "판단 보류"
+    import supervision as sv
+    return top, "{} · {}".format(sv.phase_label(top), res.get("confidence", ""))
 
 
 def phase_snapshot(ticker, get_prices, get_conn=None):
     """판단 기록에 같이 저장할 한 줄 요약(그 시점의 국면 + 기업 상태). 실패하면 빈 문자열."""
     try:
-        top, label = _phase(ticker, get_prices, None)
+        top, label = _phase_text(_phase_res(ticker, get_prices, None))
         parts = ["국면: {} (검증 전 규칙 기반)".format(label)]
         if get_conn is not None:
             rec = latest_stances(get_conn).get(str(ticker).strip().upper())
@@ -186,9 +260,42 @@ def phase_snapshot(ticker, get_prices, get_conn=None):
         return ""
 
 
-# ---------------------------------------------------------------- 화면
 def _fmt_pct(x):
     return "-" if x is None else "{:+.1f}%".format(x * 100)
+
+
+def _load_all(get_conn):
+    """한 번의 DB 연결로 필요한 표를 모두 읽는다(연결 횟수를 줄여 속도 개선)."""
+    out = {}
+    with get_conn() as con:
+        with con.cursor() as cur:
+            for key, sql in (("us", "SELECT * FROM us_positions ORDER BY ticker"),
+                             ("modes", "SELECT * FROM holding_modes"),
+                             ("stance", "SELECT * FROM stance_log ORDER BY id DESC")):
+                cur.execute(sql)
+                cols = [d[0] for d in cur.description]
+                out[key] = pd.DataFrame(cur.fetchall(), columns=cols)
+    return out
+
+
+# ---------------------------------------------------------------- 내 포트폴리오 탭용
+def us_rows_for_portfolio(get_conn, latest_close):
+    """'내 포트폴리오' 표·파이 차트에 합칠 미국주 행(표시용). 기존 holdings 테이블은 건드리지 않는다."""
+    if not _ensure_once(get_conn):
+        return []
+    us = _run(get_conn, "SELECT * FROM us_positions ORDER BY ticker", fetch=True)
+    rows = []
+    for _, u in us.iterrows():
+        qty, avg = float(u["quantity"] or 0), float(u["avg_cost"] or 0)
+        if qty <= 0:
+            continue
+        px, pxdate = latest_close(_yf_symbol(u["ticker"]))
+        rows.append({"종목": u["name"] or u["ticker"], "코드": u["ticker"], "계좌": "미국주(해외 계좌)", "수량": qty,
+                     "평단": avg, "현재가": px, "평가금액": px * qty if px is not None else None,
+                     "평가손익": (px - avg) * qty if px is not None else None,
+                     "수익률(%)": (px / avg - 1) * 100 if px is not None and avg else None,
+                     "가격 기준일": pxdate or "자료 없음", "통화": "USD"})
+    return rows
 
 
 def _seed_us(get_conn):
@@ -200,27 +307,18 @@ def _seed_us(get_conn):
              (tk, nm, q, avg, mode, note, _now()))
 
 
-def render_book(get_conn, holdings, get_prices, load_flows):
-    st.divider()
-    st.markdown("##### 운용 방식별 종합 점검")
-    st.subheader("🧭 가격 국면 × 기업 상태")
-    st.caption("종목마다 운용 방식이 다릅니다. 핵심 장기는 매수·매도 타이밍을, 적립형은 적립 유지 여부를, 베팅은 정한 규칙과 손실 한도를 봅니다. "
-               "기업 상태는 앱이 계산하지 않고 **내가 근거와 날짜를 적어 기록한 값**입니다. 읽기 문구는 검증 전 규칙이며 승률·확률이 아닙니다.")
+def render_us_editor(get_conn):
+    """내 포트폴리오 탭: 미국주 보유 확인·수정·매수 기록. 저장하면 같은 탭의 표와 파이 차트가 바로 바뀐다."""
+    st.subheader("🇺🇸 미국주 보유 입력·수정")
     if not _ensure_once(get_conn):
         return
-
     try:
         us = _run(get_conn, "SELECT * FROM us_positions ORDER BY ticker", fetch=True)
-        modes = _run(get_conn, "SELECT * FROM holding_modes", fetch=True)
     except Exception as e:  # noqa: BLE001
-        st.error("기록을 읽지 못했습니다: " + str(e)[:150])
+        st.error("미국주 기록을 읽지 못했습니다: " + str(e)[:150])
         return
-    kr_modes = {str(r["ticker"]).upper(): r["mode"] for _, r in modes.iterrows()}
-    stances = latest_stances(get_conn)
-
     if len(us) == 0:
-        st.info("미국주 기록이 아직 없습니다. 아래 버튼으로 현재 보유(증권사 화면 기준 2026-10-30)를 한 번에 넣을 수 있습니다. "
-                "넣은 뒤 수량·평단은 언제든 직접 고칠 수 있습니다.")
+        st.info("미국주 기록이 아직 없습니다. 아래 버튼으로 현재 보유(증권사 화면 기준 2026-10-30)를 한 번에 넣을 수 있습니다.")
         if st.button("미국주 현재 보유 처음 한 번 넣기", key="book_seed_us"):
             try:
                 _seed_us(get_conn)
@@ -228,106 +326,38 @@ def render_book(get_conn, holdings, get_prices, load_flows):
                 st.rerun()
             except Exception as e:  # noqa: BLE001
                 st.error("저장하지 못했습니다: " + str(e)[:150])
-
-    use_phase = st.toggle("가격 국면도 계산해서 함께 보기(처음엔 수십 초 걸릴 수 있음)", value=True, key="book_use_phase")
-    flows = None
-    if use_phase:
-        try:
-            flows, _ = load_flows()
-        except Exception:  # noqa: BLE001
-            flows = None
-
-    rows = []
-    # 한국 보유(기존 holdings)
-    if holdings is not None and len(holdings) > 0:
-        for _, h in holdings.iterrows():
-            tk = str(h.get("ticker", "")).upper()
-            mode = kr_modes.get(tk, "핵심 장기")
-            avg = float(h.get("avg_cost") or 0)
-            rows.append(("한국", tk, str(h.get("name", tk)), mode, float(h.get("quantity") or 0), avg))
-    for _, u in us.iterrows():
-        if float(u["quantity"] or 0) > 0:
-            rows.append(("미국", str(u["ticker"]).upper(), str(u["name"]), str(u["mode"]), float(u["quantity"]), float(u["avg_cost"] or 0)))
-
-    table = []
-    with st.spinner("점검표를 만드는 중..."):
-        for mkt, tk, nm, mode, qty, avg in rows:
-            s = _stats(tk, get_prices)
-            top, plabel = (None, "미계산")
-            if use_phase:
-                top, plabel = _phase(tk, get_prices, flows)
-            sv_txt, sv_val, stale = _stance_view(stances.get(tk))
-            ret = (s["price"] / avg - 1) if (s and avg > 0) else None
-            reading = read_combo(mode if mode in MODES else "핵심 장기", top, sv_val, stale)
-            table.append({
-                "시장": mkt, "종목": "{} ({})".format(nm, tk), "운용 방식": mode,
-                "수량": round(qty, 6), "평단": round(avg, 3), "현재가": None if not s else round(s["price"], 3),
-                "평단 대비": _fmt_pct(ret), "60일 고점 대비": _fmt_pct(s["dd60"]) if s else "-",
-                "가격 국면": plabel, "기업 상태(직접 기록)": sv_txt, "읽기": reading,
-            })
-    if table:
-        st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
-        st.caption("한국 종목은 원, 미국 종목은 달러 단위입니다(합산 비중은 계산하지 않습니다). 가격은 야후 일봉(지연·누락 가능) 기준입니다. "
-                   "'읽기'는 가격 국면·기업 상태·운용 방식을 규칙으로 조합한 참고 문구입니다.")
     else:
-        st.info("표시할 보유 종목이 없습니다.")
-
-    # IonQ 같은 베팅 슬롯 점검
-    bets = [r for r in rows if r[3] == "베팅"]
-    if bets:
-        try:
-            import supervision as sv
-            limit = float(sv.DEFAULTS.get("bet_loss_limit", -30))
-        except Exception:  # noqa: BLE001
-            limit = -30.0
-        st.markdown("**베팅 슬롯 점검**")
-        for mkt, tk, nm, mode, qty, avg in bets:
-            s = _stats(tk, get_prices)
-            if s and avg > 0:
-                ret = (s["price"] / avg - 1) * 100
-                flag = "손실 한도 {:.0f}% 이내".format(limit) if ret > limit else "손실 한도 {:.0f}%를 넘음 → 가설 재검증".format(limit)
-                st.write("- {}: {:g}주 · 평단 {:.2f} · 현재 {:.2f} · 평단 대비 {:+.1f}% · 60일 고점 대비 {} · {}".format(
-                    nm, qty, avg, s["price"], ret, _fmt_pct(s["dd60"]), flag))
-            else:
-                st.write("- {}: 가격 자료 없음".format(nm))
-        st.caption("베팅은 '잃어도 되는 한도 안에서 1주씩'이 전제입니다. 한도는 감독실 설정값을 따릅니다. 추가 시점은 직접 정한 규칙을 따르고 앱은 매수 시점을 알려주지 않습니다.")
-
-    # ---- 기록 입력들 ----
-    all_tickers = [r[1] for r in rows] or ["(종목 없음)"]
-    with st.expander("🏢 기업 상태 기록하기 (국면 해석에 반영됩니다)", expanded=False):
-        st.caption("예: 실적·계약·공시를 확인한 결과를 견고/보통/훼손 중 하나로 고르고, 근거와 '이게 깨지면 가설 폐기' 조건을 적습니다. "
-                   "내 가설은 사실로 가정되지 않고 '내 기록'으로만 표시됩니다. 90일이 지나면 '오래됨'으로 표시됩니다.")
-        with st.form("book_stance_form", clear_on_submit=True):
-            c1, c2, c3 = st.columns(3)
-            tk = c1.selectbox("종목", all_tickers, key="book_st_tk")
-            stv = c2.selectbox("기업 상태", STANCES, index=3, key="book_st_val")
-            asof = c3.date_input("확인한 날짜(기준일)", value=date.today(), key="book_st_asof")
-            memo = st.text_area("근거(무엇을 보고 그렇게 판단했나)", key="book_st_memo")
-            inval = st.text_area("무효화 조건(이게 깨지면 이 판단을 버린다)", key="book_st_inval")
-            ok = st.form_submit_button("기업 상태 기록 저장")
-        if ok:
-            if tk == "(종목 없음)" or (stv != "미확인" and not memo.strip()):
-                st.error("종목을 고르고, 견고/보통/훼손이면 근거를 적어 주세요.")
-            else:
-                try:
-                    _run(get_conn, "INSERT INTO stance_log (created_at,ticker,stance,as_of,memo,invalidation) VALUES (%s,%s,%s,%s,%s,%s)",
-                         (_now(), tk, stv, asof.isoformat(), memo.strip(), inval.strip()))
-                    st.success("저장했습니다.")
+        st.caption("표에서 수량·평단·운용 방식을 직접 고친 뒤 '변경사항 저장'을 누르세요. 수량 0이면 보유에서 빠집니다. "
+                   "저장하면 아래 '계좌별 보유 현황'과 '포트폴리오 비중' 차트에 바로 반영됩니다.")
+        show = us[["ticker", "name", "quantity", "avg_cost", "mode", "note"]].rename(columns={
+            "ticker": "티커", "name": "이름", "quantity": "수량", "avg_cost": "평단(USD)", "mode": "운용 방식", "note": "메모"})
+        edited = st.data_editor(show, use_container_width=True, hide_index=True, num_rows="fixed", key="book_us_editor",
+                                column_config={
+                                    "티커": st.column_config.TextColumn("티커", disabled=True),
+                                    "수량": st.column_config.NumberColumn("수량", min_value=0.0, format="%.6f"),
+                                    "평단(USD)": st.column_config.NumberColumn("평단(USD)", min_value=0.0, format="%.3f"),
+                                    "운용 방식": st.column_config.SelectboxColumn("운용 방식", options=MODES),
+                                })
+        if st.button("변경사항 저장", key="book_us_save"):
+            try:
+                n = 0
+                for i in range(len(show)):
+                    a, b = show.iloc[i], edited.iloc[i]
+                    if any(a[c] != b[c] for c in show.columns):
+                        _run(get_conn, "UPDATE us_positions SET name=%s, quantity=%s, avg_cost=%s, mode=%s, note=%s, updated_at=%s WHERE ticker=%s",
+                             (str(b["이름"]), float(b["수량"]), float(b["평단(USD)"]), str(b["운용 방식"]), str(b["메모"] or ""), _now(), str(b["티커"])))
+                        n += 1
+                st.success("{}개 종목을 저장했습니다.".format(n) if n else "바뀐 내용이 없습니다.")
+                if n:
                     st.rerun()
-                except Exception as e:  # noqa: BLE001
-                    st.error("저장하지 못했습니다: " + str(e)[:150])
-        try:
-            log = _run(get_conn, "SELECT created_at, ticker, stance, as_of, memo, invalidation FROM stance_log ORDER BY id DESC LIMIT 20", fetch=True)
-            if len(log):
-                st.dataframe(log, use_container_width=True, hide_index=True)
-        except Exception:  # noqa: BLE001
-            pass
+            except Exception as e:  # noqa: BLE001
+                st.error("저장하지 못했습니다: " + str(e)[:150])
 
-    with st.expander("➕ 미국주 매수 기록 추가 (평단·수량 자동 갱신)", expanded=False):
-        names = list(us["ticker"]) if len(us) else []
+    names = list(us["ticker"]) if len(us) else []
+    with st.expander("➕ 미국주 매수 기록 추가 (수량·평단 자동 갱신)", expanded=False):
         with st.form("book_buy_form", clear_on_submit=True):
             c1, c2, c3, c4 = st.columns(4)
-            tk = c1.selectbox("종목", names or ["(먼저 위 버튼으로 보유 입력)"], key="book_buy_tk")
+            tk = c1.selectbox("종목", names or ["(먼저 보유를 넣어 주세요)"], key="book_buy_tk")
             q = c2.number_input("수량(소수점 가능)", min_value=0.0, value=0.0, step=0.01, format="%.6f", key="book_buy_q")
             p = c3.number_input("체결 단가(USD)", min_value=0.0, value=0.0, step=0.01, format="%.3f", key="book_buy_p")
             kind = c4.selectbox("구분", ["자동 적립", "수동 추가(조정 때)", "베팅 1주"], key="book_buy_kind")
@@ -349,36 +379,213 @@ def render_book(get_conn, holdings, get_prices, load_flows):
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error("저장하지 못했습니다: " + str(e)[:150])
-
-    with st.expander("✏️ 미국주 종목 추가 · 수량/평단/운용 방식 직접 수정 (매도·정정용)", expanded=False):
-        with st.form("book_us_edit", clear_on_submit=True):
+    with st.expander("➕ 새 미국 종목 추가", expanded=False):
+        with st.form("book_us_new", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
-            tk = c1.text_input("티커(예: NVDA, BRK.B)", key="book_ed_tk").strip().upper()
-            nm = c2.text_input("이름(새 종목일 때)", key="book_ed_nm")
-            mode = c3.selectbox("운용 방식", MODES, index=1, key="book_ed_mode")
+            tk = c1.text_input("티커(예: MSFT, BRK.B)", key="book_new_tk").strip().upper()
+            nm = c2.text_input("이름", key="book_new_nm")
+            mode = c3.selectbox("운용 방식", MODES, index=1, key="book_new_mode")
             c4, c5 = st.columns(2)
-            q = c4.number_input("수량(전체 보유 수량으로 덮어씀)", min_value=0.0, value=0.0, step=0.01, format="%.6f", key="book_ed_q")
-            a = c5.number_input("평단(USD, 전체 평균)", min_value=0.0, value=0.0, step=0.01, format="%.3f", key="book_ed_a")
-            note = st.text_input("메모(선택)", key="book_ed_note")
-            ok = st.form_submit_button("저장(같은 티커는 덮어씀)")
+            q = c4.number_input("수량", min_value=0.0, value=0.0, step=0.01, format="%.6f", key="book_new_q")
+            a = c5.number_input("평단(USD)", min_value=0.0, value=0.0, step=0.01, format="%.3f", key="book_new_a")
+            ok = st.form_submit_button("추가")
         if ok:
-            if not tk:
-                st.error("티커를 입력해 주세요.")
+            if not tk or q <= 0 or a <= 0:
+                st.error("티커, 수량, 평단을 입력해 주세요.")
             else:
                 try:
                     _run(get_conn, """INSERT INTO us_positions (ticker,name,quantity,avg_cost,mode,note,updated_at)
-                                      VALUES (%s,%s,%s,%s,%s,%s,%s)
-                                      ON CONFLICT (ticker) DO UPDATE SET
-                                      name=CASE WHEN EXCLUDED.name<>'' THEN EXCLUDED.name ELSE us_positions.name END,
-                                      quantity=EXCLUDED.quantity, avg_cost=EXCLUDED.avg_cost, mode=EXCLUDED.mode,
-                                      note=EXCLUDED.note, updated_at=EXCLUDED.updated_at""",
-                         (tk, nm.strip(), q, a, mode, note.strip(), _now()))
-                    st.success("저장했습니다.")
+                                      VALUES (%s,%s,%s,%s,%s,'',%s) ON CONFLICT (ticker) DO NOTHING""",
+                         (tk, nm.strip() or tk, q, a, mode, _now()))
+                    st.success("추가했습니다(이미 있는 티커는 건드리지 않습니다).")
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error("저장하지 못했습니다: " + str(e)[:150])
 
-    kr_tickers = [r[1] for r in rows if r[0] == "한국"]
+
+# ---------------------------------------------------------------- 감독실 탭용
+def _sim_buy(price, qty, avg, units, label_fn, cur):
+    rows = []
+    for u in units:
+        add = u["qty"]
+        nq = qty + add
+        na = (qty * avg + add * price) / nq
+        rows.append({"추가": u["name"], "추가 후 수량": round(nq, 4), "새 평단": round(na, 2),
+                     "평단 변화": "{:+.1f}%".format((na / avg - 1) * 100),
+                     "본전까지 필요한 상승": "{:+.1f}%".format((na / price - 1) * 100)})
+    return pd.DataFrame(rows)
+
+
+def _render_card(it, get_prices):
+    import supervision as sv
+    cur = it["cur"]
+    sym = "₩" if cur == "KRW" else "$"
+    price, avg, qty, ret = it["price"], it["avg"], it["qty"], it["ret"]
+    st.markdown("### {} — {}".format(it["name"], it["label"]))
+    st.caption("운용 방식: {} · 검증 전 규칙 기반 행동 후보이며 승률·확률이 아닙니다.".format(it["mode"]))
+    for w in it["why"]:
+        st.write("- " + w)
+    if price is None:
+        st.info("현재가 자료가 없어 평단·가격대 계산을 하지 못했습니다.")
+        return
+    c1, c2, c3 = st.columns(3)
+    c1.metric("현재가", "{}{:,.2f}".format(sym, price))
+    c2.metric("내 평단", "{}{:,.2f}".format(sym, avg) if avg else "-")
+    c3.metric("평단 대비", "{:+.1f}%".format(ret * 100) if ret is not None else "-")
+    if ret is not None and ret < 0:
+        st.write("본전(평단)까지 필요한 상승: **{:+.1f}%**".format((avg / price - 1) * 100))
+
+    if it["mode"] == "적립형":
+        units = [{"name": "${:g}".format(a), "qty": a / price} for a in (50, 100, 200)]
+    elif it["mode"] == "베팅":
+        units = [{"name": "1주", "qty": 1.0}]
+    else:
+        units = [{"name": "{}주".format(n), "qty": float(n)} for n in (1, 2, 3)]
+    if avg and qty:
+        st.markdown("**추가 매수 시 평단 변화 (현재가에 체결 가정)**")
+        st.dataframe(_sim_buy(price, qty, avg, units, None, cur), use_container_width=True, hide_index=True)
+        if it["kind"] != "buy":
+            st.caption("현재 행동 후보가 '매수'가 아니므로 위 표는 계산 참고용입니다. 평단을 낮추는 것 자체는 투자 근거가 되지 못합니다.")
+        else:
+            st.caption("평단을 낮추기 위해서가 아니라, 기업 상태 기록이 유효하고 정한 예산 안일 때만 후보로 봅니다. 같은 업종 비중이 커지는지도 함께 확인하세요.")
+    if ret is not None and ret > 0 and qty:
+        frac_rows = []
+        for f in (0.1, 0.2, 0.33):
+            sq = qty * f
+            if cur == "KRW":
+                sq = max(1.0, round(sq))
+                if sq >= qty and qty > 1:
+                    sq = qty - 1
+            frac_rows.append({"매도 비율": "{:.0%}".format(f), "매도 수량": round(sq, 4), "남는 수량": round(qty - sq, 4),
+                              "실현 손익(세금·수수료 전)": "{}{:,.0f}".format(sym, (price - avg) * sq) if cur == "KRW" else "{}{:,.2f}".format(sym, (price - avg) * sq)})
+        st.markdown("**일부 익절 시 (현재가 체결 가정)**")
+        st.dataframe(pd.DataFrame(frac_rows), use_container_width=True, hide_index=True)
+        if it["kind"] != "sell":
+            st.caption("현재 행동 후보가 '익절'이 아니므로 참고용 계산입니다.")
+    f = (it.get("res") or {}).get("features") or {}
+    try:
+        lad = sv.price_ladders(f, price, qty, avg, 0.0, 20, cur) if f else None
+    except Exception:  # noqa: BLE001
+        lad = None
+    if lad:
+        st.markdown("**분할 가격대 (후보 구간 · 예측·목표가 아님)**")
+        if lad["buys"]:
+            st.dataframe(pd.DataFrame(lad["buys"]), use_container_width=True, hide_index=True)
+        if lad["sells"]:
+            st.dataframe(pd.DataFrame(lad["sells"]), use_container_width=True, hide_index=True)
+        elif lad.get("sell_note"):
+            st.caption(lad["sell_note"])
+        st.caption("가격 구조와 변동성으로 계산한 규칙 기반 후보이며 백테스트 전입니다. 행동 후보가 매수/익절이 아니면 참고용입니다.")
+
+
+def render_book(get_conn, holdings, get_prices, load_flows):
+    st.divider()
+    st.markdown("##### 운용 방식별 종합 점검")
+    st.subheader("🧭 가격 국면 × 기업 상태 → 행동 지침")
+    st.caption("종목마다 운용 방식이 다릅니다. 핵심 장기는 매수·매도 타이밍을, 적립형은 적립 유지 여부를, 베팅은 정한 규칙과 손실 한도를 봅니다. "
+               "기업 상태는 앱이 계산하지 않고 **내가 근거와 날짜를 적어 기록한 값**입니다. 행동 후보는 검증 전 규칙이며 승률·확률이 아닙니다.")
+    if not _ensure_once(get_conn):
+        return
+    try:
+        data = _load_all(get_conn)
+    except Exception as e:  # noqa: BLE001
+        st.error("기록을 읽지 못했습니다: " + str(e)[:150])
+        return
+    us, modes, stlog = data["us"], data["modes"], data["stance"]
+    kr_modes = {str(r["ticker"]).upper(): r["mode"] for _, r in modes.iterrows()}
+    stances = {}
+    for _, r in stlog.iterrows():
+        stances.setdefault(str(r["ticker"]).upper(), r)
+
+    if len(us) == 0:
+        st.info("미국주 기록이 아직 없습니다. '💼 내 포트폴리오' 탭에서 '미국주 현재 보유 처음 한 번 넣기'를 눌러 주세요.")
+
+    use_phase = st.toggle("가격 국면도 계산해서 함께 보기", value=True, key="book_use_phase")
+    flows = None
+    if use_phase:
+        try:
+            flows, _ = load_flows()
+        except Exception:  # noqa: BLE001
+            flows = None
+
+    try:
+        import supervision as sv
+        bet_limit = float(sv.DEFAULTS.get("bet_loss_limit", -30))
+    except Exception:  # noqa: BLE001
+        bet_limit = -30.0
+
+    base = []
+    if holdings is not None and len(holdings) > 0:
+        for _, h in holdings.iterrows():
+            tk = str(h.get("ticker", "")).upper()
+            base.append(("한국", tk, str(h.get("name", tk)), kr_modes.get(tk, "핵심 장기"), float(h.get("quantity") or 0),
+                         float(h.get("avg_cost") or 0), "KRW"))
+    for _, u in us.iterrows():
+        if float(u["quantity"] or 0) > 0:
+            base.append(("미국", str(u["ticker"]).upper(), str(u["name"]), str(u["mode"]), float(u["quantity"]),
+                         float(u["avg_cost"] or 0), "USD"))
+
+    items, table = [], []
+    with st.spinner("점검표를 만드는 중... (처음 한 번만 오래 걸리고 이후엔 저장된 결과를 씁니다)"):
+        for mkt, tk, nm, mode, qty, avg, cur in base:
+            mode = mode if mode in MODES else "핵심 장기"
+            res = _phase_res(tk, get_prices, flows) if use_phase else None
+            top, plabel = _phase_text(res) if use_phase else (None, "미계산")
+            s_ = _stats(tk, get_prices)
+            price = s_["price"] if s_ else None
+            ret = (price / avg - 1) if (price is not None and avg > 0) else None
+            sv_txt, sv_val, stale = _stance_view(stances.get(tk))
+            over = bool(mode == "베팅" and ret is not None and ret * 100 <= bet_limit)
+            label, kind, why = guideline(mode, top, sv_val, stale, ret, over)
+            if not use_phase:
+                label, kind, why = "국면 미계산", "wait", ["위 스위치를 켜면 국면을 계산합니다."]
+            items.append({"name": nm, "tk": tk, "mode": mode, "qty": qty, "avg": avg, "cur": cur, "price": price, "ret": ret,
+                          "label": label, "kind": kind, "why": why, "res": res})
+            table.append({"시장": mkt, "종목": "{} ({})".format(nm, tk), "운용 방식": mode, "수량": round(qty, 6), "평단": round(avg, 3),
+                          "현재가": None if price is None else round(price, 3), "평단 대비": _fmt_pct(ret),
+                          "60일 고점 대비": _fmt_pct(s_["dd60"]) if s_ else "-", "가격 국면": plabel,
+                          "기업 상태(직접 기록)": sv_txt, "행동 후보": label})
+    if table:
+        st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
+        st.caption("한국 종목은 원, 미국 종목은 달러 단위입니다. 가격은 야후 일봉(지연·누락 가능) 기준입니다.")
+        pick = st.selectbox("행동 지침 카드로 자세히 보기", [i["name"] + " (" + i["tk"] + ")" for i in items], key="book_pick")
+        for it in items:
+            if pick == it["name"] + " (" + it["tk"] + ")":
+                try:
+                    _render_card(it, get_prices)
+                except Exception as e:  # noqa: BLE001
+                    st.error("카드를 표시하지 못했습니다: " + str(e)[:150])
+    else:
+        st.info("표시할 보유 종목이 없습니다.")
+
+    all_tickers = [i["tk"] for i in items] or ["(종목 없음)"]
+    with st.expander("🏢 기업 상태 기록하기 (행동 지침에 반영됩니다)", expanded=False):
+        st.caption("실적·계약·공시를 확인한 결과를 견고/보통/훼손 중 하나로 고르고, 근거와 '이게 깨지면 가설 폐기' 조건을 적습니다. "
+                   "내 가설은 사실로 가정되지 않고 '내 기록'으로만 표시됩니다. 90일이 지나면 '오래됨'으로 표시됩니다.")
+        with st.form("book_stance_form", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            tk = c1.selectbox("종목", all_tickers, key="book_st_tk")
+            stv = c2.selectbox("기업 상태", STANCES, index=3, key="book_st_val")
+            asof = c3.date_input("확인한 날짜(기준일)", value=date.today(), key="book_st_asof")
+            memo = st.text_area("근거(무엇을 보고 그렇게 판단했나)", key="book_st_memo")
+            inval = st.text_area("무효화 조건(이게 깨지면 이 판단을 버린다)", key="book_st_inval")
+            ok = st.form_submit_button("기업 상태 기록 저장")
+        if ok:
+            if tk == "(종목 없음)" or (stv != "미확인" and not memo.strip()):
+                st.error("종목을 고르고, 견고/보통/훼손이면 근거를 적어 주세요.")
+            else:
+                try:
+                    _run(get_conn, "INSERT INTO stance_log (created_at,ticker,stance,as_of,memo,invalidation) VALUES (%s,%s,%s,%s,%s,%s)",
+                         (_now(), tk, stv, asof.isoformat(), memo.strip(), inval.strip()))
+                    st.success("저장했습니다.")
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.error("저장하지 못했습니다: " + str(e)[:150])
+        if len(stlog):
+            st.dataframe(stlog[["created_at", "ticker", "stance", "as_of", "memo", "invalidation"]].head(20),
+                         use_container_width=True, hide_index=True)
+
+    kr_tickers = [i["tk"] for i in items if i["cur"] == "KRW"]
     if kr_tickers:
         with st.expander("🇰🇷 한국 종목 운용 방식 정하기 (기본값: 핵심 장기)", expanded=False):
             with st.form("book_kr_mode", clear_on_submit=True):
