@@ -37,6 +37,70 @@ def _run(get_conn, sql, params=None, fetch=False):
     return None
 
 
+def _totals(wq, wa, fq, fa):
+    q = wq + fq
+    return q, ((wq * wa + fq * fa) / q if q > 0 else 0.0)
+
+
+def _convert_frac(wq, wa, fq, fa):
+    """소수점 수량이 1 이상 모이면 정수 주로 전환한다(전환분의 단가 = 소수점 평단). -> (wq, wa, fq, fa, 전환 주수)"""
+    n = int(fq + 1e-9)
+    if n >= 1:
+        new_w = wq + n
+        wa = (wq * wa + n * fa) / new_w
+        wq = new_w
+        fq = max(fq - n, 0.0)
+        if fq < 1e-9:
+            fq = 0.0
+    return wq, wa, fq, fa, max(n, 0)
+
+
+def _lots(u):
+    """DB 행 -> (정수 수량, 정수 평단, 소수점 수량, 소수점 평단). 칸이 비어 있으면 총량을 정수/소수로 나눠 추정."""
+    def f(x):
+        try:
+            return None if x is None or pd.isna(x) else float(x)
+        except Exception:  # noqa: BLE001
+            return None
+    wq, wa, fq, fa = f(u.get("whole_qty")), f(u.get("whole_avg")), f(u.get("frac_qty")), f(u.get("frac_avg"))
+    if wq is None or fq is None:
+        q, a = float(u["quantity"] or 0), float(u["avg_cost"] or 0)
+        n = int(q + 1e-9)
+        return float(n), a, max(q - n, 0.0), a
+    return wq, wa or 0.0, fq, fa or 0.0
+
+
+def _save_lots(get_conn, ticker, wq, wa, fq, fa, **extra):
+    q, a = _totals(wq, wa, fq, fa)
+    sets = "quantity=%s, avg_cost=%s, whole_qty=%s, whole_avg=%s, frac_qty=%s, frac_avg=%s, updated_at=%s"
+    vals = [q, a, wq, wa, fq, fa, _now()]
+    for k, v in extra.items():
+        sets += ", {}=%s".format(k)
+        vals.append(v)
+    vals.append(ticker)
+    _run(get_conn, "UPDATE us_positions SET " + sets + " WHERE ticker=%s", tuple(vals))
+    return q, a
+
+
+def _migrate_lots(get_conn):
+    """정수/소수점 칸이 비어 있는 기존 행을 채운다. 증권사 화면에서 받은 로트를 알면 그 값으로, 아니면 총량을 나눠 추정."""
+    df = _run(get_conn, "SELECT * FROM us_positions WHERE whole_qty IS NULL OR frac_qty IS NULL", fetch=True)
+    seed = {_norm(t): lots for t, _, lots, _, _ in US_SEED_LOTS}
+    for _, u in df.iterrows():
+        lots = seed.get(_norm(u["ticker"]))
+        q = float(u["quantity"] or 0)
+        if lots and abs(sum(a for a, _ in lots) - q) < 1e-6:
+            wl = [(a, b) for a, b in lots if a >= 1]
+            fl = [(a, b) for a, b in lots if a < 1]
+            wq = sum(a for a, _ in wl)
+            wa = sum(a * b for a, b in wl) / wq if wq else 0.0
+            fq = sum(a for a, _ in fl)
+            fa = sum(a * b for a, b in fl) / fq if fq else 0.0
+        else:
+            wq, wa, fq, fa = _lots(u)
+        _save_lots(get_conn, u["ticker"], wq, wa, fq, fa)
+
+
 def ensure_tables(get_conn):
     """새 테이블만 추가한다(이미 있으면 아무 일도 하지 않음). 기존 데이터는 지우지 않는다."""
     stmts = [
@@ -52,9 +116,17 @@ def ensure_tables(get_conn):
                stance TEXT, as_of TEXT, memo TEXT, invalidation TEXT)""",
         """CREATE TABLE IF NOT EXISTS holding_modes (ticker TEXT PRIMARY KEY, mode TEXT NOT NULL DEFAULT '핵심 장기')""",
         "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS context TEXT",
+        "ALTER TABLE us_positions ADD COLUMN IF NOT EXISTS whole_qty DOUBLE PRECISION",
+        "ALTER TABLE us_positions ADD COLUMN IF NOT EXISTS whole_avg DOUBLE PRECISION",
+        "ALTER TABLE us_positions ADD COLUMN IF NOT EXISTS frac_qty DOUBLE PRECISION",
+        "ALTER TABLE us_positions ADD COLUMN IF NOT EXISTS frac_avg DOUBLE PRECISION",
     ]
-    for s in stmts:
-        _run(get_conn, s)
+    for q in stmts:
+        _run(get_conn, q)
+    try:
+        _migrate_lots(get_conn)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _ensure_once(get_conn):
@@ -319,15 +391,17 @@ def holdings_with_us(get_conn, holdings):
 
 def _seed_us(get_conn):
     for tk, nm, lots, mode, note in US_SEED_LOTS:
-        q = sum(a for a, _ in lots)
-        avg = sum(a * b for a, b in lots) / q
+        q = sum(x for x, _ in lots)
+        avg = sum(x * y for x, y in lots) / q
         _run(get_conn, """INSERT INTO us_positions (ticker,name,quantity,avg_cost,mode,note,updated_at)
                           VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (ticker) DO NOTHING""",
              (tk, nm, q, avg, mode, note, _now()))
+    _migrate_lots(get_conn)
 
 
 def render_us_editor(get_conn):
-    """내 포트폴리오 탭: 미국주 보유 확인·수정·매수 기록. 저장하면 같은 탭의 표와 파이 차트가 바로 바뀐다."""
+    """내 포트폴리오 탭: 미국주 보유(정수 주 + 소수점 주 한 줄 관리). 저장하면 총 수량·총 평단이 자동 계산되고,
+    소수점이 1주 이상 모이면 정수 주로 자동 전환된다."""
     st.subheader("🇺🇸 미국주 보유 입력·수정")
     if not _ensure_once(get_conn):
         return
@@ -346,16 +420,26 @@ def render_us_editor(get_conn):
             except Exception as e:  # noqa: BLE001
                 st.error("저장하지 못했습니다: " + str(e)[:150])
     else:
-        st.caption("표에서 수량·평단·운용 방식을 직접 고친 뒤 '변경사항 저장'을 누르세요. 수량 0이면 보유에서 빠집니다. "
-                   "저장하면 아래 '계좌별 보유 현황'과 '포트폴리오 비중' 차트에 바로 반영됩니다.")
-        show = us[["ticker", "name", "quantity", "avg_cost", "mode", "note"]].rename(columns={
-            "ticker": "티커", "name": "이름", "quantity": "수량", "avg_cost": "평단(USD)", "mode": "운용 방식", "note": "메모"})
-        show["삭제"] = False
+        st.caption("종목당 한 줄입니다. **총 수량·총 평단은 자동 계산(수정 불가)** 이고, 증권사 앱의 '정수 1주 줄'과 '소수점 줄'을 각각 "
+                   "정수 주 / 소수점 칸에 옮겨 적으면 됩니다. 저장하면 합계가 자동 갱신되고, 소수점이 1주 이상 모이면 "
+                   "정수 주로 자동 전환됩니다(전환분 단가 = 소수점 평단). 수량 0이면 보유에서 빠지고, '삭제'를 체크하면 목록에서 지웁니다.")
+        recs = []
+        for _, u in us.iterrows():
+            wq, wa, fq, fa = _lots(u)
+            q, a = _totals(wq, wa, fq, fa)
+            recs.append({"티커": u["ticker"], "이름": u["name"], "총 수량(자동)": q, "총 평단(자동)": a,
+                         "정수 주 수량": wq, "정수 주 평단": wa, "소수점 수량": fq, "소수점 평단": fa,
+                         "운용 방식": u["mode"], "메모": u["note"], "삭제": False})
+        show = pd.DataFrame(recs)
         edited = st.data_editor(show, use_container_width=True, hide_index=True, num_rows="fixed", key="book_us_editor",
                                 column_config={
                                     "티커": st.column_config.TextColumn("티커", disabled=True),
-                                    "수량": st.column_config.NumberColumn("수량", min_value=0.0, format="%.6f"),
-                                    "평단(USD)": st.column_config.NumberColumn("평단(USD)", min_value=0.0, format="%.3f"),
+                                    "총 수량(자동)": st.column_config.NumberColumn("총 수량(자동)", disabled=True, format="%.6f"),
+                                    "총 평단(자동)": st.column_config.NumberColumn("총 평단(자동)", disabled=True, format="%.3f"),
+                                    "정수 주 수량": st.column_config.NumberColumn("정수 주 수량", min_value=0.0, step=1.0, format="%.0f"),
+                                    "정수 주 평단": st.column_config.NumberColumn("정수 주 평단", min_value=0.0, format="%.3f"),
+                                    "소수점 수량": st.column_config.NumberColumn("소수점 수량", min_value=0.0, format="%.6f"),
+                                    "소수점 평단": st.column_config.NumberColumn("소수점 평단", min_value=0.0, format="%.3f"),
                                     "운용 방식": st.column_config.SelectboxColumn("운용 방식", options=MODES),
                                     "삭제": st.column_config.CheckboxColumn("삭제", help="체크하고 '변경사항 저장'을 누르면 목록에서 지웁니다."),
                                 })
@@ -364,30 +448,40 @@ def render_us_editor(get_conn):
             st.warning("삭제 체크됨: " + ", ".join(flagged) + " — '변경사항 저장'을 누르면 삭제됩니다.")
         if st.button("변경사항 저장", key="book_us_save"):
             try:
-                n = 0
+                n_changed, notes = 0, []
                 for i in range(len(show)):
                     a, b = show.iloc[i], edited.iloc[i]
+                    tk = str(b["티커"])
                     if bool(b["삭제"]):
-                        _run(get_conn, "DELETE FROM us_positions WHERE ticker=%s", (str(b["티커"]),))
-                        n += 1
-                    elif any(a[c] != b[c] for c in show.columns):
-                        _run(get_conn, "UPDATE us_positions SET name=%s, quantity=%s, avg_cost=%s, mode=%s, note=%s, updated_at=%s WHERE ticker=%s",
-                             (str(b["이름"]), float(b["수량"]), float(b["평단(USD)"]), str(b["운용 방식"]), str(b["메모"] or ""), _now(), str(b["티커"])))
-                        n += 1
-                st.success("{}개 종목을 저장했습니다.".format(n) if n else "바뀐 내용이 없습니다.")
-                if n:
+                        _run(get_conn, "DELETE FROM us_positions WHERE ticker=%s", (tk,))
+                        n_changed += 1
+                        continue
+                    cols = ["이름", "정수 주 수량", "정수 주 평단", "소수점 수량", "소수점 평단", "운용 방식", "메모"]
+                    if any(a[c] != b[c] for c in cols):
+                        wq, wa, fq, fa, conv = _convert_frac(float(b["정수 주 수량"]), float(b["정수 주 평단"]),
+                                                            float(b["소수점 수량"]), float(b["소수점 평단"]))
+                        if conv:
+                            notes.append("{}: 소수점 {}주가 정수 주로 전환됐습니다(소수점 {:.6f}주 남음)".format(tk, conv, fq))
+                        _save_lots(get_conn, tk, wq, wa, fq, fa, name=str(b["이름"]), mode=str(b["운용 방식"]), note=str(b["메모"] or ""))
+                        n_changed += 1
+                st.success("{}개 종목을 저장했습니다.".format(n_changed) if n_changed else "바뀐 내용이 없습니다.")
+                for t in notes:
+                    st.info(t)
+                if n_changed and not notes:
                     st.rerun()
             except Exception as e:  # noqa: BLE001
                 st.error("저장하지 못했습니다: " + str(e)[:150])
 
     names = list(us["ticker"]) if len(us) else []
-    with st.expander("➕ 미국주 매수 기록 추가 (수량·평단 자동 갱신)", expanded=False):
+    with st.expander("➕ 매수 기록 추가 (소수점 적립 · 정수 주 매수, 합계 자동 계산)", expanded=False):
+        st.caption("자동 적립이나 소수점 수동 매수는 '소수점 적립'을, 1주 단위로 산 것은 '정수 주 매수'를 고르세요. "
+                   "소수점이 1주 이상 모이면 정수 주로 자동 전환되고 총 수량·총 평단이 다시 계산됩니다.")
         with st.form("book_buy_form", clear_on_submit=True):
             c1, c2, c3, c4 = st.columns(4)
             tk = c1.selectbox("종목", names or ["(먼저 보유를 넣어 주세요)"], key="book_buy_tk")
             q = c2.number_input("수량(소수점 가능)", min_value=0.0, value=0.0, step=0.01, format="%.6f", key="book_buy_q")
             p = c3.number_input("체결 단가(USD)", min_value=0.0, value=0.0, step=0.01, format="%.3f", key="book_buy_p")
-            kind = c4.selectbox("구분", ["자동 적립", "수동 추가(조정 때)", "베팅 1주"], key="book_buy_kind")
+            kind = c4.selectbox("구분", ["소수점 적립(자동·수동)", "정수 주 매수"], key="book_buy_kind")
             note = st.text_input("메모(선택)", key="book_buy_note")
             ok = st.form_submit_button("매수 기록 저장")
         if ok:
@@ -396,14 +490,26 @@ def render_us_editor(get_conn):
             else:
                 try:
                     row = us[us["ticker"] == tk].iloc[0]
-                    oq, oa = float(row["quantity"]), float(row["avg_cost"])
-                    nq = oq + q
-                    na = (oq * oa + q * p) / nq
+                    wq, wa, fq, fa = _lots(row)
+                    if kind.startswith("정수"):
+                        nw = wq + q
+                        wa = (wq * wa + q * p) / nw
+                        wq = nw
+                        conv = 0
+                    else:
+                        nf = fq + q
+                        fa = (fq * fa + q * p) / nf
+                        fq = nf
+                        wq, wa, fq, fa, conv = _convert_frac(wq, wa, fq, fa)
                     _run(get_conn, "INSERT INTO us_buys (created_at,ticker,quantity,price,kind,note) VALUES (%s,%s,%s,%s,%s,%s)",
                          (_now(), tk, q, p, kind, note.strip()))
-                    _run(get_conn, "UPDATE us_positions SET quantity=%s, avg_cost=%s, updated_at=%s WHERE ticker=%s", (nq, na, _now(), tk))
-                    st.success("저장했습니다. {} 수량 {:g} · 평단 {:.3f}".format(tk, nq, na))
-                    st.rerun()
+                    tq, ta = _save_lots(get_conn, tk, wq, wa, fq, fa)
+                    msg = "저장했습니다. {} 총 {:.6f}주 · 총 평단 {:.3f}".format(tk, tq, ta)
+                    if conv:
+                        msg += " (소수점 {}주가 정수 주로 전환됨)".format(conv)
+                    st.success(msg)
+                    if not conv:
+                        st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error("저장하지 못했습니다: " + str(e)[:150])
     with st.expander("➕ 새 미국 종목 추가", expanded=False):
@@ -412,18 +518,23 @@ def render_us_editor(get_conn):
             tk = c1.text_input("티커(예: MSFT, BRK.B)", key="book_new_tk").strip().upper()
             nm = c2.text_input("이름", key="book_new_nm")
             mode = c3.selectbox("운용 방식", MODES, index=1, key="book_new_mode")
-            c4, c5 = st.columns(2)
-            q = c4.number_input("수량", min_value=0.0, value=0.0, step=0.01, format="%.6f", key="book_new_q")
-            a = c5.number_input("평단(USD)", min_value=0.0, value=0.0, step=0.01, format="%.3f", key="book_new_a")
+            c4, c5, c6, c7 = st.columns(4)
+            wq = c4.number_input("정수 주 수량", min_value=0.0, value=0.0, step=1.0, format="%.0f", key="book_new_wq")
+            wa = c5.number_input("정수 주 평단(USD)", min_value=0.0, value=0.0, step=0.01, format="%.3f", key="book_new_wa")
+            fq = c6.number_input("소수점 수량", min_value=0.0, value=0.0, step=0.01, format="%.6f", key="book_new_fq")
+            fa = c7.number_input("소수점 평단(USD)", min_value=0.0, value=0.0, step=0.01, format="%.3f", key="book_new_fa")
             ok = st.form_submit_button("추가")
         if ok:
-            if not tk or q <= 0 or a <= 0:
-                st.error("티커, 수량, 평단을 입력해 주세요.")
+            if not tk or (wq <= 0 and fq <= 0) or (wq > 0 and wa <= 0) or (fq > 0 and fa <= 0):
+                st.error("티커와, 수량이 있는 칸의 평단을 입력해 주세요.")
             else:
                 try:
+                    wq2, wa2, fq2, fa2, _c = _convert_frac(wq, wa, fq, fa)
+                    q2, a2 = _totals(wq2, wa2, fq2, fa2)
                     _run(get_conn, """INSERT INTO us_positions (ticker,name,quantity,avg_cost,mode,note,updated_at)
                                       VALUES (%s,%s,%s,%s,%s,'',%s) ON CONFLICT (ticker) DO NOTHING""",
-                         (tk, nm.strip() or tk, q, a, mode, _now()))
+                         (tk, nm.strip() or tk, q2, a2, mode, _now()))
+                    _save_lots(get_conn, tk, wq2, wa2, fq2, fa2)
                     st.success("추가했습니다(이미 있는 티커는 건드리지 않습니다).")
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
