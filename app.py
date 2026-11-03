@@ -964,29 +964,29 @@ tab_supervisor, tab_portfolio, tab_analysis, tab_journal = st.tabs(
 if tab_supervisor.open:
     with tab_supervisor:
         try:
-            from supervision import render_supervision
-        except Exception as sup_import_error:
-            st.error("감독실 모듈(supervision.py)을 불러오지 못했습니다. 저장소 맨 위(app.py와 같은 위치)에 supervision.py 파일이 있는지 확인하세요.")
-            st.caption(str(sup_import_error))
-        else:
+            from portfolio_book import render_dashboard
+            render_dashboard(get_db_connection, load_holdings(), get_prices, load_korean_investor_flows,
+                             get_fundamentals, load_decisions)
+        except Exception as dash_error:
+            st.error("감독실을 표시하는 중 오류가 났습니다. 다른 탭은 정상 작동합니다.")
+            st.exception(dash_error)
+        st.divider()
+        if st.toggle("🔧 기존 상세 화면 보기 (고급 · 느림: 설정·집중도·데이터 연결 상태 포함)", key="show_old_supervision"):
             try:
+                from supervision import render_supervision
+                from portfolio_book import holdings_with_us, latest_stances
                 render_supervision(
-                    load_holdings(),
+                    holdings_with_us(get_db_connection, load_holdings()),
                     get_prices,
                     classify_holding,
                     load_decisions,
                     get_fundamentals,
                     load_korean_investor_flows,
+                    stances=latest_stances(get_db_connection),
                 )
             except Exception as sup_error:
-                st.error("감독실을 표시하는 중 오류가 났습니다. 다른 탭은 정상 작동합니다.")
+                st.error("기존 상세 화면을 표시하는 중 오류가 났습니다.")
                 st.exception(sup_error)
-        try:
-            from portfolio_book import render_book
-            render_book(get_db_connection, load_holdings(), get_prices, load_korean_investor_flows)
-        except Exception as book_error:
-            st.error("운용 방식별 종합 점검을 표시하는 중 오류가 났습니다. 다른 화면은 정상 작동합니다.")
-            st.exception(book_error)
 
 if tab_portfolio.open:
     with tab_portfolio:
@@ -1071,6 +1071,7 @@ if tab_portfolio.open:
                 "currency": "통화",
                 "account": "계좌",
             })
+            edit_df["삭제"] = False
 
             edited = st.data_editor(
                 edit_df,
@@ -1082,6 +1083,7 @@ if tab_portfolio.open:
                     "종목 코드": st.column_config.TextColumn(
                         "종목 코드", disabled=True
                     ),
+                    "삭제": st.column_config.CheckboxColumn("삭제", help="체크하고 '변경사항 저장'을 누르면 목록에서 지웁니다."),
                     "종목명": st.column_config.TextColumn("종목명"),
                     "보유 수량": st.column_config.NumberColumn(
                         "보유 수량", min_value=0.0, format="%.4f"
@@ -1104,17 +1106,24 @@ if tab_portfolio.open:
                 },
             )
 
+            flagged_kr = edited[edited["삭제"] == True]  # noqa: E712
+            if len(flagged_kr):
+                st.warning("삭제 체크됨: " + ", ".join(str(x) for x in flagged_kr["종목명"]) + " — '변경사항 저장'을 누르면 삭제됩니다(복구 불가).")
+
             if st.button("변경사항 저장", key="save_holdings_edits"):
                 try:
-                    if edited["종목명"].astype(str).str.strip().eq("").any():
+                    keep = edited[edited["삭제"] != True]  # noqa: E712
+                    if keep["종목명"].astype(str).str.strip().eq("").any():
                         st.error("종목명은 비워둘 수 없습니다.")
                     elif (
-                        (edited["보유 수량"] <= 0).any()
-                        or (edited["평균 매입단가"] <= 0).any()
+                        (keep["보유 수량"] <= 0).any()
+                        or (keep["평균 매입단가"] <= 0).any()
                     ):
                         st.error("보유 수량과 평균 매입단가는 0보다 커야 합니다.")
                     else:
-                        for _, row in edited.iterrows():
+                        for _, row in flagged_kr.iterrows():
+                            delete_holding(str(row["종목 코드"]))
+                        for _, row in keep.iterrows():
                             save_holding(
                                 str(row["종목 코드"]),
                                 str(row["종목명"]).strip(),
@@ -1291,49 +1300,7 @@ if tab_portfolio.open:
             st.caption("주의: 통화가 다른 종목의 합계는 환산 전 값이 섞일 수 있으므로 총액·손익 합계는 KRW와 USD를 분리해 해석해야 합니다. 가격 기준일과 제공자 데이터의 지연 가능성을 확인하세요. 세금·배당·환전 비용은 아직 반영하지 않습니다.")
             st.download_button("보유 현황 CSV 다운로드", pf.to_csv(index=False).encode("utf-8-sig"), "eggfolio_portfolio.csv", "text/csv")
        
-            st.subheader("보유 종목 개별 삭제")
-            st.caption("잘못 등록한 종목만 선택해 삭제할 수 있습니다. 삭제 후에는 복구할 수 없으므로 종목 코드와 이름을 확인하세요.")
-            for _, item in holdings.iterrows():
-                delete_col1, delete_col2 = st.columns([5, 1])
-                with delete_col1:
-                    st.write(f"**{item['name']}** · `{item['ticker']}` · {item['account']}")
-                with delete_col2:
-                    if st.button("삭제", key=f"delete_holding_{item['ticker']}", type="secondary"):
-                        delete_holding(item["ticker"])
-                        st.rerun()
-        st.divider()
-        st.subheader("매수·매도 기록")
-        st.write("거래를 기록하면 수량과 가중평균 매입원가가 자동 갱신됩니다. 직접 등록한 보유 정보는 기준값이며, 과거 거래를 소급 계산한 값은 아닙니다.")
-        trade_name, trade_ticker = stock_search_widget("trade_search")
-        with st.form("trade_form", clear_on_submit=True):
-            tc1,tc2 = st.columns(2)
-            with tc1:
-                st.text_input("선택한 종목명", value=trade_name, disabled=True)
-                st.text_input("종목 코드", value=trade_ticker, disabled=True)
-                trade_side = st.selectbox("거래 유형", ["매수", "매도"])
-                trade_qty = st.number_input("거래 수량", min_value=0.0001, value=1.0, step=1.0)
-            with tc2:
-                trade_price = st.number_input("거래 단가", min_value=0.0001, value=1.0, step=100.0)
-                trade_fee = st.number_input("수수료 등 비용", min_value=0.0, value=0.0, step=1.0)
-                trade_account = st.selectbox("거래 계좌", ["삼성증권 ISA", "삼성증권 일반계좌", "삼성증권 CMA", "기타 계좌"])
-                trade_date = st.date_input("거래일", value=datetime.now().date())
-            trade_note = st.text_area("거래 메모 (선택)", placeholder="매매 이유나 당시 상황. 비워도 됩니다.")
-            trade_submit = st.form_submit_button("거래 저장 및 자동 계산")
-            if trade_submit:
-                if not trade_ticker or not trade_name.strip():
-                    st.error("검색 결과 또는 종목명과 티커를 확인해 주세요.")
-                else:
-                    try:
-                        save_trade(str(trade_date), trade_ticker, trade_name.strip(), trade_side, float(trade_qty), float(trade_price), float(trade_fee), trade_account, trade_note.strip())
-                        st.success("거래가 저장되었고 보유 수량·평단이 갱신되었습니다.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"거래를 저장하지 못했습니다: {e}")
-        trades = load_trades()
-        if not trades.empty:
-            st.subheader("최근 거래 내역")
-            st.dataframe(trades.head(100), use_container_width=True, hide_index=True)
-            st.download_button("거래 내역 CSV 다운로드", trades.to_csv(index=False).encode("utf-8-sig"), "eggfolio_trades.csv", "text/csv")
+        st.caption("매수·매도는 위 표에서 수량·평단을 직접 고쳐 반영합니다. 삭제는 표의 '삭제' 칸을 체크한 뒤 '변경사항 저장'을 누르세요.")
 
 if tab_analysis.open:
     with tab_analysis:

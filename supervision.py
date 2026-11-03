@@ -1026,7 +1026,7 @@ def _settings_panel(holdings):
 # --------------------------------------------------------------------------
 # 메인 화면
 # --------------------------------------------------------------------------
-def render_supervision(holdings, get_prices, classify, load_decisions, get_fundamentals, load_flows):
+def render_supervision(holdings, get_prices, classify, load_decisions, get_fundamentals, load_flows, stances=None):
     st.markdown("##### PORTFOLIO SUPERVISOR")
     st.subheader("🥚 나의 포트폴리오 달걀 지도")
     st.caption("시장 국면과 보유 종목별 국면을 따로 판정해 함께 봅니다. 읽기 전용이며 주문·저장 기능이 없습니다. "
@@ -1044,6 +1044,11 @@ def render_supervision(holdings, get_prices, classify, load_decisions, get_funda
         decisions = None
         st.warning("판단 기록을 읽지 못했습니다(기록 연결 없이 계속합니다): " + str(e)[:100])
     latest = _latest_decisions(decisions)
+    # '기업 상태 기록'(가설·무효화 조건)도 판단 기록으로 인정한다
+    for _k, _r in (stances or {}).items():
+        if _k not in latest:
+            latest[_k] = {"created_at": _r.get("as_of"), "horizon": "기업 상태 기록", "decision": _r.get("stance"),
+                          "thesis": _r.get("memo"), "invalidation": _r.get("invalidation")}
 
     flows, flow_err = None, None
     try:
