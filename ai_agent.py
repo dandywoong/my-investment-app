@@ -85,8 +85,43 @@ def pick_models(key):
     return [n for _, _, n in full[:3]] + [n for _, _, n in lite[:2]]
 
 
+# ---------------------------------------------------------------- 자료 패킷
+INFO_KEYS = ["shortName", "sector", "industry", "currency", "currentPrice", "marketCap", "trailingPE", "forwardPE", "revenueGrowth",
+             "earningsGrowth", "profitMargins", "operatingMargins", "freeCashflow", "operatingCashflow", "totalDebt", "debtToEquity",
+             "targetMeanPrice", "targetHighPrice", "targetLowPrice", "numberOfAnalystOpinions", "recommendationKey",
+             "fiftyTwoWeekHigh", "fiftyTwoWeekLow"]
+
+
+def gather_packet(sym):
+    """야후 파이낸스의 최근 뉴스·재무 요약·애널리스트 목표가를 모은다. -> (패킷 dict, 날짜 있는 뉴스 수)"""
+    import yfinance as yf
+    tk = yf.Ticker(sym)
+    info = {}
+    try:
+        raw = tk.info or {}
+        info = {k: raw.get(k) for k in INFO_KEYS if raw.get(k) is not None}
+    except Exception:  # noqa: BLE001
+        info = {}
+    news = []
+    try:
+        for n in (tk.news or [])[:10]:
+            c = n.get("content") if isinstance(n.get("content"), dict) else n
+            title = c.get("title") or ""
+            when = c.get("pubDate") or c.get("displayTime") or ""
+            if not when and c.get("providerPublishTime"):
+                when = datetime.fromtimestamp(int(c["providerPublishTime"]), tz=timezone.utc).isoformat()
+            prov = c.get("provider") if isinstance(c.get("provider"), dict) else {}
+            pub = prov.get("displayName") or c.get("publisher") or ""
+            url = ((c.get("canonicalUrl") or {}).get("url") if isinstance(c.get("canonicalUrl"), dict) else None) or c.get("link") or ""
+            if title:
+                news.append({"date": str(when)[:10], "title": title[:200], "publisher": pub, "summary": str(c.get("summary") or "")[:300], "url": url})
+    except Exception:  # noqa: BLE001
+        news = []
+    return {"info": info, "news": news}, sum(1 for n in news if n["date"])
+
+
 # ---------------------------------------------------------------- 호출
-def _prompt(t):
+def _prompt(t, packet=None):
     prior = t.get("prior") or {}
     prior_txt = "없음"
     if prior:
@@ -100,7 +135,9 @@ def _prompt(t):
 투자자의 이전 기록(출발점이며 '가설'일 뿐 사실로 간주하지 말고 검증하세요): {prior_txt}
 이전 AI 분석 요약: {prev_ai}
 
-할 일: 가능한 한 최근 90일 안의 실적·가이던스·공시·주요 뉴스·업황을 검색해 이 기업(ETF면 구성과 시장 환경)의 '기업 상태'를 판정하세요.
+{('아래는 코드가 야후 파이낸스에서 모은 최신 자료입니다. 이 자료와 당신이 확실히 아는 사실만 근거로 쓰세요(자료에 없는 최근 사건은 추측하지 말고 unknowns 에 적으세요).' + chr(10) + json.dumps(packet, ensure_ascii=False)[:9000]) if packet else '검색 도구를 사용해 최근 자료를 찾으세요.'}
+
+할 일: 가능한 한 최근 90일 안의 실적·가이던스·공시·주요 뉴스·업황을 바탕으로 이 기업(ETF면 구성과 시장 환경)의 '기업 상태'를 판정하세요.
 규칙:
 1) 확인한 사실만 쓰고, 각 근거에 날짜와 출처(매체/공시명)를 붙이세요. 확인하지 못하면 지어내지 말고 unknowns 에 적으세요.
 2) 숫자는 출처에 있는 것만 쓰세요. 추정치는 '추정'이라고 표시하세요.
@@ -112,7 +149,7 @@ def _prompt(t):
 "evidence":[{{"fact":"","date":"","source":""}}],"risks":["",""],"thesis_check":"이전 가설에 대한 지지/반박/확인불가와 이유",
 "invalidation":"이 판단이 틀렸다고 볼 조건","watch":["다음에 확인할 일정·지표"],"unknowns":["확인하지 못한 것"],
 "industry_outlook":{{"view":"긍정|중립|부정|미확인","reason":"업황 근거(날짜·출처 포함)"}},
-"analyst_targets":{{"avg":null,"low":null,"high":null,"currency":"","date":"","source":"","note":"출처에 있는 값만. 없으면 null"}}}}"""
+"analyst_targets":{{"avg":null,"low":null,"high":null,"currency":"","date":"","source":"","note":"자료에 있는 값만. 없으면 null"}}}}"""
 
 
 def _extract_json(text):
@@ -127,7 +164,7 @@ def _call(key, model, prompt, grounded):
     body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}
     if grounded:
         body["tools"] = [{"google_search": {}}]
-    r = requests.post("{}/models/{}:generateContent".format(API, model), params={"key": key}, json=body, timeout=120)
+    r = requests.post("{}/models/{}:generateContent".format(API, model), params={"key": key}, json=body, timeout=75 if grounded else 50)
     return r
 
 
@@ -146,10 +183,21 @@ def _err_text(r):
 
 def analyze_one(key, models, t):
     """-> (결과 dict | None, 오류 문구 | None, 429 여부). 검색 근거를 먼저 시도하고, 429나 오류면 근거 없이, 그다음 다음 모델로 넘어간다."""
-    prompt = _prompt(t)
+    use_search = False
+    try:
+        use_search = str(st.secrets.get("GEMINI_SEARCH", "")).strip() in ("1", "true", "True")
+    except Exception:  # noqa: BLE001
+        use_search = False
+    packet, n_dated = None, 0
+    try:
+        packet, n_dated = gather_packet(t["tk"])
+    except Exception:  # noqa: BLE001
+        packet, n_dated = None, 0
+    packet_ok = bool(packet) and (n_dated >= 2 or len((packet or {}).get("info", {})) >= 8)
+    prompt = _prompt(t, packet if packet_ok else None)
     last, saw429 = None, False
     for model in models:
-        for grounded in (True, False):
+        for grounded in ((True, False) if (use_search or not packet_ok) else (False,)):
             try:
                 r = _call(key, model, prompt, grounded)
             except Exception as e:  # noqa: BLE001
@@ -171,31 +219,35 @@ def analyze_one(key, models, t):
             gm = cand.get("groundingMetadata") or {}
             chunks = gm.get("groundingChunks") or []
             sources = [{"title": (c.get("web") or {}).get("title", ""), "uri": (c.get("web") or {}).get("uri", "")} for c in chunks][:8]
+            if not sources and packet_ok:
+                sources = [{"title": "{} {}".format(n["publisher"], n["date"]).strip() or n["title"][:30], "uri": n["url"]} for n in packet["news"] if n["url"]][:8]
             res["_sources"] = sources
-            res["_grounded"] = bool(grounded and sources)
+            res["_grounded"] = bool(sources) or bool(packet_ok and n_dated >= 2)
+            res["_basis"] = "검색" if (grounded and gm) else ("야후 뉴스·재무 자료" if packet_ok else "근거 없음")
             res["_model"] = model
             return res, None, False
     return None, last or "알 수 없는 오류", saw429
 
 
 def diagnose(key):
-    """연결 진단: 쓸 수 있는 모델과, 각 모델이 일반/검색 근거 호출에서 어떤 응답을 주는지 보여 준다."""
+    """연결 진단(빠름): 쓸 수 있는 모델, 일반 호출 1회, 야후 자료 수집 확인."""
     rows = []
     try:
         models = pick_models(key)
     except Exception as e:  # noqa: BLE001
-        return [{"모델": "-", "호출": "모델 목록", "결과": "실패: " + str(e)[:150]}]
-    if not models:
-        return [{"모델": "-", "호출": "모델 목록", "결과": "flash 계열 모델이 없습니다"}]
-    for i, m in enumerate(models):
-        for grounded in ((False, True) if i == 0 else (False,)):
-            try:
-                r = _call(key, m, "한 단어로 '확인'이라고만 답하세요.", grounded)
-                rows.append({"모델": m, "호출": "검색 근거" if grounded else "일반",
-                             "결과": "정상" if r.status_code < 400 else "{} {}".format(r.status_code, _err_text(r))})
-            except Exception as e:  # noqa: BLE001
-                rows.append({"모델": m, "호출": "검색 근거" if grounded else "일반", "결과": "연결 오류 " + str(e)[:100]})
-            time.sleep(2)
+        return [{"항목": "모델 목록", "결과": "실패: " + str(e)[:150]}]
+    rows.append({"항목": "쓸 수 있는 모델", "결과": ", ".join(models) or "없음"})
+    if models:
+        try:
+            r = _call(key, models[0], "한 단어로 '확인'이라고만 답하세요.", False)
+            rows.append({"항목": "일반 호출 ({})".format(models[0]), "결과": "정상" if r.status_code < 400 else "{} {}".format(r.status_code, _err_text(r))})
+        except Exception as e:  # noqa: BLE001
+            rows.append({"항목": "일반 호출", "결과": "연결 오류 " + str(e)[:100]})
+    try:
+        pk, nd = gather_packet("AAPL")
+        rows.append({"항목": "야후 자료 수집(AAPL 시험)", "결과": "뉴스 {}건(날짜 있음 {}) · 재무 항목 {}개".format(len(pk["news"]), nd, len(pk["info"]))})
+    except Exception as e:  # noqa: BLE001
+        rows.append({"항목": "야후 자료 수집", "결과": "실패: " + str(e)[:100]})
     return rows
 
 
@@ -218,7 +270,7 @@ def save_result(get_conn, tk, res):
     return applied
 
 
-def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=6):
+def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=3):
     """오래된 순으로 최대 max_n 종목을 분석해 저장한다. 한 종목이 실패해도 다음으로 넘어가며 앱이 멈추지 않는다.
     -> (처리 목록, 오류 목록, 변화 목록)"""
     key = get_api_key()
@@ -234,7 +286,7 @@ def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=6):
 
     def age_h(tk):
         row = ai_views.get(tk)
-        if row is None:
+        if row is None or not int(row["applied"] or 0):
             return 1e9
         try:
             return (now - datetime.fromisoformat(str(row["created_at"]))).total_seconds() / 3600
@@ -300,6 +352,9 @@ def render_view(row):
     st.write("판정: **{}** · 신뢰도 {} · 근거 기준일 {} · 분석 {} · 모델 {}".format(
         row["stance"], row["confidence"], row["as_of"] or "자료 없음", str(row["created_at"])[:16].replace("T", " ") + " UTC", row["model"]))
     applied = bool(int(row["applied"] or 0))
+    basis = (p.get("_basis") if isinstance(p, dict) else None) or ""
+    if basis:
+        st.caption("분석 근거: " + basis)
     st.caption("행동 후보에 반영됨" if applied else
                "행동 후보에는 반영되지 않았습니다(검색 근거가 없거나 신뢰도가 낮거나 미확인). 참고만 하세요.")
     if p.get("summary"):
