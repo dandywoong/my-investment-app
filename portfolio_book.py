@@ -6,6 +6,7 @@
 - 가격 국면(supervision.py)과 기업 상태(사용자가 직접 기록)를 분리해 보여 주고, 둘을 규칙으로 조합해 읽는다.
   이 규칙은 검증 전 후보이며 승률·확률이 아니다.
 """
+import json
 import re
 from datetime import date, datetime, timezone
 
@@ -730,42 +731,123 @@ def _score(i, avg_w):
         pts -= 2; why.append("비중 {:.0%} 큼 -2".format(w))
     if i["stale"]:
         pts -= 1; why.append("기업 상태 기록 오래됨 -1")
+    if i.get("outlook") == "긍정":
+        pts += 1; why.append("업황 긍정(AI 인용) +1")
+    elif i.get("outlook") == "부정":
+        pts -= 2; why.append("업황 부정(AI 인용) -2")
+    tgt = i.get("target")
+    if tgt and i.get("price") and tgt / i["price"] - 1 >= 0.20:
+        pts += 1; why.append("외부 목표가 대비 여력 {:+.0%}(AI 인용·검증 전) +1".format(tgt / i["price"] - 1))
     return pts, why
 
 
-def plan_cash(items, cash, cur, first_pct, reserve_pct):
+def _zone(lad):
+    try:
+        z = str(lad["buys"][0]["구간"])
+        nums = [float(x.replace(",", "")) for x in re.findall(r"\d[\d,]*\.?\d*", z)]
+        return (min(nums), max(nums)) if len(nums) >= 2 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _ai_extras(row):
+    """AI 분석에서 업황·외부 목표가(평균)를 꺼낸다. 검색 근거가 있고 7일 이내일 때만."""
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(row["created_at"]))).days
+        if not (bool(int(row["grounded"] or 0)) and age <= 7):
+            return "미확인", None
+        p = json.loads(row["payload"])
+        view = str((p.get("industry_outlook") or {}).get("view", "미확인"))
+        tgt = (p.get("analyst_targets") or {}).get("avg")
+        return (view if view in ("긍정", "중립", "부정") else "미확인"), (float(tgt) if tgt not in (None, "") else None)
+    except Exception:  # noqa: BLE001
+        return "미확인", None
+
+
+def plan_v2(items, cash, cur, first_pct, reserve_pct, bet_cap_pct=10.0):
+    """운용 방식별 전략으로 예수금을 배분한다: 베팅(조건 규칙) → 핵심 장기(분할 가격대) → 적립형(고루 배분).
+    -> (사용 가능 예산, 남는 현금, 지금 실행 행, 대기 행, 적립 배분 행, 메모). 검증 전 규칙이며 수익 예측이 아니다."""
     budget = max(cash * (1 - reserve_pct / 100.0), 0.0)
-    cands = [i for i in items if i["cur"] == cur and i["kind"] == "buy" and i["price"]]
-    ws = [i["weight"] for i in cands if i.get("weight") is not None]
-    avg_w = sum(ws) / len(ws) if ws else 0.0
-    scored = []
-    for i in cands:
-        pts, why = _score(i, avg_w)
-        scored.append((pts, i, why))
-    scored.sort(key=lambda x: (-x[0], x[1].get("weight") or 0))
-    remaining, rows, skipped = budget, [], []
-    for rank, (pts, i, why) in enumerate(scored, 1):
-        share = remaining if rank == len(scored) else remaining * first_pct / 100.0
-        price = i["price"]
-        whole = (cur == "KRW") or i["mode"] == "베팅"
-        if whole:
-            qty = float(int(share // price))
-            if qty < 1 and remaining >= price:
-                qty = 1.0
-            if i["mode"] == "베팅":
-                qty = min(qty, 1.0)  # 베팅 슬롯은 한 번에 1주씩
+    remaining = budget
+    now_rows, wait_rows, dca_rows, notes = [], [], [], []
+    mine = [i for i in items if i["cur"] == cur and i["price"]]
+
+    # 1) 베팅 슬롯: 정한 규칙(조정 시 1주씩) + 한도 + 기업 상태·업황
+    for i in [x for x in mine if x["mode"] == "베팅"]:
+        fails = []
+        if i["sv_val"] == "훼손":
+            fails.append("기업 상태 훼손")
+        if i["sv_val"] == "미확인":
+            fails.append("기업 상태 미기록")
+        if i.get("outlook") == "부정":
+            fails.append("업황 부정(AI 인용)")
+        if i.get("dd60") is None or i["dd60"] > -0.10:
+            fails.append("조정 조건 미충족(60일 고점 대비 -10% 이하일 때만, 현재 {})".format(_fmt_pct(i.get("dd60"))))
+        if i.get("weight") is not None and i["weight"] * 100 >= bet_cap_pct:
+            fails.append("베팅 비중 한도 {:.0f}% 도달".format(bet_cap_pct))
+        if i["price"] > remaining:
+            fails.append("현금 부족(1주 약 {:,.2f})".format(i["price"]))
+        if fails:
+            wait_rows.append({"종목": i["name"], "전략": "베팅 1주 추가", "상태": "보류", "이유/조건": " · ".join(fails)})
         else:
-            qty = round(share / price, 4)
-        if qty <= 0 or qty * price > remaining + 1e-9:
-            skipped.append("{} — 현금 부족(1주 약 {:,.0f}{})".format(i["name"], price, "원" if cur == "KRW" else "달러"))
+            nq = i["qty"] + 1
+            now_rows.append({"전략": "베팅 1주 추가", "종목": i["name"], "금액": round(i["price"], 2), "수량": 1.0,
+                             "체결 후 평단": "{:,.2f} → {:,.2f}".format(i["avg"], (i["qty"] * i["avg"] + i["price"]) / nq),
+                             "근거": "조정 구간(60일 고점 대비 {}) · 기업 상태 {} · 업황 {}".format(_fmt_pct(i["dd60"]), i["sv_val"], i.get("outlook", "미확인"))})
+            remaining -= i["price"]
+
+    # 2) 핵심 장기: 분할 매수 후보를 점수순으로, 1차 가격대 안에 들어왔을 때만 지금 실행. 위에 있으면 대기 주문 후보
+    core = [x for x in mine if x["mode"] == "핵심 장기" and x["kind"] == "buy"]
+    ws = [x["weight"] for x in core if x.get("weight") is not None]
+    avg_w = sum(ws) / len(ws) if ws else 0.0
+    scored = sorted(((*_score(x, avg_w), x) for x in core), key=lambda t: (-t[0], t[2].get("weight") or 0))
+    for rank, (pts, why, i) in enumerate(scored, 1):
+        zone = _zone(i.get("lad"))
+        if zone and i["price"] > zone[1]:
+            wait_rows.append({"종목": i["name"], "전략": "분할 1차 매수(대기)", "상태": "가격 대기",
+                              "이유/조건": "1차 구간 {:,.0f}~{:,.0f} 진입 시 (현재가 대비 {:+.1f}%) · 점수 {} ({})".format(
+                                  zone[0], zone[1], (zone[1] / i["price"] - 1) * 100, pts, " / ".join(why))})
             continue
-        amt = qty * price
+        share = remaining * first_pct / 100.0
+        qty = float(int(share // i["price"]))
+        if qty < 1 and remaining >= i["price"]:
+            qty = 1.0
+        if qty <= 0 or qty * i["price"] > remaining + 1e-9:
+            wait_rows.append({"종목": i["name"], "전략": "분할 1차 매수", "상태": "현금 부족", "이유/조건": "1주 약 {:,.0f} 필요".format(i["price"])})
+            continue
+        amt = qty * i["price"]
         nq = i["qty"] + qty
-        new_avg = (i["qty"] * i["avg"] + amt) / nq if nq else price
+        now_rows.append({"전략": "핵심 분할 1차", "종목": i["name"], "금액": round(amt, 2), "수량": qty,
+                         "체결 후 평단": "{:,.2f} → {:,.2f}".format(i["avg"], (i["qty"] * i["avg"] + amt) / nq),
+                         "근거": "점수 {} ({})".format(pts, " / ".join(why))})
         remaining -= amt
-        rows.append({"순위": rank, "종목": i["name"], "점수": pts, "추천 금액": round(amt, 2), "수량": qty,
-                     "체결 후 평단": "{:,.2f} → {:,.2f}".format(i["avg"], new_avg), "근거(점수 구성)": " / ".join(why) or "-"})
-    return budget, remaining, rows, skipped
+
+    # 3) 적립형: 남은 현금으로 가치가 낮은 종목부터 채워 고루 분포(소수점 금액 단위)
+    dca = [x for x in mine if x["mode"] == "적립형" and x["sv_val"] != "훼손" and x.get("outlook") != "부정" and x.get("value") is not None]
+    skip = [x["name"] for x in mine if x["mode"] == "적립형" and (x["sv_val"] == "훼손" or x.get("outlook") == "부정")]
+    if skip:
+        notes.append("적립 배분에서 제외: " + ", ".join(skip) + " (기업 상태 훼손 또는 업황 부정)")
+    if dca and remaining >= 1:
+        vs = sorted(x["value"] for x in dca)
+        level = 0.0
+        for n in range(1, len(vs) + 1):
+            level = (remaining + sum(vs[:n])) / n
+            if n == len(vs) or level <= vs[n]:
+                break
+        total_after = sum(x["value"] for x in dca) + remaining
+        used = 0.0
+        for x in sorted(dca, key=lambda x: x["value"]):
+            amt = max(0.0, level - x["value"])
+            if amt < 1.0:
+                continue
+            q = round(amt / x["price"], 4)
+            nq = x["qty"] + q
+            dca_rows.append({"종목": x["name"], "배분 금액": round(amt, 2), "소수점 수량": q,
+                             "비중(적립형 내)": "{:.0%} → {:.0%}".format(x["value"] / sum(y["value"] for y in dca), (x["value"] + amt) / total_after),
+                             "체결 후 평단": "{:,.2f} → {:,.2f}".format(x["avg"], (x["qty"] * x["avg"] + amt) / nq)})
+            used += amt
+        remaining -= used
+    return budget, remaining, now_rows, wait_rows, dca_rows, notes
 
 
 def _render_planner(get_conn, items, cash_df):
@@ -796,24 +878,31 @@ def _render_planner(get_conn, items, cash_df):
         if amt <= 0:
             continue
         shown = True
-        budget, remaining, rows, skipped = plan_cash(items, amt, cur_, first_pct, reserve_pct)
+        budget, remaining, now_rows, wait_rows, dca_rows, notes = plan_v2(items, amt, cur_, first_pct, reserve_pct)
         unit = "원" if cur_ == "KRW" else "달러"
-        st.markdown("**{} 예수금 {:,.0f}{} → 사용 가능 {:,.0f}{} · 배분 후 남는 현금 {:,.0f}{}**".format(
-            cur_, amt, unit, budget, unit, remaining, unit))
-        if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        else:
-            st.info("현재 '분할 매수 후보'로 뜬 종목이 없거나 예수금이 부족합니다. 억지로 쓰지 말고 현금을 유지하는 것도 하나의 선택입니다.")
-        for sk in skipped:
-            st.caption("제외: " + sk)
+        st.markdown("#### {} 예수금 {:,.0f}{} → 사용 가능 {:,.0f}{} · 배분 후 남는 현금 {:,.0f}{}".format(cur_, amt, unit, budget, unit, remaining, unit))
+        if now_rows:
+            st.markdown("**✅ 지금 실행 후보**")
+            st.dataframe(pd.DataFrame(now_rows), use_container_width=True, hide_index=True)
+        if dca_rows:
+            st.markdown("**🔄 적립형 고루 배분 (소수점 매수 · 비중이 낮은 종목부터 채움)**")
+            st.dataframe(pd.DataFrame(dca_rows), use_container_width=True, hide_index=True)
+        if wait_rows:
+            st.markdown("**⏳ 조건 대기 · 보류**")
+            st.dataframe(pd.DataFrame(wait_rows), use_container_width=True, hide_index=True)
+        for n_ in notes:
+            st.caption(n_)
+        if not (now_rows or dca_rows):
+            st.info("지금 실행할 후보가 없습니다. 조건이 맞을 때까지 현금을 유지하는 것도 하나의 전략입니다.")
         sells = [i["name"] for i in items if i["cur"] == cur_ and i["kind"] == "sell"]
         if sells:
             st.caption("현금이 더 필요하면 먼저 확인할 종목(익절·축소 검토): " + ", ".join(sells))
     if not shown:
-        st.info("예수금을 입력하고 저장하면 배분 순서가 나옵니다.")
+        st.info("예수금을 입력하고 저장하면 배분 전략이 나옵니다.")
     else:
-        st.caption("규칙: 점수 높은 순으로, 1위에 '남은 예산 × 위 비율'을 배정하고 다음 순위가 같은 방식으로 이어집니다. 한국 주식·베팅 종목은 1주 단위, "
-                   "미국 소수점 가능 종목은 금액 단위입니다. 세금·수수료·환전 비용은 반영하지 않았습니다. 목표주가·업황·손익비는 아직 반영하지 않았습니다(다음 단계).")
+        st.caption("전략 순서: ①베팅(조정 시 1주 규칙·한도) → ②핵심 장기(분할 1차 가격대에 들어왔을 때만 지금 실행, 위에 있으면 대기) → ③남은 현금은 적립형 종목에 "
+                   "비중이 낮은 순으로 고루 배분. 업황·외부 목표가는 AI가 검색 근거와 함께 가져온 값만 점수에 반영합니다(없으면 반영 안 함). "
+                   "세금·수수료·환전 비용은 반영하지 않았고, 모든 규칙은 검증 전이며 수익을 보장하지 않습니다.")
 
 
 def _render_flow_date():
@@ -865,6 +954,12 @@ def _render_ai_panel(get_conn, items, stances, ai_views):
     st.caption("마지막 AI 분석: {} · AI 결과는 초안이며, 검색 근거가 있고 신뢰도가 '낮음'이 아니면 7일간 행동 후보에 반영됩니다. "
                "내가 나중에 기록한 기업 상태가 더 최신이면 내 기록이 우선합니다. 보내는 정보: 종목명·가격 국면·내가 적은 기업 상태 메모(자산 정보 제외).".format(
                    latest[:16].replace("T", " ") + " UTC" if latest else "아직 없음"))
+    if st.button("🔎 AI 연결 진단 (어떤 모델이 되는지, 한도 상태 확인)", key="ai_diag"):
+        with st.spinner("진단 중... (몇 초 걸립니다)"):
+            try:
+                st.dataframe(pd.DataFrame(ai_agent.diagnose(ai_agent.get_api_key())), use_container_width=True, hide_index=True)
+            except Exception as e:  # noqa: BLE001
+                st.error("진단하지 못했습니다: " + str(e)[:150])
     c1, c2 = st.columns([2, 3])
     run = c1.button("🤖 AI 기업 분석 갱신 (오래된 종목 최대 4개)", key="ai_refresh")
     auto = c2.toggle("화면을 열 때 하루 한 번 자동 갱신(최대 2개 · 느려질 수 있음)", key="ai_auto")
@@ -948,7 +1043,9 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
                 if rows_:
                     r0 = rows_[0]
                     nxt = "{} · {}".format(r0.get("구간", "-"), r0.get("현재가 대비", ""))
+            outlook, target = _ai_extras(ai_views.get(b["tk"])) if ai_views.get(b["tk"]) is not None else ("미확인", None)
             it = dict(b, mode=mode, price=price, ret=ret, label=label, kind=kind, why=why, res=res, plabel=plabel, top=top,
+                      lad=lad, outlook=outlook, target=target,
                       sv_txt=sv_txt, sv_val=sv_val, stale=stale, nxt=nxt, dd60=(s_["dd60"] if s_ else None),
                       value=(price * b["qty"]) if price is not None else None)
             items.append(it)

@@ -68,20 +68,21 @@ def pick_models(key):
     if override:
         return [override]
     models = _list_models(key)
-    cands = []
+    full, lite = [], []
     for m in models:
         name = str(m.get("name", "")).replace("models/", "")
         if "generateContent" not in (m.get("supportedGenerationMethods") or []):
             continue
         low = name.lower()
-        if "flash" not in low or any(x in low for x in ("tts", "live", "image", "audio", "embed", "native", "robotics", "computer", "lite")):
+        if "flash" not in low or any(x in low for x in ("tts", "live", "image", "audio", "embed", "native", "robotics", "computer")):
             continue
         ver = re.search(r"(\d+(?:\.\d+)?)", low)
         v = float(ver.group(1)) if ver else 0.0
         stable = not any(x in low for x in ("preview", "exp", "-0"))
-        cands.append((stable, v, name))
-    cands.sort(reverse=True)
-    return [n for _, _, n in cands[:3]]
+        (lite if "lite" in low else full).append((stable, v, name))
+    full.sort(reverse=True)
+    lite.sort(reverse=True)
+    return [n for _, _, n in full[:3]] + [n for _, _, n in lite[:2]]
 
 
 # ---------------------------------------------------------------- 호출
@@ -109,7 +110,9 @@ def _prompt(t):
 {{"stance":"견고|보통|훼손|미확인","as_of":"YYYY-MM-DD(가장 최신 근거의 날짜)","confidence":"낮음|보통|높음",
 "summary":"3문장 이내 한국어 요약","changed":"이전 기록/분석 대비 달라진 점(없으면 '변화 없음')",
 "evidence":[{{"fact":"","date":"","source":""}}],"risks":["",""],"thesis_check":"이전 가설에 대한 지지/반박/확인불가와 이유",
-"invalidation":"이 판단이 틀렸다고 볼 조건","watch":["다음에 확인할 일정·지표"],"unknowns":["확인하지 못한 것"]}}"""
+"invalidation":"이 판단이 틀렸다고 볼 조건","watch":["다음에 확인할 일정·지표"],"unknowns":["확인하지 못한 것"],
+"industry_outlook":{{"view":"긍정|중립|부정|미확인","reason":"업황 근거(날짜·출처 포함)"}},
+"analyst_targets":{{"avg":null,"low":null,"high":null,"currency":"","date":"","source":"","note":"출처에 있는 값만. 없으면 null"}}}}"""
 
 
 def _extract_json(text):
@@ -128,10 +131,23 @@ def _call(key, model, prompt, grounded):
     return r
 
 
+def _err_text(r):
+    try:
+        e = r.json().get("error", {})
+        msg = str(e.get("message", ""))[:200]
+        delay = ""
+        for d in e.get("details", []):
+            if isinstance(d, dict) and d.get("retryDelay"):
+                delay = str(d["retryDelay"])
+        return msg + (" (재시도 권장 {})".format(delay) if delay else "")
+    except Exception:  # noqa: BLE001
+        return r.text[:200].replace("\n", " ")
+
+
 def analyze_one(key, models, t):
-    """-> (결과 dict | None, 오류 문구 | None). 검색 근거(grounding)를 먼저 시도하고, 안 되면 근거 없는 초안으로 낮춘다."""
+    """-> (결과 dict | None, 오류 문구 | None, 429 여부). 검색 근거를 먼저 시도하고, 429나 오류면 근거 없이, 그다음 다음 모델로 넘어간다."""
     prompt = _prompt(t)
-    last = None
+    last, saw429 = None, False
     for model in models:
         for grounded in (True, False):
             try:
@@ -139,10 +155,10 @@ def analyze_one(key, models, t):
             except Exception as e:  # noqa: BLE001
                 last = "연결 오류: " + str(e)[:100]
                 continue
-            if r.status_code == 429:
-                return None, "무료 한도(429)에 도달했습니다. 잠시 후 또는 내일 다시 시도하세요."
             if r.status_code >= 400:
-                last = "{} {} (모델 {}{})".format(r.status_code, r.text[:160].replace("\n", " "), model, " · 검색 근거 사용" if grounded else "")
+                if r.status_code == 429:
+                    saw429 = True
+                last = "{} {} [모델 {}{}]".format(r.status_code, _err_text(r), model, " · 검색 근거" if grounded else "")
                 continue
             try:
                 data = r.json()
@@ -158,8 +174,29 @@ def analyze_one(key, models, t):
             res["_sources"] = sources
             res["_grounded"] = bool(grounded and sources)
             res["_model"] = model
-            return res, None
-    return None, last or "알 수 없는 오류"
+            return res, None, False
+    return None, last or "알 수 없는 오류", saw429
+
+
+def diagnose(key):
+    """연결 진단: 쓸 수 있는 모델과, 각 모델이 일반/검색 근거 호출에서 어떤 응답을 주는지 보여 준다."""
+    rows = []
+    try:
+        models = pick_models(key)
+    except Exception as e:  # noqa: BLE001
+        return [{"모델": "-", "호출": "모델 목록", "결과": "실패: " + str(e)[:150]}]
+    if not models:
+        return [{"모델": "-", "호출": "모델 목록", "결과": "flash 계열 모델이 없습니다"}]
+    for i, m in enumerate(models):
+        for grounded in ((False, True) if i == 0 else (False,)):
+            try:
+                r = _call(key, m, "한 단어로 '확인'이라고만 답하세요.", grounded)
+                rows.append({"모델": m, "호출": "검색 근거" if grounded else "일반",
+                             "결과": "정상" if r.status_code < 400 else "{} {}".format(r.status_code, _err_text(r))})
+            except Exception as e:  # noqa: BLE001
+                rows.append({"모델": m, "호출": "검색 근거" if grounded else "일반", "결과": "연결 오류 " + str(e)[:100]})
+            time.sleep(2)
+    return rows
 
 
 def _clean(res):
@@ -181,8 +218,9 @@ def save_result(get_conn, tk, res):
     return applied
 
 
-def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=4):
-    """오래된 순으로 최대 max_n 종목을 분석해 저장한다. -> (처리 목록, 오류 목록, 변화 목록)"""
+def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=6):
+    """오래된 순으로 최대 max_n 종목을 분석해 저장한다. 한 종목이 실패해도 다음으로 넘어가며 앱이 멈추지 않는다.
+    -> (처리 목록, 오류 목록, 변화 목록)"""
     key = get_api_key()
     if not key:
         return [], ["GEMINI_API_KEY 가 설정되지 않았습니다."], []
@@ -204,15 +242,23 @@ def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=4):
             return 1e9
     todo = sorted([t for t in targets if age_h(t["tk"]) >= FRESH_HOURS], key=lambda t: -age_h(t["tk"]))[:max_n]
     done, errs, changes = [], [], []
+    streak429 = 0
     bar = st.progress(0.0, text="AI 분석 준비 중...")
     for i, t in enumerate(todo):
         bar.progress(i / max(len(todo), 1), text="{} 분석 중... ({}/{})".format(t["name"], i + 1, len(todo)))
-        res, err = analyze_one(key, models, t)
+        try:
+            res, err, rate = analyze_one(key, models, t)
+        except Exception as e:  # noqa: BLE001
+            res, err, rate = None, "예상치 못한 오류: " + str(e)[:100], False
         if err:
-            errs.append("{}: {}".format(t["name"], err))
-            if "429" in err:
+            errs.append("{}: {}".format(t["name"], err) + (" — 무료 한도(429)입니다. 잠시 대기 후 다시 눌러 주세요." if rate else ""))
+            streak429 = streak429 + 1 if rate else 0
+            if streak429 >= 2:
+                errs.append("연속 한도 초과로 이번 갱신을 멈춥니다. 몇 분 뒤(하루 한도면 내일) 다시 시도하세요. '🔎 AI 연결 진단'으로 원인을 볼 수 있습니다.")
                 break
+            time.sleep(sleep_s)
             continue
+        streak429 = 0
         prev = ai_views.get(t["tk"])
         try:
             applied = save_result(get_conn, t["tk"], res)
