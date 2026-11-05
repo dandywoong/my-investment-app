@@ -290,24 +290,44 @@ def _safe_analyze(key, models, t):
         return None, "예상치 못한 오류: " + str(e)[:100], False
 
 
-def _age_hours(row):
-    if row is None or not int(row["applied"] or 0):
-        return 1e9
+RETRY_UNAPPLIED_HOURS = 6   # 근거 부족으로 '반영 안 됨'이 된 종목은 이 시간 안에는 다시 시도하지 않는다(같은 종목만 반복 분석되는 것을 막음)
+
+
+def _attempt_age(row):
+    """마지막 시도 후 경과 시간(시간). 기록이 없으면 None."""
+    if row is None:
+        return None
     try:
         return (datetime.now(timezone.utc) - datetime.fromisoformat(str(row["created_at"]))).total_seconds() / 3600
     except Exception:  # noqa: BLE001
-        return 1e9
+        return None
+
+
+def status_text(row):
+    if row is None:
+        return "분석 기록 없음"
+    ag = _attempt_age(row)
+    ag_txt = "" if ag is None else "{:.0f}시간 전 ".format(ag)
+    return "{}{} · {}".format(ag_txt, row["stance"], "행동 후보에 반영" if int(row["applied"] or 0) else "근거 부족(반영 안 됨)")
 
 
 def queue(targets, ai_views):
-    """분석 순서. 기준: ①아직 분석 안 됐거나 '반영 안 됨'으로 끝난 종목 → ②마지막 분석이 오래된 종목 → ③같으면 내 비중(평가액)이 큰 종목.
-    20시간 안에 분석한 종목은 건너뜁니다. -> [(target, 경과시간)]"""
-    q = [(t, _age_hours(ai_views.get(t["tk"]))) for t in targets]
-    q = [x for x in q if x[1] >= FRESH_HOURS]
-    return sorted(q, key=lambda x: (-x[1], -(x[0].get("value") or 0)))
+    """분석 순서. 분석할 가치가 있는 종목부터: 종합 점수(오늘 사고 싶은 순위)가 높은 종목 → 같으면 마지막 분석이 오래된 종목.
+    제외: 20시간 안에 반영된 분석이 있는 종목, 6시간 안에 시도했지만 근거 부족으로 끝난 종목(반복 방지). -> [(target, 사유 문구)]"""
+    out = []
+    for t in targets:
+        row = ai_views.get(t["tk"])
+        ag = _attempt_age(row)
+        if row is not None and ag is not None:
+            if int(row["applied"] or 0) and ag < FRESH_HOURS:
+                continue
+            if not int(row["applied"] or 0) and ag < RETRY_UNAPPLIED_HOURS:
+                continue
+        out.append((t, status_text(row)))
+    return sorted(out, key=lambda x: (-(x[0].get("score") or 0), -(_attempt_age(ai_views.get(x[0]["tk"])) or 1e9)))
 
 
-def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=3):
+def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=3, force_tks=None):
     """오래된 순으로 최대 max_n 종목을 분석해 저장한다. 한 종목이 실패해도 다음으로 넘어가며 앱이 멈추지 않는다.
     -> (처리 목록, 오류 목록, 변화 목록)"""
     key = get_api_key()
@@ -319,18 +339,10 @@ def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=3):
         return [], ["모델 목록을 가져오지 못했습니다(키를 확인하세요): " + str(e)[:120]], []
     if not models:
         return [], ["이 키로 쓸 수 있는 flash 모델을 찾지 못했습니다."], []
-    now = datetime.now(timezone.utc)
-
-    def age_h(tk):
-        row = ai_views.get(tk)
-        if row is None or not int(row["applied"] or 0):
-            return 1e9
-        try:
-            return (now - datetime.fromisoformat(str(row["created_at"]))).total_seconds() / 3600
-        except Exception:  # noqa: BLE001
-            return 1e9
-    todo = queue(targets, ai_views)[:max_n]
-    todo = [t for t, _ in todo]
+    if force_tks:
+        todo = [t for t in targets if t["tk"] in force_tks]
+    else:
+        todo = [t for t, _ in queue(targets, ai_views)[:max_n]]
     done, errs, changes = [], [], []
     bar = st.progress(0.0, text="AI 분석 준비 중... (한 번에 2개씩 동시에 분석합니다)")
     from concurrent.futures import ThreadPoolExecutor

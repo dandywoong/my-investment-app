@@ -433,10 +433,20 @@ def _seed_us(get_conn):
     _migrate_lots(get_conn)
 
 
+def _bump(msg=None, kind="success"):
+    """저장 후 표 입력 기억(편집 흔적)을 초기화하고 안내 문구를 다음 화면에 남긴다."""
+    st.session_state["_ed_v"] = st.session_state.get("_ed_v", 0) + 1
+    if msg:
+        st.session_state["_us_flash"] = (kind, msg)
+
+
 def render_us_editor(get_conn):
     """내 포트폴리오 탭: 미국주 보유(정수 주 + 소수점 주 한 줄 관리). 저장하면 총 수량·총 평단이 자동 계산되고,
     소수점이 1주 이상 모이면 정수 주로 자동 전환된다."""
     st.subheader("🇺🇸 미국주 보유 입력·수정")
+    fl = st.session_state.pop("_us_flash", None)
+    if fl:
+        (st.success if fl[0] == "success" else st.info)(fl[1])
     if not _ensure_once(get_conn):
         return
     try:
@@ -465,7 +475,7 @@ def render_us_editor(get_conn):
                          "정수 주 수량": wq, "정수 주 평단": wa, "소수점 수량": fq, "소수점 평단": fa,
                          "운용 방식": u["mode"], "메모": u["note"], "삭제": False})
         show = pd.DataFrame(recs)
-        edited = st.data_editor(show, use_container_width=True, hide_index=True, num_rows="fixed", key="book_us_editor",
+        edited = st.data_editor(show, use_container_width=True, hide_index=True, num_rows="fixed", key="book_us_editor_{}".format(st.session_state.get("_ed_v", 0)),
                                 column_config={
                                     "티커": st.column_config.TextColumn("티커", disabled=True),
                                     "총 수량(자동)": st.column_config.NumberColumn("총 수량(자동)", disabled=True, format="%.6f"),
@@ -498,11 +508,11 @@ def render_us_editor(get_conn):
                             notes.append("{}: 소수점 {}주가 정수 주로 전환됐습니다(소수점 {:.6f}주 남음)".format(tk, conv, fq))
                         _save_lots(get_conn, tk, wq, wa, fq, fa, name=str(b["이름"]), mode=str(b["운용 방식"]), note=str(b["메모"] or ""))
                         n_changed += 1
-                st.success("{}개 종목을 저장했습니다.".format(n_changed) if n_changed else "바뀐 내용이 없습니다.")
-                for t in notes:
-                    st.info(t)
-                if n_changed and not notes:
+                if n_changed:
+                    _bump("{}개 종목을 저장했습니다. ".format(n_changed) + " ".join(notes))
                     st.rerun()
+                else:
+                    st.info("바뀐 내용이 없습니다.")
             except Exception as e:  # noqa: BLE001
                 st.error("저장하지 못했습니다: " + str(e)[:150])
 
@@ -538,8 +548,10 @@ def render_us_editor(get_conn):
                     if (wq > 0 and wa <= 0) or (fq > 0 and fa <= 0):
                         st.error("수량이 있는 칸의 평단을 입력해 주세요.")
                     else:
-                        tq1, ta1 = _save_lots(get_conn, sel, wq, wa, fq, fa)
-                        st.success("{} 총 {:.6f}주 · 총 평단 {:.3f} 로 바로잡았습니다.".format(sel, tq1, ta1))
+                        _save_lots(get_conn, sel, wq, wa, fq, fa)
+                        chk = _run(get_conn, "SELECT * FROM us_positions WHERE ticker=%s", (sel,), fetch=True).iloc[0]
+                        _bump("{} 저장 확인(DB에서 다시 읽은 값): 총 {:.6f}주 · 총 평단 {:.3f} (정수 {:.0f}주 + 소수점 {:.6f}주)".format(
+                            sel, float(chk["quantity"]), float(chk["avg_cost"]), float(chk["whole_qty"] or 0), float(chk["frac_qty"] or 0)))
                         st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error("저장하지 못했습니다: " + str(e)[:150])
@@ -577,11 +589,15 @@ def render_us_editor(get_conn):
                     msg = "저장했습니다. {} 총 {:.6f}주 · 총 평단 {:.3f}".format(tk, tq, ta)
                     if conv:
                         msg += " (소수점 {}주가 정수 주로 전환됨)".format(conv)
-                    st.success(msg)
-                    if not conv:
-                        st.rerun()
+                    _bump(msg)
+                    st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error("저장하지 못했습니다: " + str(e)[:150])
+    if len(us):
+        with st.expander("🔍 DB에 실제 저장된 값 보기 (수정이 안 보일 때 여기서 확인)", expanded=False):
+            raw = us[[c for c in ("ticker", "name", "quantity", "avg_cost", "whole_qty", "whole_avg", "frac_qty", "frac_avg", "mode", "updated_at") if c in us.columns]]
+            st.dataframe(raw, use_container_width=True, hide_index=True)
+            st.caption("위 표가 DB에 저장된 원본입니다. 여기 값이 맞는데 다른 화면이 다르면 앱 화면 문제, 여기 값이 틀리면 저장이 안 된 것입니다.")
     with st.expander("➕ 새 미국 종목 추가", expanded=False):
         with st.form("book_us_new", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
@@ -605,7 +621,7 @@ def render_us_editor(get_conn):
                                       VALUES (%s,%s,%s,%s,%s,'',%s) ON CONFLICT (ticker) DO NOTHING""",
                          (tk, nm.strip() or tk, q2, a2, mode, _now()))
                     _save_lots(get_conn, tk, wq2, wa2, fq2, fa2)
-                    st.success("추가했습니다(이미 있는 티커는 건드리지 않습니다).")
+                    _bump("추가했습니다(이미 있는 티커는 건드리지 않습니다).")
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error("저장하지 못했습니다: " + str(e)[:150])
@@ -955,11 +971,11 @@ def _render_planner(get_conn, items, cash_df, get_prices=None, moods=None):
     if mood_txt:
         st.caption("시장 심리(자체 계산, 0 극단 공포 ~ 100 극단 탐욕): " + mood_txt)
     if P["rows"]:
-        st.markdown("**✅ 오늘 실행 후보 (점수 높은 순 · 금액은 원화 환산)**")
+        st.markdown("**✅ 오늘 행동 순서 (점수 높은 종목부터 · 금액은 원화 환산)**")
         st.dataframe(pd.DataFrame(P["rows"]), use_container_width=True, hide_index=True)
-    if P["wait"]:
-        st.markdown("**⏳ 대기 · 보류 · 제외**")
-        st.dataframe(pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in P["wait"]]), use_container_width=True, hide_index=True)
+    if P["board"]:
+        st.markdown("**📋 종합 우선순위 보드 (전 종목 · 왜 사고 왜 안 사는지)**")
+        st.dataframe(pd.DataFrame(P["board"]), use_container_width=True, hide_index=True)
     for n_ in P["notes"]:
         st.caption(n_)
     if not P["rows"]:
@@ -995,6 +1011,60 @@ def _render_planner(get_conn, items, cash_df, get_prices=None, moods=None):
     st.caption("점수 구성(최대 가점): 가격(평단·고점 대비) ±5 · 차트 타이밍(볼린저·RSI·200일선·거래량) ±6 · 시장 심리 ±3 · 달걀 국면 ±3 · 기업·전망 ±6 · 비중 균형 ±3. "
                "기업 상태 '훼손'·업황 '부정'이면 매수 제외, 3점 미만도 제외합니다. 세금·수수료·환전 비용은 반영하지 않았고 환율은 야후 참고값(지연)입니다. "
                "이 가중치는 제가 정한 가설이며 아직 과거 데이터로 검증하지 않았습니다.")
+
+
+def _render_rebalance(items, ranking, fx):
+    """비중 조절 제안: 익절·축소 후보와 과대 비중 종목마다 '더 오를 근거가 있으면 홀딩, 과열·과대면 일부만 조절, 확보한 현금을 어디로'를 보여 준다.
+    검증 전 규칙이며 자동 주문이 아니다."""
+    targets_ = [i for i in items if i["mode"] != "베팅" and (i["kind"] == "sell" or (i.get("weight") or 0) > 0.35)]
+    st.markdown("### ⚖️ 비중 조절 제안 (익절·축소 검토 종목)")
+    if not targets_:
+        st.caption("지금은 익절·축소를 검토할 종목이 없습니다. 좋은 기업은 오래 보유하며 수량을 늘리는 것이 기본입니다.")
+        return
+    dest = [i["name"] for _, i in ranking if i.get("score") and not i["score"]["gate"] and i["score"]["total"] >= 3 and all(i is not x for x in targets_)][:3]
+    rows = []
+    for i in targets_:
+        holds = []
+        if i["sv_val"] == "견고":
+            holds.append("기업 상태 견고")
+        if i.get("outlook") == "긍정":
+            holds.append("업황 긍정")
+        if i.get("target") and i.get("price") and i["target"] / i["price"] - 1 >= 0.15:
+            holds.append("외부 목표가 대비 여력 {:+.0%}".format(i["target"] / i["price"] - 1))
+        sg = i.get("sig") or {}
+        if sg.get("ma200") is not None and sg["ma200"] > 0 and (sg.get("ma200_slope") or 0) > 0:
+            holds.append("200일선 위 상승 추세")
+        w = i.get("weight") or 0
+        over = []
+        if w > 0.35:
+            over.append("비중 {:.0%} 과대".format(w))
+        if i["top"] == 5:
+            over.append("과열·도취 국면")
+        if i.get("ret") is not None and i["ret"] >= 0.40:
+            over.append("평단 대비 {:+.0%}".format(i["ret"]))
+        sg_ = sg.get("rsi")
+        if sg_ is not None and sg_ >= 75:
+            over.append("RSI {:.0f} 과열".format(sg_))
+        if len(holds) >= 3 and len(over) <= 1 and w <= 0.35:
+            act, frac = "홀딩 우선 — 더 오를 근거가 있어 줄이지 않음", 0.0
+        elif w > 0.35:
+            frac = min(max((w - 0.30) / w, 0.10), 0.30)
+            act = "비중 {:.0%}→약 30% 목표로 일부 조절({:.0%} 분할)".format(w, frac)
+        elif len(over) >= 2:
+            frac = 0.20
+            act = "과열 신호 {}개 → 20% 분할 조절".format(len(over))
+        else:
+            frac = 0.10
+            act = "소량(10%) 조절 검토 또는 홀딩"
+        qty_t = i["qty"] * frac
+        qty_t = float(int(qty_t)) if i["cur"] == "KRW" else round(qty_t, 4)
+        cash_ = qty_t * (i["price"] or 0) * (fx if (i["cur"] == "USD" and fx) else 1.0)
+        rows.append({"종목": i["name"], "현재 비중": "{:.0%}".format(w), "과열·과대 신호": " · ".join(over) or "없음", "홀딩 근거": " · ".join(holds) or "없음",
+                     "제안": act, "조절 수량": qty_t if frac else 0, "확보 현금(원)": round(cash_) if frac else 0,
+                     "이동처 후보": ", ".join(dest) if frac and dest else "-"})
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.caption("원칙: 좋은 기업은 오른다는 이유만으로 팔지 않습니다. 홀딩 근거가 충분하면 홀딩, 과열·과대 신호가 겹칠 때만 분할로 조절하고, 확보한 현금은 위 종합 점수가 높은 종목으로 옮깁니다. "
+               "세금·수수료는 반영하지 않았고 검증 전 규칙입니다.")
 
 
 def _render_flow_date():
@@ -1040,7 +1110,7 @@ def _render_ai_panel(get_conn, items, stances, ai_views):
             prior = {"stance": rec["stance"], "as_of": rec["as_of"], "memo": rec["memo"], "invalidation": rec["invalidation"]}
         prev = ai_views.get(i["tk"])
         targets.append({"tk": i["tk"], "name": i["name"], "mkt": i["mkt"], "mode": i["mode"], "plabel": i["plabel"],
-                        "dd60": _fmt_pct(i["dd60"]) if i["dd60"] is not None else "자료 없음", "prior": prior, "value": (i["value"] or 0) * (1300 if i["cur"] == "USD" else 1),
+                        "dd60": _fmt_pct(i["dd60"]) if i["dd60"] is not None else "자료 없음", "prior": prior, "score": (i["score"]["total"] if i.get("score") else None),
                         "prev_ai_summary": (str(prev["summary"])[:500] if prev is not None else None)})
     latest = max([str(v["created_at"]) for v in ai_views.values()], default=None)
     st.caption("마지막 AI 분석: {} · AI 결과는 초안이며, 검색 근거가 있고 신뢰도가 '낮음'이 아니면 7일간 행동 후보에 반영됩니다. "
@@ -1054,26 +1124,30 @@ def _render_ai_panel(get_conn, items, stances, ai_views):
                 st.error("진단하지 못했습니다: " + str(e)[:150])
     q = ai_agent.queue(targets, ai_views)
     with st.expander("분석 순서와 선정 기준 ({}개 대기)".format(len(q)), expanded=False):
-        st.caption("순서 기준: ①아직 분석 안 됐거나 '반영 안 됨'으로 끝난 종목 먼저 → ②마지막 분석이 오래된 종목 → ③같으면 내 평가액이 큰 종목. "
-                   "20시간 안에 분석한 종목은 건너뜁니다. 버튼 한 번에 아래 선택한 개수만 위에서부터 처리합니다.")
+        st.caption("순서 기준: 종합 점수(오늘 매수 우선순위)가 높은 종목부터 분석합니다. 분석 결과가 점수와 행동 후보에 가장 크게 영향을 주는 종목이기 때문입니다. "
+                   "20시간 안에 분석된 종목, 6시간 안에 시도했지만 근거 부족으로 끝난 종목은 건너뜁니다(같은 종목 반복 방지).")
         if q:
-            st.dataframe(pd.DataFrame([{"순서": n + 1, "종목": t["name"], "마지막 분석": "없음/반영 안 됨" if age >= 1e8 else "{:.0f}시간 전".format(age)} for n, (t, age) in enumerate(q)]),
-                         use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame([{"순서": n + 1, "종목": t["name"], "종합 점수": "-" if t.get("score") is None else round(t["score"], 1), "마지막 분석": why}
+                                       for n, (t, why) in enumerate(q)]), use_container_width=True, hide_index=True)
         else:
-            st.write("모든 종목이 최근 20시간 안에 분석되었습니다.")
+            st.write("지금 분석할 종목이 없습니다.")
+    names_all = [t["name"] for t in targets]
+    chosen = st.multiselect("직접 고르기(선택하면 아래 갱신 버튼이 이 종목들만 분석합니다. 비워 두면 위 순서대로 자동)", names_all, key="ai_pick")
     c1, c2, c3 = st.columns([2, 2, 3])
-    n_pick = c2.selectbox("한 번에 분석할 종목 수", [2, 4, 6, 8], index=1, key="ai_n")
+    n_pick = c2.selectbox("자동일 때 한 번에 분석할 수", [2, 4, 6, 8], index=1, key="ai_n")
     run = c1.button("🤖 AI 기업 분석 갱신", key="ai_refresh")
     auto = c3.toggle("화면을 열 때 하루 한 번 자동 갱신(2개)", key="ai_auto")
     today = date.today().isoformat()
+    force = [t["tk"] for t in targets if t["name"] in chosen] if chosen else None
     if auto and not run and st.session_state.get("_ai_auto_day") != today:
         st.session_state["_ai_auto_day"] = today
         n = 2
         run = True
+        force = None
     else:
         n = n_pick
     if run:
-        done, errs, changes = ai_agent.refresh(get_conn, targets, ai_views, max_n=n)
+        done, errs, changes = ai_agent.refresh(get_conn, targets, ai_views, max_n=n, force_tks=force)
         st.session_state["_ai_msg"] = (done, errs, changes)
         st.rerun()
 
@@ -1191,10 +1265,20 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
 
     # ---- B. 종목 판단표 ----
     st.markdown("### 종목별 행동 후보")
+    fx_ = _fx_rate(get_prices)
+
+    def _px(i, v):
+        if v is None:
+            return "-"
+        if i["cur"] == "USD":
+            return "${:,.2f}".format(v) + (" (≈{:,.0f}원)".format(v * fx_) if fx_ else "")
+        return "{:,.0f}원".format(v)
+    if fx_:
+        st.caption("오늘 환율(야후 참고, 지연 가능): 1달러 ≈ {:,.1f}원. 달러 가격 옆 괄호는 원화 환산입니다.".format(fx_))
     table = []
     for i in items:
         table.append({"행동 후보": "{} {}".format(KIND_VIEW[i["kind"]][1], i["label"]), "종목": "{} ({})".format(i["name"], i["tk"]),
-                      "운용 방식": i["mode"], "가격 국면": i["plabel"], "기업 상태(내 기록)": i["sv_txt"], "평단 대비": _fmt_pct(i["ret"]),
+                      "운용 방식": i["mode"], "현재가": _px(i, i["price"]), "평단": _px(i, i["avg"]), "가격 국면": i["plabel"], "기업 상태(내 기록)": i["sv_txt"], "평단 대비": _fmt_pct(i["ret"]),
                       "통화 내 비중": "-" if not i.get("weight") else "{:.0%}".format(i["weight"]),
                       "종합 점수": "-" if not i.get("score") else "{:.1f} ({})".format(i["score"]["total"], signals.grade(i["score"]["total"])),
                       "차트": _chart_text(i.get("sig")),
@@ -1207,6 +1291,11 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
     except Exception:  # noqa: BLE001
         cash_df = None
     _render_planner(get_conn, items, cash_df, get_prices, moods)
+    try:
+        rk = sorted([(0, i) for i in items if i.get("score") and i["mode"] != "베팅"], key=lambda x: -x[1]["score"]["total"])
+        _render_rebalance(items, [(n + 1, i) for n, (_, i) in enumerate(rk)], fx_)
+    except Exception as e:  # noqa: BLE001
+        st.caption("비중 조절 제안을 표시하지 못했습니다: " + str(e)[:100])
 
     # ---- C. 선택 종목 상세 ----
     st.markdown("### 종목 상세")
@@ -1226,6 +1315,7 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
         except Exception as e:  # noqa: BLE001
             st.error("AI 분석을 표시하지 못했습니다: " + str(e)[:120])
     with st.expander("📝 오늘의 결정 남기기 (그 시점의 국면·기업 상태가 자동 저장됨)", expanded=False):
+        st.caption("매도 전 점검: ①기업 상태가 실제로 나빠졌나(실적·경쟁력)? ②아니면 가격·뉴스·방송 때문에 불안한가? ②라면 팔 이유가 아니라 확인할 이유입니다.")
         with st.form("dash_dec_" + it["tk"], clear_on_submit=True):
             c1, c2 = st.columns([1, 3])
             dec = c1.selectbox("결정", ["매수", "매도", "보유 유지", "관망"], key="dash_dec_sel_" + it["tk"])
@@ -1242,6 +1332,9 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
                     _run(get_conn, """INSERT INTO decisions (created_at,ticker,horizon,price,thesis,evidence_for,evidence_against,risks,invalidation,decision)
                                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", vals)
                 st.success("저장했습니다. 아래 '판단 복기'에서 결정 이후 가격 변화를 볼 수 있습니다.")
+                if dec == "매도" and it["sv_val"] == "견고":
+                    st.warning("기업 상태를 '견고'로 기록해 둔 종목을 매도하는 결정입니다. 매도 이유가 '기업이 나빠졌다'인지, 시장·뉴스·방송 때문에 불안해서인지 다시 확인하세요. "
+                               "후자라면 이 결정은 지난 하락장의 후회를 반복할 수 있습니다.")
             except Exception as e:  # noqa: BLE001
                 st.error("저장하지 못했습니다: " + str(e)[:150])
     with st.expander("🏢 이 종목 기업 상태 기록·수정 (행동 후보에 반영)", expanded=(it["sv_val"] == "미확인")):

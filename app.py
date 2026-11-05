@@ -1035,6 +1035,10 @@ if tab_portfolio.open:
             except Exception:
                 pass
             pf = pd.DataFrame(rows)
+            fx_now, fx_date = latest_close("KRW=X")
+            if fx_now and len(pf):
+                pf["평가금액(원화 환산)"] = pf.apply(lambda r: (r["평가금액"] * (fx_now if r["통화"] == "USD" else 1.0)) if pd.notna(r["평가금액"]) else None, axis=1)
+                pf["평가손익(원화 환산)"] = pf.apply(lambda r: (r["평가손익"] * (fx_now if r["통화"] == "USD" else 1.0)) if pd.notna(r["평가손익"]) else None, axis=1)
             valid_all = pf.dropna(subset=["평가금액"])
             valid = valid_all[valid_all["통화"] == "KRW"]
             valid_usd = valid_all[valid_all["통화"] == "USD"]
@@ -1053,7 +1057,11 @@ if tab_portfolio.open:
                 u1.metric("미국주 평가금액 (USD)", f"${usd_val:,.2f}")
                 u2.metric("미국주 평가손익 (USD)", f"${usd_pnl:,.2f}")
                 u3.metric("미국주 수익률", f"{usd_pnl/usd_base*100:+.2f}%" if usd_base else "자료 없음")
-                st.caption("환율을 섞으면 숫자가 틀어지므로 원화와 달러는 따로 보여 드립니다.")
+                if fx_now:
+                    st.caption("오늘 환율(야후 참고, 지연 가능) 1달러 ≈ {:,.1f}원 → 미국주 평가금액 ≈ {:,.0f}원 · 평가손익 ≈ {:,.0f}원. 원화+미국주 합계 ≈ {:,.0f}원".format(
+                        fx_now, usd_val * fx_now, usd_pnl * fx_now, (total_value or 0) + usd_val * fx_now))
+                else:
+                    st.caption("환율을 가져오지 못해 원화 환산을 표시하지 못했습니다. 원화와 달러는 따로 보여 드립니다.")
         
             st.subheader("보유 종목 직접 편집")
             st.caption(
@@ -1078,7 +1086,7 @@ if tab_portfolio.open:
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
-                key="holdings_editor",
+                key="holdings_editor_{}".format(st.session_state.get("_ed_v", 0)),
                 column_config={
                     "종목 코드": st.column_config.TextColumn(
                         "종목 코드", disabled=True
@@ -1133,6 +1141,7 @@ if tab_portfolio.open:
                                 str(row["계좌"]),
                             )
 
+                        st.session_state["_ed_v"] = st.session_state.get("_ed_v", 0) + 1
                         st.success("보유 종목 변경사항을 저장했습니다.")
                         st.rerun()
                 except Exception as e:
@@ -1152,6 +1161,8 @@ if tab_portfolio.open:
                 "종목", "코드", "수량", "평단",
                 "현재가", "평가금액", "평가손익", "수익률(%)"
             ]
+            if fx_now and "평가금액(원화 환산)" in pf.columns:
+                display_cols = display_cols + ["평가금액(원화 환산)", "평가손익(원화 환산)"]
 
             account_order = [
                 "삼성증권 ISA",
@@ -1198,6 +1209,8 @@ if tab_portfolio.open:
                             "수익률(%)": st.column_config.NumberColumn(
                                 "수익률(%)", format="%.2f%%"
                             ),
+                            "평가금액(원화 환산)": st.column_config.NumberColumn("평가금액(원화 환산)", format="%.0f"),
+                            "평가손익(원화 환산)": st.column_config.NumberColumn("평가손익(원화 환산)", format="%.0f"),
                         },
                     )
 
