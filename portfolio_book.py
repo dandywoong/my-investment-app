@@ -13,6 +13,9 @@ from datetime import date, datetime, timezone
 import pandas as pd
 import streamlit as st
 
+import planner
+import signals
+
 MODES = ["핵심 장기", "적립형", "베팅"]
 STANCES = ["견고", "보통", "훼손", "미확인"]
 STANCE_STALE_DAYS = 90
@@ -155,6 +158,8 @@ def _now():
 
 def _yf_symbol(t):
     t = str(t).strip().upper()
+    if t in ("BRKB", "BRK B"):
+        return "BRK-B"
     return t if t.endswith((".KS", ".KQ")) else t.replace(".", "-")
 
 
@@ -741,6 +746,14 @@ def _score(i, avg_w):
     return pts, why
 
 
+def _chart_text(sg):
+    if not sg:
+        return "자료 없음"
+    b = sg.get("pctb")
+    zone = "하단" if (b is not None and b <= 0.2) else "상단" if (b is not None and b >= 0.8) else "중간"
+    return "볼린저 {} · RSI {}".format(zone, "-" if sg.get("rsi") is None else "{:.0f}".format(sg["rsi"]))
+
+
 def _zone(lad):
     try:
         z = str(lad["buys"][0]["구간"])
@@ -889,17 +902,17 @@ def _fx_rate(get_prices):
         return None
 
 
-def _render_planner(get_conn, items, cash_df, get_prices=None):
+def _render_planner(get_conn, items, cash_df, get_prices=None, moods=None):
     st.markdown("### 💰 현금 배분 플래너")
-    st.caption("총 현금(원화) 하나만 입력하면 한국·미국 전 종목을 한 번에 놓고 우선순위와 금액을 정합니다. 점수·전략은 기업 상태·국면·낙폭·비중·업황으로 만든 "
-               "검증 전 규칙이며 수익이나 승률을 보장하지 않습니다. 현금 정보는 AI에 보내지 않습니다.")
+    st.caption("총 현금(원화) 하나만 입력하면, 모든 종목을 '종합 점수'(가격·차트·시장 심리·달걀 국면·기업/전망·비중)로 순위를 매기고 점수가 높은 종목에 더 많이, "
+               "점수가 낮으면 현금을 남깁니다. 점수는 검증 전 규칙이며 수익이나 승률을 보장하지 않습니다. 현금 정보는 AI에 보내지 않습니다.")
     cash = {str(r["currency"]): float(r["amount"] or 0) for _, r in cash_df.iterrows()} if cash_df is not None and len(cash_df) else {}
     with st.form("cash_form"):
         c1, c2 = st.columns([2, 3])
         total = c1.number_input("투자에 쓸 총 현금 (원화 환산, KRW)", min_value=0.0, value=float(cash.get("TOTAL_KRW", 0.0)), step=100000.0, format="%.0f", key="cash_total")
         with c2:
             with st.expander("고급 설정"):
-                first = st.number_input("분할 1차에 쓸 비율(%)", min_value=10, max_value=100, value=50, step=5, key="cash_first")
+                first = st.number_input("핵심 장기: 분할 1차에 쓸 비율(%)", min_value=10, max_value=100, value=50, step=5, key="cash_first")
                 reserve = st.number_input("처음부터 남겨 둘 현금(%)", min_value=0, max_value=90, value=0, step=5, key="cash_reserve")
         ok = st.form_submit_button("현금 저장 · 배분 계산")
     if ok:
@@ -923,32 +936,65 @@ def _render_planner(get_conn, items, cash_df, get_prices=None):
     else:
         pool = items
     first_pct, reserve_pct = st.session_state.get("_plan_params", (50, 0))
-    budget, remaining, now_rows, wait_rows, dca_rows, notes, reserved = plan_total(pool, amt, fx, first_pct, reserve_pct)
+    conv = []
+    for i in pool:
+        k = 1.0 if i["cur"] == "KRW" else fx
+        j = dict(i)
+        for key in ("price", "avg", "value"):
+            j[key] = (i.get(key) or 0) * k
+        j["_cur"], j["_k"] = i["cur"], k
+        j["cur"] = "KRW"
+        conv.append(j)
+    P = planner.plan_smart(conv, amt, first_pct, reserve_pct, fmt_pct=_fmt_pct)
 
-    kr_use = sum(r["금액"] for r in now_rows if r.get("통화") == "KRW") + sum(r["배분 금액"] for r in dca_rows if r.get("통화") == "KRW")
-    us_use = sum(r["금액"] for r in now_rows if r.get("통화") == "USD") + sum(r["배분 금액"] for r in dca_rows if r.get("통화") == "USD")
-    st.markdown("#### 총 현금 {:,.0f}원 → 한국 {:,.0f}원 · 미국 {:,.0f}원{} · 대기 자금 {:,.0f}원 · 남는 현금 {:,.0f}원".format(
-        amt, kr_use, us_use, " (≈ {:,.2f}달러 환전 필요 · 환율 {:,.1f})".format(us_use / fx, fx) if (us_use and fx) else "", reserved, remaining - reserved))
-    if now_rows:
-        st.markdown("**✅ 지금 실행 후보 (금액은 원화 환산)**")
-        df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in now_rows])
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    if dca_rows:
-        st.markdown("**🔄 적립형 고루 배분 (소수점 매수 · 비중이 낮은 종목부터 채움, 금액은 원화 환산)**")
-        st.dataframe(pd.DataFrame(dca_rows), use_container_width=True, hide_index=True)
-    if wait_rows:
-        st.markdown("**⏳ 조건 대기 · 보류**")
-        st.dataframe(pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in wait_rows]), use_container_width=True, hide_index=True)
-    for n_ in notes:
+    kr_use = sum(r["금액(원)"] for r in P["rows"] if r.get("통화") == "KRW")
+    us_use = sum(r["금액(원)"] for r in P["rows"] if r.get("통화") == "USD")
+    mood_txt = " · ".join("{} 심리 {} ({:.0f})".format(k, v["label"], v["greed"]) for k, v in (moods or {}).items() if v.get("greed") is not None)
+    st.markdown("#### 총 현금 {:,.0f}원 → 오늘 매수 한국 {:,.0f}원 · 미국 {:,.0f}원{} · 대기 자금 {:,.0f}원 · 보유 현금 {:,.0f}원".format(
+        amt, kr_use, us_use, " (≈ {:,.2f}달러 환전 필요 · 환율 {:,.1f})".format(us_use / fx, fx) if (us_use and fx) else "", P["reserved"], P["hold_cash"]))
+    if mood_txt:
+        st.caption("시장 심리(자체 계산, 0 극단 공포 ~ 100 극단 탐욕): " + mood_txt)
+    if P["rows"]:
+        st.markdown("**✅ 오늘 실행 후보 (점수 높은 순 · 금액은 원화 환산)**")
+        st.dataframe(pd.DataFrame(P["rows"]), use_container_width=True, hide_index=True)
+    if P["wait"]:
+        st.markdown("**⏳ 대기 · 보류 · 제외**")
+        st.dataframe(pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in P["wait"]]), use_container_width=True, hide_index=True)
+    for n_ in P["notes"]:
         st.caption(n_)
-    if not (now_rows or dca_rows):
-        st.info("지금 실행할 후보가 없습니다. 조건이 맞을 때까지 현금을 유지하는 것도 하나의 전략입니다.")
+    if not P["rows"]:
+        st.info("지금은 점수가 기준(3점)을 넘는 종목이 없습니다. 현금을 유지하는 것도 하나의 전략입니다.")
     sells = [i["name"] for i in items if i["kind"] == "sell"]
     if sells:
         st.caption("현금이 더 필요하면 먼저 확인할 종목(익절·축소 검토): " + ", ".join(sells))
-    st.caption("전략 순서: ①베팅(조정 시 1주 규칙·한도) → ②핵심 장기(분할 1차 가격대에 들어왔을 때만 지금 실행, 위에 있으면 대기 자금을 남겨 둠) → "
-               "③남은 현금은 적립형 종목에 비중이 낮은 순으로 고루 배분. 업황·외부 목표가는 근거 자료가 있는 AI 분석만 점수에 반영합니다. "
-               "세금·수수료·환전 비용은 반영하지 않았고, 환율은 야후 참고값(지연)입니다. 규칙은 검증 전이며 승률을 보장하지 않습니다.")
+
+    with st.expander("📊 종목별 점수 상세 (왜 이 순위인지)", expanded=False):
+        rank_rows = []
+        for r, i in P["ranking"]:
+            sc = i["score"]
+            rank_rows.append({"순위": r, "종목": i["name"], "종합": round(sc["total"], 1), "등급": signals.grade(sc["total"]),
+                              **{k: round(v[0], 1) for k, v in sc["parts"].items()}, "제외 사유": sc["gate"] or ""})
+        if rank_rows:
+            st.dataframe(pd.DataFrame(rank_rows), use_container_width=True, hide_index=True)
+        pick = st.selectbox("근거를 볼 종목", [i["name"] for _, i in P["ranking"]] or ["-"], key="score_pick")
+        for _, i in P["ranking"]:
+            if i["name"] == pick:
+                for k, (pt, why) in i["score"]["parts"].items():
+                    st.markdown("**{} ({:+.1f})**".format(k, pt))
+                    for w_ in why or ["해당 없음"]:
+                        st.caption("· " + w_)
+                sg = i.get("sig") or {}
+                if sg:
+                    st.caption("차트 원자료: 볼린저 %B {} · RSI {} · 200일선 이격 {} · 52주 위치 {} · 12개월 수익률 {}".format(
+                        "-" if sg.get("pctb") is None else "{:.2f}".format(sg["pctb"]), "-" if sg.get("rsi") is None else "{:.0f}".format(sg["rsi"]),
+                        _fmt_pct(sg.get("ma200")) if sg.get("ma200") is not None else "-", "-" if sg.get("pos52") is None else "{:.0%}".format(sg["pos52"]),
+                        _fmt_pct(sg.get("r12m")) if sg.get("r12m") is not None else "-"))
+        if moods:
+            for k, v in moods.items():
+                st.caption("{} 시장 심리 구성: ".format(k) + " · ".join(v["parts"]))
+    st.caption("점수 구성(최대 가점): 가격(평단·고점 대비) ±5 · 차트 타이밍(볼린저·RSI·200일선·거래량) ±6 · 시장 심리 ±3 · 달걀 국면 ±3 · 기업·전망 ±6 · 비중 균형 ±3. "
+               "기업 상태 '훼손'·업황 '부정'이면 매수 제외, 3점 미만도 제외합니다. 세금·수수료·환전 비용은 반영하지 않았고 환율은 야후 참고값(지연)입니다. "
+               "이 가중치는 제가 정한 가설이며 아직 과거 데이터로 검증하지 않았습니다.")
 
 
 def _render_flow_date():
@@ -994,7 +1040,7 @@ def _render_ai_panel(get_conn, items, stances, ai_views):
             prior = {"stance": rec["stance"], "as_of": rec["as_of"], "memo": rec["memo"], "invalidation": rec["invalidation"]}
         prev = ai_views.get(i["tk"])
         targets.append({"tk": i["tk"], "name": i["name"], "mkt": i["mkt"], "mode": i["mode"], "plabel": i["plabel"],
-                        "dd60": _fmt_pct(i["dd60"]) if i["dd60"] is not None else "자료 없음", "prior": prior,
+                        "dd60": _fmt_pct(i["dd60"]) if i["dd60"] is not None else "자료 없음", "prior": prior, "value": (i["value"] or 0) * (1300 if i["cur"] == "USD" else 1),
                         "prev_ai_summary": (str(prev["summary"])[:500] if prev is not None else None)})
     latest = max([str(v["created_at"]) for v in ai_views.values()], default=None)
     st.caption("마지막 AI 분석: {} · AI 결과는 초안이며, 검색 근거가 있고 신뢰도가 '낮음'이 아니면 7일간 행동 후보에 반영됩니다. "
@@ -1006,16 +1052,26 @@ def _render_ai_panel(get_conn, items, stances, ai_views):
                 st.dataframe(pd.DataFrame(ai_agent.diagnose(ai_agent.get_api_key())), use_container_width=True, hide_index=True)
             except Exception as e:  # noqa: BLE001
                 st.error("진단하지 못했습니다: " + str(e)[:150])
-    c1, c2 = st.columns([2, 3])
-    run = c1.button("🤖 AI 기업 분석 갱신 (오래된 종목 최대 4개)", key="ai_refresh")
-    auto = c2.toggle("화면을 열 때 하루 한 번 자동 갱신(최대 2개 · 느려질 수 있음)", key="ai_auto")
+    q = ai_agent.queue(targets, ai_views)
+    with st.expander("분석 순서와 선정 기준 ({}개 대기)".format(len(q)), expanded=False):
+        st.caption("순서 기준: ①아직 분석 안 됐거나 '반영 안 됨'으로 끝난 종목 먼저 → ②마지막 분석이 오래된 종목 → ③같으면 내 평가액이 큰 종목. "
+                   "20시간 안에 분석한 종목은 건너뜁니다. 버튼 한 번에 아래 선택한 개수만 위에서부터 처리합니다.")
+        if q:
+            st.dataframe(pd.DataFrame([{"순서": n + 1, "종목": t["name"], "마지막 분석": "없음/반영 안 됨" if age >= 1e8 else "{:.0f}시간 전".format(age)} for n, (t, age) in enumerate(q)]),
+                         use_container_width=True, hide_index=True)
+        else:
+            st.write("모든 종목이 최근 20시간 안에 분석되었습니다.")
+    c1, c2, c3 = st.columns([2, 2, 3])
+    n_pick = c2.selectbox("한 번에 분석할 종목 수", [2, 4, 6, 8], index=1, key="ai_n")
+    run = c1.button("🤖 AI 기업 분석 갱신", key="ai_refresh")
+    auto = c3.toggle("화면을 열 때 하루 한 번 자동 갱신(2개)", key="ai_auto")
     today = date.today().isoformat()
     if auto and not run and st.session_state.get("_ai_auto_day") != today:
         st.session_state["_ai_auto_day"] = today
         n = 2
         run = True
     else:
-        n = 4
+        n = n_pick
     if run:
         done, errs, changes = ai_agent.refresh(get_conn, targets, ai_views, max_n=n)
         st.session_state["_ai_msg"] = (done, errs, changes)
@@ -1100,6 +1156,24 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
         for i in items:
             if i["cur"] == cur:
                 i["weight"] = (i["value"] / tot) if (tot and i["value"]) else None
+    # 종합 점수: 차트 신호 + 시장 심리 + 국면 + 기업 + 가격 + 비중
+    moods = {}
+    with st.spinner("차트·시장 심리를 계산하는 중..."):
+        for reg, name_ in (("KR", "한국"), ("US", "미국")):
+            if any(i["mkt"] == name_ for i in items):
+                try:
+                    moods[name_] = signals.market_mood(get_prices, reg)
+                except Exception:  # noqa: BLE001
+                    moods[name_] = {"greed": None, "parts": ["시장 심리 계산 실패"], "label": "자료 없음"}
+        for cur in {i["cur"] for i in items}:
+            ws_ = [i["weight"] for i in items if i["cur"] == cur and i.get("weight") and i["mode"] != "베팅"]
+            avg_w = sum(ws_) / len(ws_) if ws_ else 0.0
+            for i in items:
+                if i["cur"] != cur:
+                    continue
+                i["sig"] = signals.chart_signals(get_prices, _yf_symbol(i["tk"]))
+                i["zone"] = _zone(i.get("lad")) if i.get("lad") else None
+                i["score"] = signals.score_item(i, i["sig"], moods.get(i["mkt"]), avg_w)
     items.sort(key=lambda i: (KIND_VIEW[i["kind"]][0], -(i["value"] or 0)))
 
     # ---- A. 오늘 확인할 것 ----
@@ -1122,6 +1196,8 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
         table.append({"행동 후보": "{} {}".format(KIND_VIEW[i["kind"]][1], i["label"]), "종목": "{} ({})".format(i["name"], i["tk"]),
                       "운용 방식": i["mode"], "가격 국면": i["plabel"], "기업 상태(내 기록)": i["sv_txt"], "평단 대비": _fmt_pct(i["ret"]),
                       "통화 내 비중": "-" if not i.get("weight") else "{:.0%}".format(i["weight"]),
+                      "종합 점수": "-" if not i.get("score") else "{:.1f} ({})".format(i["score"]["total"], signals.grade(i["score"]["total"])),
+                      "차트": _chart_text(i.get("sig")),
                       "가장 가까운 가격대": i["nxt"], "통화": i["cur"]})
     st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
     st.caption("🔴→🟢→🟠→🟡→⚪ 순으로 정렬했습니다. 비중은 같은 통화끼리만 계산합니다(원화·달러를 섞지 않음). 가격은 야후 일봉(지연·누락 가능) 기준입니다.")
@@ -1130,7 +1206,7 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
         cash_df = _run(get_conn, "SELECT * FROM cash_balance", fetch=True)
     except Exception:  # noqa: BLE001
         cash_df = None
-    _render_planner(get_conn, items, cash_df, get_prices)
+    _render_planner(get_conn, items, cash_df, get_prices, moods)
 
     # ---- C. 선택 종목 상세 ----
     st.markdown("### 종목 상세")

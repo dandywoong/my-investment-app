@@ -159,13 +159,26 @@ def _extract_json(text):
     return json.loads(text[a:b + 1])
 
 
+_NO_THINK = {}  # 모델별로 '생각 줄이기' 설정이 거부되면 기억해서 다시 보내지 않는다
+
+
 def _call(key, model, prompt, grounded):
     import requests
     body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}
     if grounded:
         body["tools"] = [{"google_search": {}}]
-    r = requests.post("{}/models/{}:generateContent".format(API, model), params={"key": key}, json=body, timeout=75 if grounded else 50)
-    return r
+    url = "{}/models/{}:generateContent".format(API, model)
+    to = 75 if grounded else 50
+    if not _NO_THINK.get(model):
+        fast = {"contents": body["contents"], "generationConfig": {"temperature": 0.2, "thinkingConfig": {"thinkingBudget": 0}}}
+        if grounded:
+            fast["tools"] = body["tools"]
+        r = requests.post(url, params={"key": key}, json=fast, timeout=to)
+        if r.status_code == 400 and "think" in r.text.lower():
+            _NO_THINK[model] = True
+        else:
+            return r
+    return requests.post(url, params={"key": key}, json=body, timeout=to)
 
 
 def _err_text(r):
@@ -270,6 +283,30 @@ def save_result(get_conn, tk, res):
     return applied
 
 
+def _safe_analyze(key, models, t):
+    try:
+        return analyze_one(key, models, t)
+    except Exception as e:  # noqa: BLE001
+        return None, "예상치 못한 오류: " + str(e)[:100], False
+
+
+def _age_hours(row):
+    if row is None or not int(row["applied"] or 0):
+        return 1e9
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(str(row["created_at"]))).total_seconds() / 3600
+    except Exception:  # noqa: BLE001
+        return 1e9
+
+
+def queue(targets, ai_views):
+    """분석 순서. 기준: ①아직 분석 안 됐거나 '반영 안 됨'으로 끝난 종목 → ②마지막 분석이 오래된 종목 → ③같으면 내 비중(평가액)이 큰 종목.
+    20시간 안에 분석한 종목은 건너뜁니다. -> [(target, 경과시간)]"""
+    q = [(t, _age_hours(ai_views.get(t["tk"]))) for t in targets]
+    q = [x for x in q if x[1] >= FRESH_HOURS]
+    return sorted(q, key=lambda x: (-x[1], -(x[0].get("value") or 0)))
+
+
 def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=3):
     """오래된 순으로 최대 max_n 종목을 분석해 저장한다. 한 종목이 실패해도 다음으로 넘어가며 앱이 멈추지 않는다.
     -> (처리 목록, 오류 목록, 변화 목록)"""
@@ -292,25 +329,25 @@ def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=3):
             return (now - datetime.fromisoformat(str(row["created_at"]))).total_seconds() / 3600
         except Exception:  # noqa: BLE001
             return 1e9
-    todo = sorted([t for t in targets if age_h(t["tk"]) >= FRESH_HOURS], key=lambda t: -age_h(t["tk"]))[:max_n]
+    todo = queue(targets, ai_views)[:max_n]
+    todo = [t for t, _ in todo]
     done, errs, changes = [], [], []
-    streak429 = 0
-    bar = st.progress(0.0, text="AI 분석 준비 중...")
-    for i, t in enumerate(todo):
-        bar.progress(i / max(len(todo), 1), text="{} 분석 중... ({}/{})".format(t["name"], i + 1, len(todo)))
-        try:
-            res, err, rate = analyze_one(key, models, t)
-        except Exception as e:  # noqa: BLE001
-            res, err, rate = None, "예상치 못한 오류: " + str(e)[:100], False
+    bar = st.progress(0.0, text="AI 분석 준비 중... (한 번에 2개씩 동시에 분석합니다)")
+    from concurrent.futures import ThreadPoolExecutor
+    results = []
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futs = []
+        for t in todo:
+            futs.append((t, ex.submit(_safe_analyze, key, models, t)))
+        for i, (t, f) in enumerate(futs):
+            bar.progress(i / max(len(todo), 1), text="{} 결과 기다리는 중... ({}/{})".format(t["name"], i + 1, len(todo)))
+            results.append((t, f.result()))
+    rate_n = 0
+    for t, (res, err, rate) in results:
         if err:
+            rate_n += 1 if rate else 0
             errs.append("{}: {}".format(t["name"], err) + (" — 무료 한도(429)입니다. 잠시 대기 후 다시 눌러 주세요." if rate else ""))
-            streak429 = streak429 + 1 if rate else 0
-            if streak429 >= 2:
-                errs.append("연속 한도 초과로 이번 갱신을 멈춥니다. 몇 분 뒤(하루 한도면 내일) 다시 시도하세요. '🔎 AI 연결 진단'으로 원인을 볼 수 있습니다.")
-                break
-            time.sleep(sleep_s)
             continue
-        streak429 = 0
         prev = ai_views.get(t["tk"])
         try:
             applied = save_result(get_conn, t["tk"], res)
@@ -322,8 +359,8 @@ def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=3):
         old_st = prev["stance"] if prev is not None else (t.get("prior") or {}).get("stance", "없음")
         if new_st != old_st:
             changes.append("{}: {} → {}{}".format(t["name"], old_st, new_st, "" if applied else " (근거 부족 · 참고만)"))
-        if i < len(todo) - 1:
-            time.sleep(sleep_s)
+    if rate_n >= 2:
+        errs.append("한도 초과가 반복되었습니다. 몇 분 뒤(하루 한도면 내일) 다시 시도하세요. '🔎 AI 연결 진단'으로 원인을 볼 수 있습니다.")
     bar.progress(1.0, text="완료")
     return done, errs, changes
 
