@@ -36,7 +36,7 @@ def _waterfill(scores, cap):
     return share
 
 
-def plan_smart(items, cash, first_pct=50, reserve_pct=0, bet_cap_pct=10.0, fmt_pct=lambda x: "-"):
+def plan_smart(items, cash, first_pct=50, reserve_pct=0, bet_cap_pct=10.0, fmt_pct=lambda x: "-", deploy_mult=1.0):
     """items: 원화 환산된 종목 목록(_k=환율계수, _cur=원통화, zone=원통화 1차 매수구간, score=signals.score_item 결과).
     순위(점수) 높은 종목부터 차례로 처리한다. 남은 후보 점수 비율로 배정액을 다시 계산하고(재정규화),
     한국 주식은 정수 주 단위: 배정액이 1주보다 작아도 상위 3위 안이고 현금이 되면 1주를 먼저 확보한다.
@@ -63,6 +63,9 @@ def plan_smart(items, cash, first_pct=50, reserve_pct=0, bet_cap_pct=10.0, fmt_p
             fails.append("베팅 비중 한도 {:.0f}% 도달".format(bet_cap_pct))
         if i["price"] > left:
             fails.append("현금 부족(1주 약 {:,.0f}원)".format(i["price"]))
+        cx = i.get("ctx") or {}
+        if cx.get("ai_total", 0) > 0.5 and cx.get("ai_link", 0) >= 0.6:
+            fails.append("보유의 {:.0%}가 이미 AI·반도체 연동 — 같은 위험 추가 보류".format(cx["ai_total"]))
         if fails:
             board[i["name"]] = {"종목": i["name"], "점수": round(sc.get("total", 0), 1), "오늘 행동": "베팅 보류", "금액(원)": "", "수량": "", "사유": " · ".join(fails)}
         else:
@@ -95,7 +98,10 @@ def plan_smart(items, cash, first_pct=50, reserve_pct=0, bet_cap_pct=10.0, fmt_p
         top = [c["score"]["total"] for c in cands[:3]]
         m = sum(top) / len(top)
         ratio = max(0.3, min(1.0, 0.3 + (m - THRESH) / 9.0 * 0.7))
-        notes.append("상위 후보 평균 점수 {:.1f} → 남은 현금의 {:.0%}를 오늘 투입 대상으로 보고, {:.0%}는 더 좋은 기회를 위해 보유합니다.".format(m, ratio, 1 - ratio))
+        base_ratio = ratio
+        ratio = min(ratio * deploy_mult, 1.0)
+        notes.append("상위 후보 평균 점수 {:.1f} → 남은 현금의 {:.0%}를 오늘 투입하고 {:.0%}는 보유합니다{}.".format(
+            m, ratio, 1 - ratio, "" if deploy_mult >= 1 else " (시장 스트레스로 평소 {:.0%}의 {:.0%}만 투입 — 급락을 바닥으로 단정하지 않고 나눠서 접근)".format(base_ratio, deploy_mult)))
     else:
         ratio = 0.0
     rem_deploy = left * ratio
@@ -162,3 +168,75 @@ def plan_smart(items, cash, first_pct=50, reserve_pct=0, bet_cap_pct=10.0, fmt_p
     used = budget - left
     return dict(budget=budget, ratio=ratio, rows=rows, board=board_rows, wait=wait, used=used, reserved=reserved,
                 hold_cash=left - reserved, notes=notes, ranking=[(order[i["name"]], i) for i in ranked])
+
+
+def _plan_market(items, cash, first_pct, core_names, core_pct, deploy_mult, fmt_pct):
+    """한 시장(국내 또는 미국)의 현금으로: ①코어 종목 꾸준히 적립 → ②나머지는 점수 순위로 배분."""
+    ak = lambda c: c.get("_k", 1.0)
+    rows, board, notes, wait = [], {}, [], []
+    spent = 0.0
+    cores = [i for i in items if i["name"] in set(core_names) and i.get("price")]
+    elig = []
+    for c in cores:
+        g = (c.get("score") or {}).get("gate")
+        if g:
+            board[c["name"]] = {"종목": c["name"], "점수": round((c.get("score") or {}).get("total", 0), 1), "오늘 행동": "⛔ 코어 제외", "금액(원)": "", "수량": "", "사유": g}
+        else:
+            elig.append(c)
+    if elig and core_pct > 0 and cash > 0:
+        per = cash * core_pct / 100.0 / len(elig)
+        for c in elig:
+            sc = c.get("score") or {}
+            qty = float(int(per // c["price"])) if c.get("_cur", "KRW") == "KRW" else round(per / c["price"], 4)
+            amt = qty * c["price"]
+            if qty <= 0 or amt > cash - spent + 1e-6:
+                board[c["name"]] = {"종목": c["name"], "점수": round(sc.get("total", 0), 1), "오늘 행동": "⏸ 코어 보류", "금액(원)": "", "수량": "",
+                                    "사유": "코어 배정액 {:,.0f}원으로 1주(약 {:,.0f}원)를 살 수 없음".format(per, c["price"])}
+                continue
+            spent += amt
+            nq = c["qty"] + qty
+            rows.append({"종목": c["name"], "전략": "코어 적립", "점수": round(sc.get("total", 0), 1), "금액(원)": round(amt), "수량": qty,
+                         "체결 후 평단": _avg_text(c["avg"], ak(c), c["qty"], amt, nq), "통화": c.get("_cur", "KRW"),
+                         "근거": "코어 종목: 타이밍과 무관하게 꾸준히 적립 (이 시장 현금의 {}%)".format(core_pct)})
+            board[c["name"]] = {"종목": c["name"], "점수": round(sc.get("total", 0), 1), "오늘 행동": "🏛 코어 적립", "금액(원)": round(amt), "수량": qty, "사유": "코어 종목 꾸준히 적립"}
+        notes.append("코어({})에 이 시장 현금의 {}%를 먼저 배정했습니다.".format(", ".join(c["name"] for c in elig), core_pct))
+    core_ids = {c["name"] for c in cores}
+    P = plan_smart([i for i in items if i["name"] not in core_ids], cash - spent, first_pct, 0, fmt_pct=fmt_pct, deploy_mult=deploy_mult)
+    rows += P["rows"]
+    wait += P["wait"]
+    notes += P["notes"]
+    for b in P["board"]:
+        board[b["종목"]] = {k: v for k, v in b.items() if k != "종합순위"}
+    return dict(rows=rows, board=board, wait=wait, notes=notes, used=P["used"] + spent, reserved=P["reserved"], hold=P["hold_cash"], ratio=P.get("ratio", 0))
+
+
+def plan_policy(items, kr_cash, us_cash, first_pct=50, core_names=(), core_pct=0, mult_kr=1.0, mult_us=1.0, fmt_pct=lambda x: "-"):
+    """내가 정한 국내 금액·미국 금액을 각각 그 시장 안에서 배분한다(시장 간 이동은 하지 않음). 금액은 모두 원화 환산."""
+    kr_items = [i for i in items if i.get("_cur", "KRW") != "USD"]
+    us_items = [i for i in items if i.get("_cur", "KRW") == "USD"]
+    parts = []
+    notes = []
+    for tag, its, cash, mult in (("국내", kr_items, kr_cash, mult_kr), ("미국", us_items, us_cash, mult_us)):
+        if not its:
+            continue
+        r = _plan_market(its, max(cash, 0.0), first_pct, core_names, core_pct, mult, fmt_pct)
+        r["tag"], r["cash"] = tag, max(cash, 0.0)
+        parts.append(r)
+        notes += ["[{}] ".format(tag) + n for n in r["notes"]]
+    rows, board, wait = [], {}, []
+    reserved = hold = used = 0.0
+    for r in parts:
+        rows += r["rows"]
+        wait += r["wait"]
+        board.update(r["board"])
+        reserved += r["reserved"]
+        hold += r["hold"]
+        used += r["used"]
+    scored = [i for i in items if i["mode"] != "베팅" and i.get("score")]
+    scored.sort(key=lambda x: -x["score"]["total"])
+    order = {i["name"]: n for n, i in enumerate(scored, 1)}
+    rows.sort(key=lambda r: -float(r["점수"]))
+    rows = [{"행동순서": n, **{k: v for k, v in r.items() if k != "행동순서"}} for n, r in enumerate(rows, 1)]
+    board_rows = [{"종합순위": order.get(n, "-"), **b} for n, b in sorted(board.items(), key=lambda kv: order.get(kv[0], 999))]
+    return dict(rows=rows, board=board_rows, wait=wait, used=used, reserved=reserved, hold_cash=hold, notes=notes,
+                ranking=[(order[i["name"]], i) for i in scored], parts=parts)

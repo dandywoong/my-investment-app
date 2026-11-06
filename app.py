@@ -156,7 +156,12 @@ def find_stock_matches(query):
 
     return local_matches
 
-st.set_page_config(page_title="Eggfolio", page_icon="🥚", layout="wide")
+st.set_page_config(page_title="Eggfolio", page_icon="🥚", layout="wide", initial_sidebar_state="collapsed")
+try:
+    import theme
+    theme.inject()
+except Exception:
+    pass
 
 
 def stock_search_widget(key_prefix, default_ticker="", default_name=""):
@@ -885,66 +890,64 @@ if not st.session_state.get("_book_tables_ok"):
     except Exception:
         pass
 st.title("🥚 Eggfolio")
-st.caption("투자 리서치 워크벤치 · 관측 데이터와 해석을 구분합니다.")
+st.caption("장기 투자 의사결정 도우미 · 계산한 값과 해석, 검증 전 규칙을 구분해서 보여 줍니다.")
 
 
 
-with st.sidebar:
-    st.header("조회 설정")
-    st.caption(
-        "여기서 선택한 종목은 '종목 분석' 탭과 판단 기록의 기준입니다. 감독실은 보유 종목 전체를 자동으로 분석합니다."
-    )
+@st.cache_data(ttl=120, show_spinner=False)
+def _held_pairs():
+    out = []
+    try:
+        from portfolio_book import holdings_with_us
+        hw = holdings_with_us(get_db_connection, load_holdings())
+        if hw is not None and len(hw):
+            for _, r in hw.iterrows():
+                out.append(("⭐ " + str(r["name"]), str(r["ticker"])))
+    except Exception:
+        pass
+    return out
 
-    # 기본 종목과 확장 종목 목록 통합
-    sidebar_tickers = {**TICKERS, **STOCK_DIRECTORY}
-    chosen = st.selectbox(
-        "공통 종목 선택",
-        list(sidebar_tickers.keys()),
-        key="global_ticker_choice"
-    )
 
-    use_custom_ticker = st.checkbox(
-        "종목 코드 직접 입력 사용",
-        value=False,
-        key="use_global_custom_ticker"
-    )
+def _pick_names():
+    """종목 선택 목록: 내 보유 종목(한국+미국)을 맨 앞에, 그다음 기본 목록."""
+    out = dict(_held_pairs())
+    out.update({**TICKERS, **STOCK_DIRECTORY})
+    return out
 
-    custom = st.text_input(
-        "직접 입력할 티커",
-        placeholder="예: NVDA 또는 005930.KS",
-        key="global_ticker_custom",
-        disabled=not use_custom_ticker
-    )
 
-    ticker = (
-        custom.strip().upper()
-        if use_custom_ticker and custom.strip()
-        else sidebar_tickers[chosen]
-    )
+def resolve_pick():
+    """'종목 분석' 탭에서 고른 종목·기간(다른 탭을 다녀와도 유지)."""
+    names = _pick_names()
+    first = next(iter(names))
+    P = st.session_state.get("_pick") or {}
+    chosen = P.get("choice") if P.get("choice") in names else first
+    custom = str(P.get("custom", "")).strip().upper()
+    tk_ = custom if (P.get("custom_on") and custom) else names[chosen]
+    nm_ = chosen if not (P.get("custom_on") and custom) else next((n for n, sy in names.items() if sy.upper() == tk_), tk_)
+    pname = P.get("period") if P.get("period") in PERIODS else list(PERIODS.keys())[2]
+    return tk_, nm_.replace("⭐ ", ""), PERIODS[pname], pname
 
-    selected_stock_name = (
-        chosen
-        if not (use_custom_ticker and custom.strip())
-        else next(
-            (
-                name for name, symbol in sidebar_tickers.items()
-                if symbol.upper() == ticker
-            ),
-            ticker
-        )
-    )
-    
-    period_name = st.selectbox(
-        "차트 기간",
-        list(PERIODS.keys()),
-        index=2
-    )
-    period = PERIODS[period_name]
 
-    if st.button("🔄 데이터 새로고침", use_container_width=True):
+def render_ticker_picker():
+    """종목 분석 탭 맨 위의 종목·기간 선택(예전 왼쪽 '조회 설정'을 대체)."""
+    names = _pick_names()
+    P = dict(st.session_state.get("_pick") or {})
+    keys = list(names.keys())
+    ch = P.get("choice") if P.get("choice") in names else keys[0]
+    c1, c2, c3 = st.columns([3, 2, 2])
+    choice = c1.selectbox("종목 (⭐ = 내 보유 종목)", keys, index=keys.index(ch), key="pick_choice_w")
+    pk = list(PERIODS.keys())
+    pcur = P.get("period") if P.get("period") in PERIODS else pk[2]
+    pname = c2.selectbox("차트 기간", pk, index=pk.index(pcur), key="pick_period_w")
+    if c3.button("🔄 가격 새로고침", key="pick_refresh_w", use_container_width=True):
         st.cache_data.clear()
+    use_c = st.checkbox("목록에 없는 종목 코드를 직접 입력 (예: NVDA, 005930.KS)", value=bool(P.get("custom_on")), key="pick_custom_on_w")
+    custom = st.text_input("종목 코드", value=str(P.get("custom", "")), key="pick_custom_w", disabled=not use_c)
+    st.session_state["_pick"] = {"choice": choice, "period": pname, "custom_on": use_c, "custom": custom}
+    return resolve_pick()
 
-    st.caption("한국 종목은 .KS 또는 .KQ 접미사가 필요할 수 있습니다.")
+
+ticker, selected_stock_name, period, period_name = resolve_pick()
 
 tab_supervisor, tab_portfolio, tab_analysis, tab_journal = st.tabs(
     [
@@ -1054,8 +1057,9 @@ if tab_portfolio.open:
                 u1, u2, u3 = st.columns(3)
                 usd_val, usd_pnl = valid_usd["평가금액"].sum(), valid_usd["평가손익"].sum()
                 usd_base = usd_val - usd_pnl
-                u1.metric("미국주 평가금액 (USD)", f"${usd_val:,.2f}")
-                u2.metric("미국주 평가손익 (USD)", f"${usd_pnl:,.2f}")
+                _fxm = fx_now or 0
+                u1.metric("미국주 평가금액", f"${usd_val:,.2f}", delta=(f"≈ {usd_val*_fxm:,.0f}원" if _fxm else None), delta_color="off")
+                u2.metric("미국주 평가손익", f"${usd_pnl:,.2f}", delta=(f"≈ {usd_pnl*_fxm:,.0f}원" if _fxm else None), delta_color="off")
                 u3.metric("미국주 수익률", f"{usd_pnl/usd_base*100:+.2f}%" if usd_base else "자료 없음")
                 if fx_now:
                     st.caption("오늘 환율(야후 참고, 지연 가능) 1달러 ≈ {:,.1f}원 → 미국주 평가금액 ≈ {:,.0f}원 · 평가손익 ≈ {:,.0f}원. 원화+미국주 합계 ≈ {:,.0f}원".format(
@@ -1186,33 +1190,31 @@ if tab_portfolio.open:
                     f"평가손익 {fmt_large(account_pnl)}",
                     expanded=True,
                 ):
-                    st.dataframe(
-                        account_pf[display_cols],
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "수량": st.column_config.NumberColumn(
-                                "수량", format="%.4f"
-                            ),
-                            "평단": st.column_config.NumberColumn(
-                                "평단", format="%.2f"
-                            ),
-                            "현재가": st.column_config.NumberColumn(
-                                "현재가", format="%.2f"
-                            ),
-                            "평가금액": st.column_config.NumberColumn(
-                                "평가금액", format="%.0f"
-                            ),
-                            "평가손익": st.column_config.NumberColumn(
-                                "평가손익", format="%.0f"
-                            ),
-                            "수익률(%)": st.column_config.NumberColumn(
-                                "수익률(%)", format="%.2f%%"
-                            ),
-                            "평가금액(원화 환산)": st.column_config.NumberColumn("평가금액(원화 환산)", format="%.0f"),
-                            "평가손익(원화 환산)": st.column_config.NumberColumn("평가손익(원화 환산)", format="%.0f"),
-                        },
-                    )
+                    _show = account_pf[display_cols]
+                    _cfg_skip = False
+                    if fx_now and (account_pf["통화"] == "USD").all():
+                        _u = lambda v: "-" if pd.isna(v) else f"${v:,.2f} (≈{v*fx_now:,.0f}원)"
+                        _show = account_pf[["종목", "코드", "수량"]].copy()
+                        _show["평단"] = account_pf["평단"].map(_u)
+                        _show["현재가"] = account_pf["현재가"].map(_u)
+                        _show["평가금액"] = account_pf["평가금액"].map(_u)
+                        _show["평가손익"] = account_pf["평가손익"].map(_u)
+                        _show["수익률(%)"] = account_pf["수익률(%)"]
+                        _cfg_skip = True
+                    _cc = {
+                        "수량": st.column_config.NumberColumn("수량", format="%.4f"),
+                        "평단": st.column_config.NumberColumn("평단", format="%.2f"),
+                        "현재가": st.column_config.NumberColumn("현재가", format="%.2f"),
+                        "평가금액": st.column_config.NumberColumn("평가금액", format="%.0f"),
+                        "평가손익": st.column_config.NumberColumn("평가손익", format="%.0f"),
+                        "수익률(%)": st.column_config.NumberColumn("수익률(%)", format="%.2f%%"),
+                        "평가금액(원화 환산)": st.column_config.NumberColumn("평가금액(원화 환산)", format="%.0f"),
+                        "평가손익(원화 환산)": st.column_config.NumberColumn("평가손익(원화 환산)", format="%.0f"),
+                    }
+                    if _cfg_skip:
+                        for _k in ("평단", "현재가", "평가금액", "평가손익", "평가금액(원화 환산)", "평가손익(원화 환산)"):
+                            _cc.pop(_k, None)
+                    st.dataframe(_show, use_container_width=True, hide_index=True, column_config=_cc)
 
             st.subheader("포트폴리오 비중")
             st.caption("통화별로 차트를 분리했습니다. 안쪽은 자산 카테고리, 바깥쪽은 개별 종목입니다. 조각을 누르거나 마우스를 올리면 평가금액과 전체 비중을 확인할 수 있습니다.")
@@ -1317,8 +1319,9 @@ if tab_portfolio.open:
 
 if tab_analysis.open:
     with tab_analysis:
+        ticker, selected_stock_name, period, period_name = render_ticker_picker()
         st.subheader(f"🔎 종목 분석 · {selected_stock_name} ({ticker})")
-        st.caption("기준 종목과 차트 기간은 왼쪽 사이드바에서 바꿉니다. 보유 종목 전체의 판단과 행동 후보는 '🎯 감독실'에서 봅니다.")
+        st.caption("보유 종목 전체의 판단과 행동 후보는 '🎯 감독실'에서 봅니다.")
         section = st.radio(
             "보기",
             ["🥚 달걀 국면", "📈 차트·지표", "🏢 기업 기초체력", "💱 수급", "🧾 원자료"],
@@ -1560,6 +1563,7 @@ if tab_analysis.open:
 
 if tab_journal.open:
     with tab_journal:
+        ticker, selected_stock_name, period, period_name = resolve_pick()
         try:
             _jp, _ = get_prices(ticker, period)
             close = float(_jp["Close"].iloc[-1])

@@ -59,6 +59,15 @@ def chart_signals(get_prices, sym):
         for k, n in (("r3m", 63), ("r6m", 126), ("r12m", 250)):
             if len(c) > n:
                 out[k] = float(c.iloc[-1] / c.iloc[-1 - n] - 1)
+        out["low60"] = float(c.tail(60).min())
+        out["low20"] = float(c.tail(20).min())
+        if "High" in df.columns and "Low" in df.columns:
+            try:
+                h_, l_, pc = df["High"], df["Low"], df["Close"].shift(1)
+                tr = pd.concat([h_ - l_, (h_ - pc).abs(), (l_ - pc).abs()], axis=1).max(axis=1)
+                out["atr14"] = float(tr.rolling(14).mean().iloc[-1])
+            except Exception:  # noqa: BLE001
+                pass
         if "Volume" in df.columns:
             v = df["Volume"].dropna()
             if len(v) >= 25 and float(v.tail(20).mean()) > 0:
@@ -126,34 +135,23 @@ def market_mood(get_prices, region):
 
 
 # ---------------------------------------------------------------- 종합 점수
-# 항목별 최대 가점: 가격(평단·낙폭) ±5, 차트 타이밍 ±6, 시장 심리 ±3, 달걀 국면 ±3, 기업·전망 ±6, 포트폴리오 ±3
-def score_item(it, sig, mood, avg_w):
+# 항목별 범위: 가격(낙폭만) -1~+1.5, 차트 ±6, 시장 심리 -3~+1.5, 달걀 국면 -2~+2, 기업·전망 ±6, 비중 -1.5~+1, 집중 위험 -7~+2
+def score_item(it, sig, mood, avg_w, ctx=None, stress_level=None):
     """종목 하나의 '지금 추가 매수 매력' 점수. -> {"total", "parts": {항목: (점수, [근거])}, "gate": 막힌 이유 or None}"""
     P = {}
 
-    # 1) 가격: 평단 대비 · 고점 대비
+    # 1) 가격: 고점 대비 낙폭만 작게 반영 (평단은 과거 기록일 뿐 매수 근거가 아니다. 낙폭이 크다는 것은 저평가의 증거가 아니다)
     pts, why = 0.0, []
-    ret = it.get("ret")
-    if ret is not None:
-        if ret <= -0.25:
-            pts += 3; why.append("평단 대비 {:+.0%} (평단을 크게 낮출 기회) +3".format(ret))
-        elif ret <= -0.10:
-            pts += 2; why.append("평단 대비 {:+.0%} +2".format(ret))
-        elif ret <= -0.03:
-            pts += 1; why.append("평단 대비 {:+.0%} +1".format(ret))
-        elif ret >= 0.40:
-            pts -= 2; why.append("평단 대비 {:+.0%} (많이 올라 추격 매수 부담) -2".format(ret))
-        elif ret >= 0.15:
-            pts -= 1; why.append("평단 대비 {:+.0%} -1".format(ret))
     dd = (sig or {}).get("dd52", it.get("dd60"))
     if dd is not None:
         if dd <= -0.30:
-            pts += 2; why.append("52주 고점 대비 {:.0f}% +2".format(dd * 100))
+            pts += 1.5; why.append("52주 고점 대비 {:.0f}% (낙폭이 클 뿐 저평가의 증거는 아님) +1.5".format(dd * 100))
         elif dd <= -0.15:
             pts += 1; why.append("52주 고점 대비 {:.0f}% +1".format(dd * 100))
         elif dd >= -0.03:
             pts -= 1; why.append("52주 고점 근처 -1")
-    P["가격"] = (max(-5, min(5, pts)), why)
+    why.append("평단·평가손익은 점수에 반영하지 않음(과거 매입가는 앞으로의 기대수익과 무관)")
+    P["가격"] = (max(-1, min(1.5, pts)), why)
 
     # 2) 차트 타이밍: 볼린저·RSI·이평·거래량
     pts, why = 0.0, []
@@ -196,14 +194,14 @@ def score_item(it, sig, mood, avg_w):
         why.append("차트 자료 없음 — 판단 보류(0점)")
     P["차트"] = (max(-6, min(6, pts)), why)
 
-    # 3) 시장 심리
+    # 3) 시장 심리 (공포는 기회일 수 있지만 급락·스트레스 자체는 바닥 신호가 아니므로 가점을 작게 둔다)
     pts, why = 0.0, []
     g = (mood or {}).get("greed")
     if g is not None:
         if g < 25:
-            pts += 3; why.append("시장 심리 {:.0f} 극단 공포(남들이 팔 때) +3".format(g))
+            pts += 1.5; why.append("시장 심리 {:.0f} 극단 공포 +1.5 (공포가 곧 바닥은 아님)".format(g))
         elif g < 40:
-            pts += 2; why.append("시장 심리 {:.0f} 공포 +2".format(g))
+            pts += 1; why.append("시장 심리 {:.0f} 공포 +1".format(g))
         elif g < 55:
             pts += 0.5; why.append("시장 심리 {:.0f} 중립 +0.5".format(g))
         elif g >= 75:
@@ -212,15 +210,18 @@ def score_item(it, sig, mood, avg_w):
             pts -= 1.5; why.append("시장 심리 {:.0f} 탐욕 -1.5".format(g))
     else:
         why.append("시장 심리 자료 없음(0점)")
+    if stress_level in ("STRESS", "DISLOCATION"):
+        pts = min(pts, 0.5)
+        why.append("시장 스트레스 {} 단계: 심리 가점 상한 +0.5, 신규 투입은 나눠서".format(stress_level))
     P["심리"] = (pts, why)
 
     # 4) 달걀 국면
     pts, why = 0.0, []
     top = it.get("top")
-    table = {1: (3, "① 공포·투매(바닥권)"), 2: (2, "② 바닥 다지기"), 3: (1, "③ 회복 초기"), 4: (-1, "④ 상승 가속"), 5: (-3, "⑤ 과열·도취"), 6: (-1, "⑥ 상승 약화·하락 전환")}
+    table = {1: (2, "① 공포·투매(바닥권 후보)"), 2: (1.5, "② 바닥 다지기"), 3: (1, "③ 회복 초기"), 4: (0, "④ 상승 가속"), 5: (-2, "⑤ 과열·도취"), 6: (-1, "⑥ 상승 약화·하락 전환")}
     if top in table:
         pts, lab = table[top]
-        why.append("{} {:+d}".format(lab, pts))
+        why.append("{} {:+.1f} (국면은 해석 틀이며 예측이 아님)".format(lab, pts))
     else:
         why.append("국면 판단 보류(0점)")
     P["달걀 국면"] = (pts, why)
@@ -257,23 +258,41 @@ def score_item(it, sig, mood, avg_w):
             pts -= 0.5; why.append("12개월 수익률 {:+.0%} 약한 추세 -0.5".format(r12))
     P["기업·전망"] = (max(-6, min(6, pts)), why)
 
-    # 6) 포트폴리오 균형
+    # 6) 포트폴리오 균형 (참고용으로만 작게 반영: 비중이 작다는 이유만으로 사지 않는다)
     pts, why = 0.0, []
     w = it.get("weight")
     if w is not None:
         if w < avg_w * 0.6:
-            pts += 2; why.append("비중 {:.0%} (평균 {:.0%}보다 많이 낮음) +2".format(w, avg_w))
-        elif w < avg_w:
-            pts += 1; why.append("비중 {:.0%} (평균 이하) +1".format(w))
+            pts += 1; why.append("비중 {:.0%} (평균 {:.0%}보다 낮음) +1 — 참고용".format(w, avg_w))
+        elif w > 0.45:
+            pts -= 1.5; why.append("비중 {:.0%} 과대(추가 매수는 쏠림 주의) -1.5".format(w))
         elif w > 0.35:
-            pts -= 3; why.append("비중 {:.0%} 과대 -3".format(w))
-        elif w > max(avg_w * 1.5, 0.25):
-            pts -= 1.5; why.append("비중 {:.0%} 큼 -1.5".format(w))
+            pts -= 1; why.append("비중 {:.0%} 큼 -1".format(w))
     P["비중"] = (pts, why)
+
+    # 7) 집중 위험: 같은 위험(산업·요인)에 이미 많이 몰려 있으면 새 자금을 더 넣지 않는다. 다른 수익 원천이면 가점
+    pts, why = 0.0, []
+    if ctx:
+        bw, at, al = ctx.get("bucket_w", 0), ctx.get("ai_total", 0), ctx.get("ai_link", 0)
+        if bw > 0.6:
+            pts -= 5; why.append("'{}' 묶음이 보유의 {:.0%} (매우 집중) -5".format(ctx.get("bucket"), bw))
+        elif bw > 0.4:
+            pts -= 3; why.append("'{}' 묶음이 보유의 {:.0%} (집중) -3".format(ctx.get("bucket"), bw))
+        elif bw > 0.25:
+            pts -= 1.5; why.append("'{}' 묶음이 보유의 {:.0%} -1.5".format(ctx.get("bucket"), bw))
+        if at > 0.5 and al >= 0.6:
+            pts -= 2; why.append("보유의 {:.0%}가 AI·반도체와 연동 — 같은 위험에 추가 투입 -2".format(at))
+        elif at > 0.5 and al <= 0.35:
+            pts += 2; why.append("AI·반도체 쏠림({:.0%})과 다른 수익 원천 +2 (연동도 {:.2f}는 내 가정값)".format(at, al))
+    else:
+        why.append("집중도 자료 없음(0점)")
+    P["집중 위험"] = (max(-7, min(2, pts)), why)
 
     total = sum(v[0] for v in P.values())
     gate = None
-    if sv_val == "훼손":
+    if it.get("mode") == "정리 예정":
+        gate = "정리 예정 종목 — 신규 매수 제외 (내가 정한 계획)"
+    elif sv_val == "훼손":
         gate = "기업 상태 훼손 — 신규 매수 제외"
     elif it.get("outlook") == "부정" and sv_val != "견고":
         gate = "업황 부정 — 신규 매수 제외"
