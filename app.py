@@ -951,8 +951,8 @@ ticker, selected_stock_name, period, period_name = resolve_pick()
 
 tab_supervisor, tab_portfolio, tab_analysis, tab_journal = st.tabs(
     [
-        "🎯 감독실",
-        "💼 내 포트폴리오",
+        "🎯 내 투자",
+        "💼 보유·거래 입력",
         "🔎 종목 분석",
         "📝 판단 기록",
     ],
@@ -1152,12 +1152,7 @@ if tab_portfolio.open:
                     st.error(f"변경사항 저장에 실패했습니다: {e}")
 
         
-            try:
-                from portfolio_book import render_us_editor
-                render_us_editor(get_db_connection)
-            except Exception as us_edit_error:
-                st.error("미국주 입력 화면을 표시하지 못했습니다. 다른 화면은 정상입니다.")
-                st.caption(str(us_edit_error)[:200])
+            st.info("🇺🇸 미국주 수량·평단 수정은 '🎯 내 투자' 탭 맨 아래 '✏️ 미국주 보유 수량·평단 직접 고치기'로 옮겼습니다.")
 
             st.subheader("계좌별 보유 현황")
 

@@ -16,6 +16,7 @@ import streamlit as st
 import market
 import planner
 import signals
+import target
 
 MODES = ["핵심 장기", "적립형", "베팅", "정리 예정"]
 STANCES = ["견고", "보통", "훼손", "미확인"]
@@ -938,8 +939,8 @@ def _save_cfg(get_conn, key, value):
          (key, str(value), _now()))
 
 
-def _render_policy(get_conn, items):
-    """투자 정책: 코어 종목과 코어 배정 비율. 앱이 대신 정하지 않고 내가 정한 정책을 실행에 옮긴다."""
+def _render_policy(get_conn, items, risk=None):
+    """투자 정책: 코어 종목 지정, AI 노출 기준선, 국장 동결, 미국 목표. 코어 몫(%)은 앱이 AI 비중으로 계산한다."""
     cfg = _load_cfg(get_conn)
     names = [i["name"] for i in items if i["mode"] != "베팅"]
     try:
@@ -948,31 +949,41 @@ def _render_policy(get_conn, items):
         saved_core = []
     if not cfg.get("core_names"):
         saved_core = [n for n in names if ("버크셔" in n or "VOO" in n.upper() or "Vanguard" in n)]
-    core_pct = int(float(cfg.get("core_pct", 40)))
+    band = float(cfg.get("ai_band", target.DEFAULT_BAND))
+    freeze = str(cfg.get("kr_freeze", "1")) == "1"
+    goal = float(cfg.get("us_goal", target.DEFAULT_GOAL))
+    inv_ov = cfg.get("us_invested", "")
+    st.session_state["_ai_band"] = band
+    share, why = target.core_share(risk["ai_total"] if risk else None, band)
     ok = False
     core_sel = saved_core
-    with st.expander("🏛 코어 종목 정책 (내가 한 번 정하면 계속 적용)", expanded=False):
-        st.caption("코어 종목은 현금이 생길 때마다 가격 타이밍과 무관하게 먼저 꾸준히 모읍니다(5·10·20년 장기 적립). 코어도 기업 상태가 '훼손'이면 제외됩니다. "
-                   "코어 배정(%)은 그 종목이 속한 시장(국내/미국)에 내가 배정한 금액 안에서의 비율입니다. VOO·버크셔도 주식이므로 하락할 수 있습니다.")
+    with st.expander("⚙️ 투자 정책 설정 (코어 종목 · AI 기준선 · 국장 동결 · 미국 목표)", expanded=False):
+        st.caption("코어 종목은 현금이 생길 때마다 먼저 꾸준히 모읍니다. 코어 몫(%)은 고정하지 않고 AI 연동 노출이 기준선보다 높을수록 커지고, 기준선 안으로 오면 줄어듭니다(0은 되지 않음). "
+                   "VOO·버크셔도 주식이라 하락할 수 있고, VOO는 AI·기술주 비중이 커서 분산 효과가 일부입니다.")
         with st.form("policy_form"):
-            c1, c2 = st.columns([3, 1])
-            core_sel = c1.multiselect("코어 종목", names, default=saved_core, key="pol_core")
-            cp = c2.number_input("코어 배정(%)", min_value=0, max_value=90, value=core_pct, step=5, key="pol_core_pct")
+            core_sel = st.multiselect("코어 종목", names, default=saved_core, key="pol_core")
+            c1, c2 = st.columns(2)
+            band_in = c1.number_input("AI 연동 노출 기준선(%) — 이 아래면 편하다고 보는 수준", min_value=10, max_value=90, value=int(band), step=5, key="pol_band")
+            goal_in = c2.number_input("미국 순투자금 목표 (원)", min_value=1_000_000, value=int(goal), step=1_000_000, key="pol_goal")
+            inv_in = st.number_input("미국 순투자금 직접 입력 (원, 0이면 보유 원가×오늘 환율로 추정)", min_value=0, value=int(float(inv_ov or 0)), step=100_000, key="pol_inv")
+            fz = st.checkbox("국장 종목 신규 매수 중지 (보유는 유지, 매도하지 않음)", value=freeze, key="pol_freeze")
             ok = st.form_submit_button("정책 저장")
         if ok:
             try:
                 _save_cfg(get_conn, "core_names", json.dumps(core_sel, ensure_ascii=False))
-                _save_cfg(get_conn, "core_pct", int(cp))
-                st.session_state["_us_flash"] = ("success", "코어 정책을 저장했습니다.")
+                _save_cfg(get_conn, "ai_band", int(band_in))
+                _save_cfg(get_conn, "us_goal", int(goal_in))
+                _save_cfg(get_conn, "us_invested", int(inv_in))
+                _save_cfg(get_conn, "kr_freeze", "1" if fz else "0")
+                st.session_state["_us_flash"] = ("success", "투자 정책을 저장했습니다.")
                 st.rerun()
             except Exception as e:  # noqa: BLE001
                 st.error("저장하지 못했습니다: " + str(e)[:120])
-        st.caption("참고(2026-08 세제개편안 보도 기준, 시행 시기·세부 조건은 증권사·국세청에서 확인): 일반 ISA 비과세 한도는 일반형 200만원·서민형 400만원, 연 납입한도 2,000만원, 초과 이익은 분리과세. "
-                   "ISA 한도는 국내 종목 금액을 정할 때 참고할 요소이지만 세금 혜택만으로 투자 대상을 정하는 것은 권하지 않으며, 개인 상황의 세무 판단은 세무 전문가와 확인하세요.")
-    return core_sel, core_pct
+        st.caption("참고(세제개편안 보도 기준, 시행 시기·세부 조건은 증권사·국세청에서 확인): ISA 한도는 국내 종목 금액을 정할 때 참고할 요소이지만 세금 혜택만으로 투자 대상을 정하는 것은 권하지 않습니다.")
+    return core_sel, share, why, freeze, goal, (float(inv_ov) if str(inv_ov).strip() not in ("", "0", "0.0") else None)
 
 
-def _render_planner(get_conn, items, cash_df, get_prices=None, moods=None, stress=None):
+def _render_planner(get_conn, items, cash_df, get_prices=None, moods=None, stress=None, risk=None):
     st.markdown("### 💰 현금 배분 플래너")
     st.caption("국내와 미국에 각각 얼마를 쓸지는 내가 정합니다. 앱은 그 금액 안에서 종합 점수(차트·시장 심리·달걀 국면·기업/전망·집중 위험)로 어떤 종목을 얼마나 살지 순위를 매깁니다. "
                "점수는 검증 전 규칙이며 수익이나 승률을 보장하지 않습니다. 평단·평가손익은 점수에 쓰지 않습니다. 현금 정보는 AI에 보내지 않습니다.")
@@ -997,6 +1008,11 @@ def _render_planner(get_conn, items, cash_df, get_prices=None, moods=None, stres
         except Exception as e:  # noqa: BLE001
             st.error("저장하지 못했습니다: " + str(e)[:150])
     kr_amt, us_amt = cash.get("KR_KRW", 0.0), cash.get("US_KRW", 0.0)
+    _hub_cfg = _render_policy(get_conn, [dict(i, cur=i['cur']) for i in items], risk)
+    core_names, share, share_why, kr_freeze, goal, inv_ov = _hub_cfg
+    if kr_freeze:
+        kr_amt = 0.0
+    st.session_state["_hub"] = dict(kr=kr_amt, us=us_amt, core=core_names, share=share, why=share_why, freeze=kr_freeze, goal=goal, inv_ov=inv_ov)
     if kr_amt <= 0 and us_amt <= 0:
         st.info("국내·미국에 쓸 금액을 입력하고 저장하면 배분 전략이 나옵니다. 쓰지 않을 금액은 입력하지 않으면 현금으로 남습니다.")
         return None
@@ -1014,7 +1030,7 @@ def _render_planner(get_conn, items, cash_df, get_prices=None, moods=None, stres
         j["_cur"], j["_k"] = i["cur"], k
         j["cur"] = "KRW"
         conv.append(j)
-    core_names, core_pct = _render_policy(get_conn, conv)
+    core_pct = share * 100
     st_kr = (stress or {}).get("한국") or {}
     st_us = (stress or {}).get("미국") or {}
     P = planner.plan_policy(conv, kr_amt, us_amt, first_pct, core_names, core_pct,
@@ -1254,8 +1270,9 @@ def _render_ai_panel(get_conn, items, stances, ai_views):
 
 def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamentals, load_decisions):
     import supervision as sv
-    st.markdown("##### PORTFOLIO SUPERVISOR")
-    st.subheader("🎯 오늘의 투자 판단")
+    st.markdown("##### EGGFOLIO · 내 투자")
+    hub_box = st.container()
+    st.subheader("🎯 종목별 판단")
     st.caption("보유 전체(한국·미국)를 한 표로 보고, 종목을 골라 행동 지침을 확인합니다. 행동 후보는 '가격 국면 × 내가 기록한 기업 상태 × 운용 방식'을 "
                "규칙으로 조합한 검증 전 후보이며 승률·확률이 아닙니다. 주문 기능은 없습니다.")
     if not _ensure_once(get_conn):
@@ -1387,7 +1404,14 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
         col.metric(title, "{}개".format(len(lst)))
         col.caption(", ".join(i["name"] for i in lst) if lst else "없음")
 
-    _render_planner(get_conn, items, cash_df, get_prices, moods, stress_d)
+    P_ = _render_planner(get_conn, items, cash_df, get_prices, moods, stress_d, risk)
+    try:
+        h_ = st.session_state.get("_hub") or {}
+        inv_ = h_.get("inv_ov") or target.us_invested_krw(items, fx_use)
+        target.render_banner(hub_box, P_, h_.get("kr", 0.0), h_.get("us", 0.0), fx_, h_.get("core", []), h_.get("share", 0.5), h_.get("why", ""),
+                             risk, inv_, h_.get("goal", target.DEFAULT_GOAL), h_.get("freeze", True), stress_d)
+    except Exception as e:  # noqa: BLE001
+        st.caption("오늘 투입 안내를 표시하지 못했습니다: " + str(e)[:100])
     try:
         rk = sorted([(0, i) for i in items if i.get("score") and i["mode"] != "베팅"], key=lambda x: -x[1]["score"]["total"])
         _render_exit_plan(items, [(n + 1, i) for n, (_, i) in enumerate(rk)], fx_)
@@ -1571,3 +1595,11 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
                 sv._render_egg_panel(mres[mp], mp, "dashmkt_" + mp, ())
             except Exception as e:  # noqa: BLE001
                 st.error("표시하지 못했습니다: " + str(e)[:150])
+
+    # ---- E. 보유 수량·평단 직접 고치기 (미국주) ----
+    st.divider()
+    with st.expander("✏️ 미국주 보유 수량·평단 직접 고치기 (증권사 앱 숫자 그대로 덮어쓰기)", expanded=False):
+        try:
+            render_us_editor(get_conn)
+        except Exception as e:  # noqa: BLE001
+            st.error("미국주 입력 화면을 표시하지 못했습니다: " + str(e)[:150])
