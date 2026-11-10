@@ -16,6 +16,7 @@ import streamlit as st
 import market
 import planner
 import signals
+import strategist
 import target
 import workspace
 
@@ -2154,9 +2155,9 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
                 if rows_:
                     r0 = rows_[0]
                     nxt = "{} · {}".format(r0.get("구간", "-"), r0.get("현재가 대비", ""))
-            outlook, target = _ai_extras(ai_views.get(b["tk"])) if ai_views.get(b["tk"]) is not None else ("미확인", None)
+            outlook, tgt_px = _ai_extras(ai_views.get(b["tk"])) if ai_views.get(b["tk"]) is not None else ("미확인", None)
             it = dict(b, mode=mode, price=price, ret=ret, label=label, kind=kind, why=why, res=res, plabel=plabel, top=top,
-                      lad=lad, outlook=outlook, target=target,
+                      lad=lad, outlook=outlook, target=tgt_px,
                       sv_txt=sv_txt, sv_val=sv_val, stale=stale, nxt=nxt, dd60=(s_["dd60"] if s_ else None),
                       value=(price * b["qty"]) if price is not None else None)
             items.append(it)
@@ -2212,6 +2213,18 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
     except Exception as e:  # noqa: BLE001
         st.caption("시장·위험 요약을 표시하지 못했습니다: " + str(e)[:100])
 
+    try:
+        try:
+            core_ = json.loads(cfg_.get("core_names", "[]"))
+        except Exception:  # noqa: BLE001
+            core_ = []
+        iv_ = cfg_.get("us_invested", "")
+        hub_ = dict(core=core_, freeze=(str(cfg_.get("kr_freeze", "1")) == "1"), goal=float(cfg_.get("us_goal", target.DEFAULT_GOAL)),
+                    invested=(float(iv_) if str(iv_).strip() not in ("", "0", "0.0") else target.us_invested_krw(items, fx_use)))
+        st.session_state["_ai_band"] = float(cfg_.get("ai_band", target.DEFAULT_BAND))
+        strategist.render_panel(get_conn, items, risk, stress_d, fx_use, cfg_, cash_map, _save_cfg, _load_cfg, hub_)
+    except Exception as e:  # noqa: BLE001
+        st.error("AI 펀드매니저를 표시하지 못했습니다: " + str(e)[:150])
     P_ = _render_planner(get_conn, items, cash_df, get_prices, moods, stress_d, risk)
     try:
         h_ = st.session_state.get("_hub") or {}
