@@ -34,9 +34,9 @@ def us_invested_krw(items, fx):
 def render_banner(box, P, kr_amt, us_amt, fx, core_names, share, share_why, risk, invested, goal, kr_freeze, stress):
     """메인 화면 맨 위: 오늘 투입 안내 + 미국 목표 진행률 + 비중 파이."""
     with box:
-        st.markdown("### 🎯 오늘 투입 안내")
+        st.markdown("### 오늘 투입 안내")
         if P is None:
-            st.info("아래 '💰 현금 배분 플래너'에 오늘 쓸 금액을 넣으면 여기에 오늘 할 일이 한 줄로 요약됩니다. 넣지 않은 금액은 현금으로 남습니다.")
+            st.info("아래 '현금 배분 플래너'에 오늘 쓸 금액을 넣으면 여기에 오늘 할 일이 한 줄로 요약됩니다. 넣지 않은 금액은 현금으로 남습니다.")
         else:
             rows = P.get("rows") or []
             if rows:

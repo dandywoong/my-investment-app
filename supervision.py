@@ -612,7 +612,7 @@ def build_action(facts, cfg):
     if conc:
         cautions.append("집중도 참고(행동 라벨에는 " + ("반영됨" if cfg.get("use_weight") else "반영하지 않음") + "): " + " ".join(conc))
     if not facts["has_thesis"]:
-        cautions.append("판단 기록 없음 — 가설·무효화 조건을 '📝 판단 기록' 탭에 남기면 연결됩니다.")
+        cautions.append("판단 기록 없음 — 가설·무효화 조건을 '판단 기록' 탭에 남기면 연결됩니다.")
     elif not facts["has_invalidation"]:
         cautions.append("최근 판단 기록에 무효화 조건이 비어 있습니다.")
     if facts["gate"] in ("자료 부족", "자료 없음"):
@@ -895,11 +895,11 @@ def _render_condition_detail(res):
     if top is None:
         return
     d = res["detail"][top]
-    st.markdown("**{} 와(과) 일치한 근거 ✔ / 일치하지 않은 근거 ✖ / 자료 없음 –**".format(phase_label(top)))
+    st.markdown("**{} 와(과) 일치한 근거 / 일치하지 않은 근거 / 자료 없음 –**".format(phase_label(top)))
     for t in d["yes"]:
-        st.write("✔ " + t)
+        st.write("" + t)
     for t in d["no"]:
-        st.write("✖ " + t)
+        st.write("" + t)
     for t in d["na"]:
         st.write("– " + t + " (자료 없음)")
 
@@ -912,7 +912,7 @@ def _render_egg_panel(res, title, key, ext_present=()):
     with left:
         st.plotly_chart(egg_figure(res, title), use_container_width=True, key="egg_" + key,
                         config={"displayModeBar": False})
-        st.caption("★ 현재 위치는 6개 국면의 근거 일치도를 가중 평균한 시각화이며, 두 국면 사이에 놓이면 전환 중이라는 뜻입니다. "
+        st.caption("현재 위치는 6개 국면의 근거 일치도를 가중 평균한 시각화이며, 두 국면 사이에 놓이면 전환 중이라는 뜻입니다. "
                    "점선은 20·10거래일 전 위치(가격 기반)입니다.")
     with right:
         top = res.get("top")
@@ -989,7 +989,7 @@ def _market_name_for(ticker, category):
 
 
 def _settings_panel(holdings):
-    with st.expander("⚙️ 점검 기준 · 베팅 슬롯 설정 (이 화면에서만 적용, 저장되지 않음)", expanded=False):
+    with st.expander("점검 기준 · 베팅 슬롯 설정 (이 화면에서만 적용, 저장되지 않음)", expanded=False):
         st.caption("숫자는 권고값이 아니라 임시 기준입니다. 본인의 원칙에 맞게 바꾸세요. 새로고침하면 기본값으로 돌아갑니다.")
         c1, c2 = st.columns(2)
         with c1:
@@ -1028,12 +1028,12 @@ def _settings_panel(holdings):
 # --------------------------------------------------------------------------
 def render_supervision(holdings, get_prices, classify, load_decisions, get_fundamentals, load_flows, stances=None):
     st.markdown("##### PORTFOLIO SUPERVISOR")
-    st.subheader("🥚 나의 포트폴리오 달걀 지도")
+    st.subheader("나의 포트폴리오 달걀 지도")
     st.caption("시장 국면과 보유 종목별 국면을 따로 판정해 함께 봅니다. 읽기 전용이며 주문·저장 기능이 없습니다. "
                "국면 규칙은 백테스트 전의 '규칙 기반 후보'이고, 승률·확률·목표가는 계산하지 않습니다.")
 
     if holdings is None or len(holdings) == 0:
-        st.info("등록된 보유 종목이 없습니다. '💼 내 포트폴리오' 탭에서 보유 종목을 먼저 등록하세요.")
+        st.info("등록된 보유 종목이 없습니다. '내 포트폴리오' 탭에서 보유 종목을 먼저 등록하세요.")
         return
 
     cfg = _settings_panel(holdings)
@@ -1167,7 +1167,7 @@ def render_supervision(holdings, get_prices, classify, load_decisions, get_funda
         mres = market_res.get(it["market"], {})
         it["market_phase"] = mres.get("top") if not mres.get("error") else None
         summary.append({
-            "종목": it["name"] + (" ★베팅" if it["ticker"] in cfg["bets"] else ""),
+            "종목": it["name"] + (" 베팅" if it["ticker"] in cfg["bets"] else ""),
             "수량": it["qty"], "평단": it["avg"],
             "현재 국면": phase_label(facts["phase"]) if facts["phase"] else "판단 보류",
             "진입 방향": res.get("direction", "-") if not res.get("error") else "자료 없음",
@@ -1228,7 +1228,7 @@ def render_supervision(holdings, get_prices, classify, load_decisions, get_funda
             for t in act["why"]:
                 st.write("- 이유: " + t)
             if act["cautions"]:
-                st.markdown("**⚠️ 참고·주의 (행동 라벨을 바꾸지 않는 항목 포함)**")
+                st.markdown("**참고·주의 (행동 라벨을 바꾸지 않는 항목 포함)**")
                 for t in act["cautions"]:
                     st.write("- " + t)
             for t in act["numbers"]:
@@ -1273,9 +1273,9 @@ def render_supervision(holdings, get_prices, classify, load_decisions, get_funda
                     st.write("- " + t)
 
             if fa["bet_checks"] is not None:
-                st.markdown("#### ★ 베팅 슬롯 점검")
+                st.markdown("#### 베팅 슬롯 점검")
                 for label, ok in fa["bet_checks"]:
-                    st.write("{} {}".format("✔" if ok is True else ("✖" if ok is False else "–"), label + ("" if ok is not None else " (자료 없음/확인 불가)")))
+                    st.write("{} {}".format("" if ok is True else ("" if ok is False else "–"), label + ("" if ok is not None else " (자료 없음/확인 불가)")))
                 if it["value"] is not None and it.get("total"):
                     st.caption("전액 손실을 가정하면 같은 통화 평가금액의 {:.1f}%({:,.0f} {})가 사라집니다. 가정 계산입니다.".format(
                         it["value"] / it["total"] * 100, it["value"], it["currency"]))
@@ -1292,7 +1292,7 @@ def render_supervision(holdings, get_prices, classify, load_decisions, get_funda
             st.markdown("#### 최근 판단 기록")
             rec = it["rec"]
             if rec is None:
-                st.write("기록 없음 — '📝 판단 기록' 탭에 가설·반대 근거·무효화 조건을 남기면 여기에 연결됩니다.")
+                st.write("기록 없음 — '판단 기록' 탭에 가설·반대 근거·무효화 조건을 남기면 여기에 연결됩니다.")
             else:
                 d = _parse_date(rec.get("created_at"))
                 st.write("- 기록일 {} · 기간 {} · 판단 {}".format(d or "자료 없음", rec.get("horizon", ""), rec.get("decision", "")))
@@ -1320,7 +1320,7 @@ def render_supervision(holdings, get_prices, classify, load_decisions, get_funda
 def render_single_asset(ticker, name, get_prices, get_fundamentals, load_flows):
     """종목 분석 탭용: 보유 여부와 상관없이 선택한 종목 하나의 달걀 국면과 기업 자동 점검을 보여 준다. 읽기 전용."""
     st.markdown("##### 선택 종목의 달걀 국면")
-    st.caption("보유하지 않은 종목도 볼 수 있습니다. 보유 종목의 행동 후보와 분할 가격대는 '🎯 감독실'에서 확인하세요. "
+    st.caption("보유하지 않은 종목도 볼 수 있습니다. 보유 종목의 행동 후보와 분할 가격대는 '감독실'에서 확인하세요. "
                "규칙은 검증 전 후보이며 확률·승률이 아닙니다.")
     t = str(ticker).strip().upper()
     is_kr = t.endswith((".KS", ".KQ"))

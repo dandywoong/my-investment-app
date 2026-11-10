@@ -73,7 +73,7 @@ def plan_smart(items, cash, first_pct=50, reserve_pct=0, bet_cap_pct=10.0, fmt_p
             rows.append({"종목": i["name"], "전략": "베팅 1주 추가", "점수": round(sc.get("total", 0), 1), "금액(원)": round(i["price"]), "수량": 1.0,
                          "체결 후 평단": _avg_text(i["avg"], ak(i), i["qty"], i["price"], nq), "통화": i.get("_cur", "KRW"),
                          "근거": "조정 구간(60일 고점 대비 {}) · 기업 상태 {}".format(fmt_pct(i["dd60"]), i["sv_val"])})
-            board[i["name"]] = {"종목": i["name"], "점수": round(sc.get("total", 0), 1), "오늘 행동": "✅ 베팅 1주 매수", "금액(원)": round(i["price"]), "수량": 1.0, "사유": "베팅 규칙 충족"}
+            board[i["name"]] = {"종목": i["name"], "점수": round(sc.get("total", 0), 1), "오늘 행동": "베팅 1주 매수", "금액(원)": round(i["price"]), "수량": 1.0, "사유": "베팅 규칙 충족"}
             left -= i["price"]
 
     # 2) 후보 선정
@@ -86,9 +86,9 @@ def plan_smart(items, cash, first_pct=50, reserve_pct=0, bet_cap_pct=10.0, fmt_p
     for i in ranked:
         sc = i["score"]
         if sc["gate"]:
-            board[i["name"]] = {"종목": i["name"], "점수": round(sc["total"], 1), "오늘 행동": "⛔ 제외", "금액(원)": "", "수량": "", "사유": sc["gate"]}
+            board[i["name"]] = {"종목": i["name"], "점수": round(sc["total"], 1), "오늘 행동": "제외", "금액(원)": "", "수량": "", "사유": sc["gate"]}
         elif sc["total"] < THRESH:
-            board[i["name"]] = {"종목": i["name"], "점수": round(sc["total"], 1), "오늘 행동": "⛔ 제외", "금액(원)": "", "수량": "",
+            board[i["name"]] = {"종목": i["name"], "점수": round(sc["total"], 1), "오늘 행동": "제외", "금액(원)": "", "수량": "",
                                 "사유": "점수 {:.1f} < 기준 {:.0f} (지금은 살 이유가 약함)".format(sc["total"], THRESH)}
         else:
             cands.append(i)
@@ -127,7 +127,7 @@ def plan_smart(items, cash, first_pct=50, reserve_pct=0, bet_cap_pct=10.0, fmt_p
             rem_deploy = max(rem_deploy - hold, 0.0)
             cond = "1차 구간 {:,.0f}~{:,.0f} 진입 시 약 {:,.0f}원 투입 (현재가 대비 {:+.1f}%)".format(c["zone"][0], c["zone"][1], hold * first_pct / 100.0, (c["zone"][1] / pk - 1) * 100)
             wait.append({"종목": nm, "전략": "핵심 분할 1차(대기)", "상태": "가격 대기", "점수": round(sc["total"], 1), "이유/조건": cond, "통화": c.get("_cur", "KRW")})
-            board[nm] = {"종목": nm, "점수": round(sc["total"], 1), "오늘 행동": "⏳ 가격 대기", "금액(원)": round(hold), "수량": "", "사유": cond}
+            board[nm] = {"종목": nm, "점수": round(sc["total"], 1), "오늘 행동": "가격 대기", "금액(원)": round(hold), "수량": "", "사유": cond}
             continue
         spend = alloc * (first_pct / 100.0) if core else alloc
         avail = left - reserved
@@ -145,7 +145,7 @@ def plan_smart(items, cash, first_pct=50, reserve_pct=0, bet_cap_pct=10.0, fmt_p
             if c.get("_cur", "KRW") == "KRW" and qty <= 0 and c["price"] <= avail:
                 reason = "배정액 {:,.0f}원이 1주(약 {:,.0f}원)보다 작고 상위 3위 밖이라 보류".format(spend, c["price"])
             wait.append({"종목": nm, "전략": "점수 상위(보류)", "상태": "보류", "점수": round(sc["total"], 1), "이유/조건": reason, "통화": c.get("_cur", "KRW")})
-            board[nm] = {"종목": nm, "점수": round(sc["total"], 1), "오늘 행동": "⛔ 현금 부족" if "현금 부족" in reason else "⏸ 보류", "금액(원)": "", "수량": "", "사유": reason}
+            board[nm] = {"종목": nm, "점수": round(sc["total"], 1), "오늘 행동": "현금 부족" if "현금 부족" in reason else "보류", "금액(원)": "", "수량": "", "사유": reason}
             continue
         left -= amt
         rem_deploy = max(rem_deploy - amt, 0.0)
@@ -153,7 +153,7 @@ def plan_smart(items, cash, first_pct=50, reserve_pct=0, bet_cap_pct=10.0, fmt_p
         rows.append({"종목": nm, "전략": "핵심 분할 1차" if core else "적립 추가", "점수": round(sc["total"], 1), "금액(원)": round(amt), "수량": qty,
                      "체결 후 평단": _avg_text(c["avg"], ak(c), c["qty"], amt, nq), "통화": c.get("_cur", "KRW"),
                      "근거": ("[1주 우선 확보] " if forced else "") + why})
-        board[nm] = {"종목": nm, "점수": round(sc["total"], 1), "오늘 행동": "✅ 매수 {}".format("1주" if c.get("_cur", "KRW") == "KRW" and qty == 1 else "{:g}주".format(qty)),
+        board[nm] = {"종목": nm, "점수": round(sc["total"], 1), "오늘 행동": "매수 {}".format("1주" if c.get("_cur", "KRW") == "KRW" and qty == 1 else "{:g}주".format(qty)),
                      "금액(원)": round(amt), "수량": qty, "사유": ("[1주 우선 확보] " if forced else "") + why}
 
     # 5) 순서·정리
@@ -180,7 +180,7 @@ def _plan_market(items, cash, first_pct, core_names, core_pct, deploy_mult, fmt_
     for c in cores:
         g = (c.get("score") or {}).get("gate")
         if g:
-            board[c["name"]] = {"종목": c["name"], "점수": round((c.get("score") or {}).get("total", 0), 1), "오늘 행동": "⛔ 코어 제외", "금액(원)": "", "수량": "", "사유": g}
+            board[c["name"]] = {"종목": c["name"], "점수": round((c.get("score") or {}).get("total", 0), 1), "오늘 행동": "코어 제외", "금액(원)": "", "수량": "", "사유": g}
         else:
             elig.append(c)
     if elig and core_pct > 0 and cash > 0:
@@ -190,7 +190,7 @@ def _plan_market(items, cash, first_pct, core_names, core_pct, deploy_mult, fmt_
             qty = float(int(per // c["price"])) if c.get("_cur", "KRW") == "KRW" else round(per / c["price"], 4)
             amt = qty * c["price"]
             if qty <= 0 or amt > cash - spent + 1e-6:
-                board[c["name"]] = {"종목": c["name"], "점수": round(sc.get("total", 0), 1), "오늘 행동": "⏸ 코어 보류", "금액(원)": "", "수량": "",
+                board[c["name"]] = {"종목": c["name"], "점수": round(sc.get("total", 0), 1), "오늘 행동": "코어 보류", "금액(원)": "", "수량": "",
                                     "사유": "코어 배정액 {:,.0f}원으로 1주(약 {:,.0f}원)를 살 수 없음".format(per, c["price"])}
                 continue
             spent += amt
@@ -198,7 +198,7 @@ def _plan_market(items, cash, first_pct, core_names, core_pct, deploy_mult, fmt_
             rows.append({"종목": c["name"], "전략": "코어 적립", "점수": round(sc.get("total", 0), 1), "금액(원)": round(amt), "수량": qty,
                          "체결 후 평단": _avg_text(c["avg"], ak(c), c["qty"], amt, nq), "통화": c.get("_cur", "KRW"),
                          "근거": "코어 종목: 타이밍과 무관하게 꾸준히 적립 (이 시장 현금의 {}%)".format(core_pct)})
-            board[c["name"]] = {"종목": c["name"], "점수": round(sc.get("total", 0), 1), "오늘 행동": "🏛 코어 적립", "금액(원)": round(amt), "수량": qty, "사유": "코어 종목 꾸준히 적립"}
+            board[c["name"]] = {"종목": c["name"], "점수": round(sc.get("total", 0), 1), "오늘 행동": "코어 적립", "금액(원)": round(amt), "수량": qty, "사유": "코어 종목 꾸준히 적립"}
         notes.append("코어({})에 이 시장 현금의 {}%를 먼저 배정했습니다.".format(", ".join(c["name"] for c in elig), core_pct))
     core_ids = {c["name"] for c in cores}
     P = plan_smart([i for i in items if i["name"] not in core_ids], cash - spent, first_pct, 0, fmt_pct=fmt_pct, deploy_mult=deploy_mult)

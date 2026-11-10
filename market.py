@@ -11,7 +11,7 @@ import streamlit as st
 
 LEVELS = ["NORMAL", "ELEVATED", "STRESS", "DISLOCATION"]
 LEVEL_KO = {"NORMAL": "평상", "ELEVATED": "긴장", "STRESS": "스트레스", "DISLOCATION": "시장 기능 이상"}
-LEVEL_ICON = {"NORMAL": "🟢", "ELEVATED": "🟡", "STRESS": "🟠", "DISLOCATION": "🔴"}
+LEVEL_ICON = {"NORMAL": "", "ELEVATED": "", "STRESS": "", "DISLOCATION": ""}
 # 스트레스 단계별로 '오늘 새로 투입하는 비율'을 줄이는 계수(급락을 바닥으로 단정하지 않고 나눠서 접근)
 DEPLOY_MULT = {"NORMAL": 1.0, "ELEVATED": 0.85, "STRESS": 0.6, "DISLOCATION": 0.5, None: 1.0}
 
@@ -197,47 +197,82 @@ def _backtest(_get_prices, sym):
 
 
 # ---------------------------------------------------------------- 화면
+def _gauge(title, s):
+    import plotly.graph_objects as go
+    if not s or not s.get("level"):
+        return None
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number", value=s["points"], number={"font": {"size": 26}},
+        title={"text": "{} · {}".format(title, LEVEL_KO[s["level"]]), "font": {"size": 14}},
+        gauge={"axis": {"range": [0, 12], "tickvals": [0, 2, 5, 9, 12]}, "bar": {"color": "#14213D", "thickness": 0.25},
+               "steps": [{"range": [0, 2], "color": "#D8EBDD"}, {"range": [2, 5], "color": "#F4E7B8"},
+                         {"range": [5, 9], "color": "#F2C9A0"}, {"range": [9, 12], "color": "#E9A3A3"}]}))
+    fig.update_layout(height=170, margin=dict(l=10, r=10, t=40, b=0), paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+
 def render_overview(items, risk, stress_kr, stress_us, fx, get_conn, cfg, save_cfg, get_prices):
-    st.markdown("### 🌐 시장 상황과 내 위험")
-    st.caption("달걀 국면(심리 해석)과 별개로, 시장이 지금 얼마나 충격 상태인지와 내 보유가 같은 위험에 얼마나 몰려 있는지를 봅니다. "
-               "스트레스가 높다는 것은 기업이 나빠졌다는 뜻이 아니고, 급락 자체는 바닥 신호가 아닙니다. 모든 기준은 검증 전 규칙입니다.")
-    c1, c2 = st.columns(2)
-    for col, nm, s in ((c1, "한국", stress_kr), (c2, "미국", stress_us)):
+    import plotly.graph_objects as go
+    st.markdown("### 시장 상황과 내 위험")
+    st.caption("스트레스가 높다는 것은 기업이 나빠졌다는 뜻이 아니고, 급락 자체는 바닥 신호가 아닙니다. 기준은 모두 검증 전 규칙입니다.")
+    band = float(st.session_state.get("_ai_band", 45))
+    g1, g2, g3 = st.columns([1, 1, 1.3])
+    for col, nm, s in ((g1, "한국", stress_kr), (g2, "미국", stress_us)):
         with col:
-            if not s or not s.get("level"):
-                st.metric("{} 시장 스트레스".format(nm), "판단 보류")
+            fig = _gauge(nm + " 시장 스트레스", s)
+            if fig is None:
+                st.metric(nm + " 시장 스트레스", "판단 보류")
                 st.caption("자료 없음: " + ", ".join(s.get("missing", [])) if s else "자료 없음")
-                continue
-            st.metric("{} 시장 스트레스".format(nm), "{} {}".format(LEVEL_ICON[s["level"]], LEVEL_KO[s["level"]]),
-                      delta="{}점 · {} · 오늘 신규 투입은 평소의 {:.0%}로 제한".format(s["points"], s["level"], DEPLOY_MULT[s["level"]]), delta_color="off")
-            with st.expander("{} 판정 근거".format(nm)):
-                for p, t in s["parts"]:
-                    st.caption("· +{} {}".format(p, t))
-                st.caption("기준 일자 {} · 출처: 야후 파이낸스 일봉(지연·누락 가능)".format(s["asof"]) + (" · 자료 없음: " + ", ".join(s["missing"]) if s["missing"] else ""))
-                st.caption("단계 기준(검증 전): 0~1점 평상 · 2~4 긴장 · 5~8 스트레스 · 9점 이상 시장 기능 이상(서킷브레이커급). 아래 '과거 급락 이후 사례'로 이 기준을 점검할 수 있습니다.")
+            else:
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                st.caption("신규 투입은 평소의 {:.0%}로 제한".format(DEPLOY_MULT[s["level"]]))
+    with g3:
+        if risk:
+            ai = risk["ai_total"] * 100
+            f = go.Figure()
+            f.add_trace(go.Bar(y=["AI 연동 노출"], x=[ai], orientation="h", marker_color="#B42318" if ai > band else "#0F766E", text=["{:.0f}%".format(ai)], textposition="inside", width=0.5))
+            f.add_vline(x=band, line_dash="dash", line_color="#14213D", annotation_text="기준선 {:.0f}%".format(band), annotation_position="top")
+            f.update_layout(height=110, margin=dict(l=0, r=10, t=30, b=0), xaxis=dict(range=[0, 100], ticksuffix="%"), showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(f, use_container_width=True, config={"displayModeBar": False})
+            m1, m2, m3 = st.columns(3)
+            m1.metric("상위 3종목", "{:.0%}".format(risk["top3"]))
+            m2.metric("실질 종목 수", "{:.1f}개".format(risk["eff_n"]))
+            m3.metric("대기 현금", "{:.0%}".format(risk["cash_pct"]))
     if risk:
-        st.markdown("**내 포트폴리오 핵심 위험** (원화 환산{}, 기준: 현재가)".format(" · 환율 {:,.1f}".format(fx) if fx else ""))
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("AI·반도체 연동 노출", "{:.0%}".format(risk["ai_total"]), delta="내 가정값 기준", delta_color="off")
-        topb = max(risk["by_bucket"].items(), key=lambda kv: kv[1])
-        m2.metric("가장 큰 위험 묶음", "{:.0%}".format(topb[1] / risk["total"]), delta=topb[0], delta_color="off")
-        m3.metric("상위 3종목 비중", "{:.0%}".format(risk["top3"]), delta="실질 종목 수 {:.1f}개".format(risk["eff_n"]), delta_color="off")
-        m4.metric("대기 현금 비중", "{:.0%}".format(risk["cash_pct"]), delta="입력한 투자 대기 현금 기준", delta_color="off")
-        bt = pd.DataFrame([{"위험 묶음": b, "비중": "{:.0%}".format(v / risk["total"]), "평가금액(원)": round(v)} for b, v in sorted(risk["by_bucket"].items(), key=lambda kv: -kv[1])])
-        st.dataframe(bt, use_container_width=True, hide_index=True)
-        if risk["ai_total"] >= 0.5:
-            st.warning("보유의 {:.0%}가 AI·반도체 공급망과 같은 위험에 연동되어 있습니다(내 가정값 기준). 종목 수가 여러 개여도 위험 요인은 하나에 가깝습니다. "
-                       "새 자금은 이 위험을 더 키우지 않는 쪽의 점수가 높게 계산됩니다. 기존 보유를 팔라는 뜻은 아닙니다.".format(risk["ai_total"]))
-        if risk["corr_pairs"]:
-            st.caption("최근 1년 일간 수익률 상관관계: 평균 {:.2f} · 높은 쌍 ".format(risk["avg_corr"]) + " / ".join("{}–{} {:.2f}".format(a, b, v) for v, a, b in risk["corr_pairs"][:3]) +
-                       " (공통 거래일 기준. 급락장에서는 상관이 더 높아지는 경향이 있습니다.)")
-        sc = []
-        for shock in (-0.10, -0.20, -0.30):
-            loss = sum(r["krw"] * r["ai"] * shock for r in risk["rows"])
-            sc.append({"가정": "AI·반도체 연동 자산이 {:.0%} 하락".format(shock), "추정 평가금액 변화(원)": round(loss), "보유 대비": "{:+.1%}".format(loss / risk["total"])})
-        st.dataframe(pd.DataFrame(sc), use_container_width=True, hide_index=True)
-        st.caption("단순 시나리오 계산입니다(연동도 × 하락률). 예측이 아니며 연동도는 아래에서 내가 고치는 가정값입니다.")
-        with st.expander("🧩 위험 묶음·AI 연동도 가정 수정"):
+        by = sorted(risk["by_bucket"].items(), key=lambda kv: kv[1])
+        sc_x = ["-10%", "-20%", "-30%"]
+        sc_y = [sum(r["krw"] * r["ai"] * sh for r in risk["rows"]) / 10000 for sh in (-0.10, -0.20, -0.30)]
+        b1, b2 = st.columns([3, 2])
+        with b1:
+            fb = go.Figure(go.Bar(y=[k for k, _ in by], x=[v / risk["total"] * 100 for _, v in by], orientation="h", marker_color="#14213D",
+                                  text=["{:.0f}%".format(v / risk["total"] * 100) for _, v in by], textposition="outside"))
+            fb.update_layout(title=dict(text="위험 묶음별 비중", font=dict(size=14)), height=max(170, 34 * len(by) + 60), margin=dict(l=0, r=30, t=36, b=0),
+                             xaxis=dict(showticklabels=False, showgrid=False), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fb, use_container_width=True, config={"displayModeBar": False})
+        with b2:
+            fs = go.Figure(go.Bar(x=sc_x, y=sc_y, marker_color="#B42318", text=["{:,.0f}만".format(v) for v in sc_y], textposition="outside"))
+            fs.update_layout(title=dict(text="AI 연동 자산 하락 시 평가금액 변화(만원)", font=dict(size=14)), height=max(170, 34 * len(by) + 60), margin=dict(l=0, r=0, t=36, b=0),
+                             yaxis=dict(showgrid=False, showticklabels=False), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fs, use_container_width=True, config={"displayModeBar": False})
+        if risk["ai_total"] * 100 > band:
+            st.warning("보유의 {:.0%}가 AI·반도체와 같은 위험에 연동되어 있습니다(내 가정값 기준). 새 돈은 이 위험을 더 키우지 않는 쪽의 점수가 높게 계산됩니다. 기존 보유를 팔라는 뜻은 아닙니다.".format(risk["ai_total"]))
+        with st.expander("판정 근거 · 상관관계 · 가정 수정 · 과거 사례", expanded=False):
+            for nm, s in (("한국", stress_kr), ("미국", stress_us)):
+                if s and s.get("level"):
+                    st.markdown("**{} 스트레스 {}점**".format(nm, s["points"]))
+                    for p_, t_ in s["parts"]:
+                        st.caption("+{} {}".format(p_, t_))
+                    st.caption("기준 {} · 야후 일봉(지연·누락 가능)".format(s["asof"]) + (" · 자료 없음: " + ", ".join(s["missing"]) if s["missing"] else ""))
+            if risk["corr_pairs"]:
+                st.caption("최근 1년 일간 수익률 상관: 평균 {:.2f} · 높은 쌍 ".format(risk["avg_corr"]) + " / ".join("{}-{} {:.2f}".format(a, b, v) for v, a, b in risk["corr_pairs"][:3]))
+            _assumptions_and_backtest(risk, cfg, get_conn, save_cfg, get_prices)
+
+
+def _assumptions_and_backtest(risk, cfg, get_conn, save_cfg, get_prices):
+    if True:
+        if True:
+            pass
+        if st.checkbox("위험 묶음·AI 연동도 가정 수정", key="bk_show"):
             um = load_buckets(cfg)
             rows = []
             for r in risk["rows"]:
@@ -253,7 +288,7 @@ def render_overview(items, risk, stress_kr, stress_us, fx, get_conn, cfg, save_c
                 except Exception as e:  # noqa: BLE001
                     st.error("저장하지 못했습니다: " + str(e)[:100])
             st.caption("연동도는 '그 종목이 AI·반도체 투자 사이클과 얼마나 같이 움직인다고 보는지'에 대한 내 판단입니다. 기본값은 제가 임의로 둔 가정이며 공식 수치가 아닙니다.")
-    with st.expander("📉 과거 급락 이후엔 어땠나 (이 기준을 믿어도 되는지 점검)"):
+    if st.checkbox("과거 급락 이후엔 어땠나 (이 기준을 믿어도 되는지 점검)", key="bt_show"):
         st.caption("지수 일간 자료로 '급락한 날' 이후 20·60·120일을 과거 전체에서 세어 봅니다. 사건이 몰려 있어(예: 2008, 2020) 독립 표본이 아니며 오늘의 결과를 예측하지 않습니다. "
                    "급락 직후가 바닥이었는지, 더 떨어졌는지의 비율을 보고 '급락 = 매수 신호'가 성립하는지 확인하는 용도입니다.")
         which = st.radio("지수", ["코스피(^KS11)", "S&P500(^GSPC)"], horizontal=True, key="bt_which")

@@ -156,7 +156,7 @@ def find_stock_matches(query):
 
     return local_matches
 
-st.set_page_config(page_title="Eggfolio", page_icon="🥚", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Eggfolio", page_icon="◆", layout="wide", initial_sidebar_state="collapsed")
 try:
     import theme
     theme.inject()
@@ -889,7 +889,7 @@ if not st.session_state.get("_book_tables_ok"):
         st.session_state["_book_tables_ok"] = True
     except Exception:
         pass
-st.title("🥚 Eggfolio")
+st.title("Eggfolio")
 st.caption("장기 투자 의사결정 도우미 · 계산한 값과 해석, 검증 전 규칙을 구분해서 보여 줍니다.")
 
 
@@ -902,7 +902,7 @@ def _held_pairs():
         hw = holdings_with_us(get_db_connection, load_holdings())
         if hw is not None and len(hw):
             for _, r in hw.iterrows():
-                out.append(("⭐ " + str(r["name"]), str(r["ticker"])))
+                out.append(("" + str(r["name"]), str(r["ticker"])))
     except Exception:
         pass
     return out
@@ -925,7 +925,7 @@ def resolve_pick():
     tk_ = custom if (P.get("custom_on") and custom) else names[chosen]
     nm_ = chosen if not (P.get("custom_on") and custom) else next((n for n, sy in names.items() if sy.upper() == tk_), tk_)
     pname = P.get("period") if P.get("period") in PERIODS else list(PERIODS.keys())[2]
-    return tk_, nm_.replace("⭐ ", ""), PERIODS[pname], pname
+    return tk_, nm_.replace("", ""), PERIODS[pname], pname
 
 
 def render_ticker_picker():
@@ -935,11 +935,11 @@ def render_ticker_picker():
     keys = list(names.keys())
     ch = P.get("choice") if P.get("choice") in names else keys[0]
     c1, c2, c3 = st.columns([3, 2, 2])
-    choice = c1.selectbox("종목 (⭐ = 내 보유 종목)", keys, index=keys.index(ch), key="pick_choice_w")
+    choice = c1.selectbox("종목 (= 내 보유 종목)", keys, index=keys.index(ch), key="pick_choice_w")
     pk = list(PERIODS.keys())
     pcur = P.get("period") if P.get("period") in PERIODS else pk[2]
     pname = c2.selectbox("차트 기간", pk, index=pk.index(pcur), key="pick_period_w")
-    if c3.button("🔄 가격 새로고침", key="pick_refresh_w", use_container_width=True):
+    if c3.button("가격 새로고침", key="pick_refresh_w", use_container_width=True):
         st.cache_data.clear()
     use_c = st.checkbox("목록에 없는 종목 코드를 직접 입력 (예: NVDA, 005930.KS)", value=bool(P.get("custom_on")), key="pick_custom_on_w")
     custom = st.text_input("종목 코드", value=str(P.get("custom", "")), key="pick_custom_w", disabled=not use_c)
@@ -951,10 +951,10 @@ ticker, selected_stock_name, period, period_name = resolve_pick()
 
 tab_supervisor, tab_portfolio, tab_analysis, tab_journal = st.tabs(
     [
-        "🎯 내 투자",
-        "💼 보유·거래 입력",
-        "🔎 종목 분석",
-        "📝 판단 기록",
+        "내 투자",
+        "보유·거래 입력",
+        "종목 분석",
+        "판단 기록",
     ],
     on_change="rerun",
     key="eggfolio_main_tabs_v2",
@@ -974,7 +974,7 @@ if tab_supervisor.open:
             st.error("감독실을 표시하는 중 오류가 났습니다. 다른 탭은 정상 작동합니다.")
             st.exception(dash_error)
         st.divider()
-        if st.toggle("🔧 기존 상세 화면 보기 (고급 · 느림: 설정·집중도·데이터 연결 상태 포함)", key="show_old_supervision"):
+        if st.toggle("기존 상세 화면 보기 (고급 · 느림: 설정·집중도·데이터 연결 상태 포함)", key="show_old_supervision"):
             try:
                 from supervision import render_supervision
                 from portfolio_book import holdings_with_us, latest_stances
@@ -995,7 +995,7 @@ if tab_portfolio.open:
     with tab_portfolio:
         st.subheader("내 보유 종목")
         st.caption("보유 수량·평단·평가손익은 입력한 거래와 조회된 가격을 기준으로 계산합니다. 가격 제공자는 Yahoo Finance이며 삼성증권 계좌와 직접 연결된 것이 아닙니다.")
-        with st.expander("➕ 보유 종목 직접 등록 / 수정", expanded=not bool(len(load_holdings()))):
+        with st.expander("보유 종목 직접 등록 / 수정", expanded=not bool(len(load_holdings()))):
             hname, hticker = stock_search_widget("holding_search")
             with st.form("holding_form"):
                 hc1, hc2 = st.columns(2)
@@ -1019,7 +1019,7 @@ if tab_portfolio.open:
         if holdings.empty:
             st.info("등록된 보유 종목이 없습니다. 위에서 종목명·코드·수량·평단을 입력하세요.")
         else:
-            if st.button("🔄 보유 종목 가격 새로고침"):
+            if st.button("보유 종목 가격 새로고침"):
                 latest_close.clear()
             rows=[]
             with st.spinner("보유 종목 가격 조회 중..."):
@@ -1152,7 +1152,7 @@ if tab_portfolio.open:
                     st.error(f"변경사항 저장에 실패했습니다: {e}")
 
         
-            st.info("🇺🇸 미국주 수량·평단 수정은 '🎯 내 투자' 탭 맨 아래 '✏️ 미국주 보유 수량·평단 직접 고치기'로 옮겼습니다.")
+            st.info("🇺🇸 미국주 수량·평단 수정은 '내 투자' 탭 맨 아래 '미국주 보유 수량·평단 직접 고치기'로 옮겼습니다.")
 
             st.subheader("계좌별 보유 현황")
 
@@ -1315,18 +1315,18 @@ if tab_portfolio.open:
 if tab_analysis.open:
     with tab_analysis:
         ticker, selected_stock_name, period, period_name = render_ticker_picker()
-        st.subheader(f"🔎 종목 분석 · {selected_stock_name} ({ticker})")
-        st.caption("보유 종목 전체의 판단과 행동 후보는 '🎯 감독실'에서 봅니다.")
+        st.subheader(f"종목 분석 · {selected_stock_name} ({ticker})")
+        st.caption("보유 종목 전체의 판단과 행동 후보는 '감독실'에서 봅니다.")
         section = st.radio(
             "보기",
-            ["🥚 달걀 국면", "📈 차트·지표", "🏢 기업 기초체력", "💱 수급", "🧾 원자료"],
+            ["달걀 국면", "차트·지표", "기업 기초체력", "수급", "원자료"],
             horizontal=True,
             key="analysis_section",
             label_visibility="collapsed",
         )
 
         prices, elapsed = None, 0.0
-        if section in ("📈 차트·지표", "🧾 원자료"):
+        if section in ("차트·지표", "원자료"):
             try:
                 with st.spinner(f"{ticker} 가격 데이터 조회 중..."):
                     prices, elapsed = get_prices(ticker, period)
@@ -1335,7 +1335,7 @@ if tab_analysis.open:
                 st.write(f"종목 코드: `{ticker}` · 오류: {e}")
                 st.info("종목 코드와 데이터 제공자 상태를 확인한 뒤 새로고침해 주세요.")
 
-        if section == "🥚 달걀 국면":
+        if section == "달걀 국면":
             try:
                 from supervision import render_single_asset
             except Exception as sup_import_error:
@@ -1347,9 +1347,9 @@ if tab_analysis.open:
                 except Exception as sup_error:
                     st.error("달걀 국면을 표시하는 중 오류가 났습니다. 다른 보기는 정상 작동합니다.")
                     st.exception(sup_error)
-        elif section == "💱 수급":
+        elif section == "수급":
             render_investor_flow_check(ticker)
-        elif section == "🏢 기업 기초체력":
+        elif section == "기업 기초체력":
             render_fundamentals(ticker)
         elif prices is None:
             st.info("가격 자료가 없어 이 보기를 표시할 수 없습니다.")
@@ -1366,7 +1366,7 @@ if tab_analysis.open:
             m4.metric("최근 데이터 날짜", prices.index[-1].strftime("%Y-%m-%d"))
             st.caption(f"조회 소요 {elapsed:.2f}초(가격 조회 구간만) · 일봉은 장중 체결가와 다를 수 있습니다.")
 
-            if section == "📈 차트·지표":
+            if section == "차트·지표":
 
                 mas = st.multiselect(
                     "이동평균선",

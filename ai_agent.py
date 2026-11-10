@@ -375,7 +375,7 @@ def refresh(get_conn, targets, ai_views, max_n=4, sleep_s=3, force_tks=None):
         if new_st != old_st:
             changes.append("{}: {} → {}{}".format(t["name"], old_st, new_st, "" if applied else " (근거 부족 · 참고만)"))
     if rate_n >= 2:
-        errs.append("한도 초과가 반복되었습니다. 몇 분 뒤(하루 한도면 내일) 다시 시도하세요. '🔎 AI 연결 진단'으로 원인을 볼 수 있습니다.")
+        errs.append("한도 초과가 반복되었습니다. 몇 분 뒤(하루 한도면 내일) 다시 시도하세요. 'AI 연결 진단'으로 원인을 볼 수 있습니다.")
     bar.progress(1.0, text="완료")
     return done, errs, changes
 
@@ -394,13 +394,13 @@ def load_views(get_conn):
 def render_view(row):
     """종목 상세에 AI 분석 한 건을 보여 준다."""
     if row is None:
-        st.info("아직 AI 분석이 없습니다. 위의 '🤖 AI 기업 분석 갱신'을 눌러 주세요.")
+        st.info("아직 AI 분석이 없습니다. 위의 'AI 기업 분석 갱신'을 눌러 주세요.")
         return
     try:
         p = json.loads(row["payload"])
     except Exception:  # noqa: BLE001
         p = {}
-    st.markdown("**🤖 AI 기업 분석 (초안 · 검증 전)**")
+    st.markdown("**AI 기업 분석 (초안 · 검증 전)**")
     st.write("판정: **{}** · 신뢰도 {} · 근거 기준일 {} · 분석 {} · 모델 {}".format(
         row["stance"], row["confidence"], row["as_of"] or "자료 없음", str(row["created_at"])[:16].replace("T", " ") + " UTC", row["model"]))
     applied = bool(int(row["applied"] or 0))
