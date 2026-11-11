@@ -14,6 +14,7 @@ import ai_agent
 import recovery
 
 DEFAULT_POLICY = (
+    "※ 아래는 내가 지금까지 세운 기본 선호입니다. 오늘의 검색 결과·데이터가 강하게 반대하면 데이터를 우선해 예외를 제안해도 됩니다(예외는 명시).\n"
     "1) 국장(ISA) 보유 종목은 손실이 커도 기업 가치가 견고하면 손절하지 않고 보유한다. 국장 신규 매수는 기본적으로 중지한다.\n"
     "2) 미국 순투자금이 2000만원이 될 때까지 새 돈은 미국에 먼저 투자해 국장과 비율을 맞춘다.\n"
     "3) VOO와 버크셔 해서웨이 B는 위험이 상대적으로 낮은 코어이므로 새 돈이 생길 때마다 가장 높은 비중으로 적립한다. 기술주(AI) 비중이 너무 크면 이 비중을 더 키우고, 적정 수준이 되면 줄인다.\n"
@@ -29,12 +30,128 @@ SCHEMA = """{
             "core_policy": "코어(VOO·버크셔) 운용", "tech_policy": "기술주 운용", "cash_policy": "현금 보유 원칙과 이상적 비율", "risk_notes": ["주요 위험"]},
  "detail_rules": [{"topic": "주제", "rule": "세부 규칙(조건 포함)"}],
  "allocation": {"kr_krw": 0, "us_krw": 0, "cash_krw": 0, "reason": "왜 이렇게 나눴는지"},
- "priorities": [{"rank": 1, "name": "종목명", "ticker": "티커", "action": "매수|보류|홀드|정리검토", "amount_krw": 0, "weight_hint": "목표 비중 방향(예: 늘림/유지/줄임)", "reason": "근거", "counter": "반대 근거"}],
- "avg_down_review": [{"name": "손실 종목", "verdict": "유리|조건부|불리", "reason": "근거", "conditions": "물타기가 성립하려면 필요한 조건"}],
+ "research_summary": "오늘 검색·데이터에서 가장 중요했던 발견 3~5줄(출처명 포함)",
+ "policy_deviations": ["내 정책과 다르게 제안한 부분과 이유(없으면 빈 배열)"],
+ "priorities": [{"rank": 1, "name": "종목명", "ticker": "티커", "action": "매수|보류|홀드|정리검토", "amount_krw": 0, "weight_hint": "목표 비중 방향(예: 늘림/유지/줄임)", "reason": "근거", "evidence": "오늘 검색·데이터에서 찾은 이 종목의 근거(출처명·날짜)", "counter": "반대 근거"}],
+ "avg_down_review": [{"name": "손실 종목", "verdict": "유리|조건부|불리", "reason": "근거", "conditions": "물타기가 성립하려면 필요한 조건", "recovery_pct_note": "평단까지 필요한 상승률·과거 도달 빈도·목표가 여력을 인용한 한 줄"}],
  "questions_to_user": ["내게 확인하고 싶은 것"],
  "confidence": "낮음|보통|높음",
  "unknowns": ["확인하지 못한 것"]
 }"""
+
+
+SOURCES = {
+    "글로벌 투자은행·리서치": ["Goldman Sachs", "Morgan Stanley", "JPMorgan", "Bank of America", "Citi", "UBS", "Bernstein", "Wedbush", "Mizuho"],
+    "국내 증권사·컨센서스": ["삼성증권", "미래에셋증권", "KB증권", "한국투자증권", "NH투자증권", "FnGuide 컨센서스", "네이버 증권 목표주가"],
+    "시장 데이터·앱": ["Investing.com (애널리스트 목표가·기술적 지표·경제 캘린더)", "Yahoo Finance", "TipRanks", "Finviz", "MarketWatch", "Seeking Alpha", "CNN Fear & Greed"],
+    "뉴스·기관 발표": ["Reuters", "Bloomberg", "CNBC", "Wall Street Journal", "Financial Times", "연합인포맥스", "한국경제", "매일경제", "Federal Reserve(FOMC)"],
+    "인물·기업 발언": ["Jensen Huang(엔비디아)", "Warren Buffett·버크셔 주주서한", "Howard Marks 메모", "Jerome Powell", "각 기업 실적발표·IR 자료"],
+}
+SOURCE_DOMAINS = {"investing.com": "Investing.com", "yahoo.com": "Yahoo Finance", "tipranks.com": "TipRanks", "finviz.com": "Finviz", "marketwatch.com": "MarketWatch",
+                  "seekingalpha.com": "Seeking Alpha", "reuters.com": "Reuters", "bloomberg.com": "Bloomberg", "cnbc.com": "CNBC", "wsj.com": "WSJ", "ft.com": "Financial Times",
+                  "hankyung.com": "한국경제", "mk.co.kr": "매일경제", "naver.com": "네이버 증권", "fnguide.com": "FnGuide", "yna.co.kr": "연합뉴스", "einfomax.co.kr": "연합인포맥스",
+                  "federalreserve.gov": "Federal Reserve", "cnn.com": "CNN", "goldmansachs.com": "Goldman Sachs", "morganstanley.com": "Morgan Stanley", "jpmorgan.com": "JPMorgan"}
+RESEARCH_TTL_HOURS = 6
+
+
+def _source_text():
+    return "\n".join("- {}: {}".format(k, ", ".join(v)) for k, v in SOURCES.items())
+
+
+def _grounded(prompt):
+    """검색 근거(구글 검색)를 켠 호출. -> (dict|None, 출처목록, 오류)"""
+    key = ai_agent.get_api_key()
+    if not key:
+        return None, [], "GEMINI_API_KEY 가 설정되지 않았습니다."
+    try:
+        models = ai_agent.pick_models(key)
+    except Exception as e:  # noqa: BLE001
+        return None, [], "모델 목록 조회 실패: " + str(e)[:100]
+    last = "사용 가능한 모델 없음"
+    for m in models:
+        try:
+            r = ai_agent._call(key, m, prompt, True)
+        except Exception as e:  # noqa: BLE001
+            last = "연결 오류: " + str(e)[:80]
+            continue
+        if r.status_code >= 400:
+            last = "{} {}".format(r.status_code, ai_agent._err_text(r))
+            continue
+        try:
+            cand = r.json()["candidates"][0]
+            text = "".join(p.get("text", "") for p in cand["content"]["parts"])
+            res = ai_agent._extract_json(text)
+        except Exception as e:  # noqa: BLE001
+            last = "응답 해석 실패: " + str(e)[:80]
+            continue
+        chunks = (cand.get("groundingMetadata") or {}).get("groundingChunks") or []
+        srcs = [{"title": (c.get("web") or {}).get("title", ""), "uri": (c.get("web") or {}).get("uri", "")} for c in chunks]
+        return res, srcs, None
+    return None, [], last
+
+
+def _research_prompt(scope, rows):
+    today = date.today().isoformat()
+    base = ("오늘은 {}입니다. 당신은 리서치 담당입니다. 반드시 웹 검색을 실제로 수행해 최근 7일 이내의 최신 정보를 우선 조사하세요. 기억에 의존하지 말고, 찾지 못한 것은 '찾지 못함'이라고 쓰세요. "
+            "아래 출처를 우선적으로 확인하세요(검색어에 기관·매체 이름을 넣어 찾으세요).\n{}\n"
+            "내 투자 정책은 고려하지 말고 순수하게 조사만 하세요. 승률·확률·수익 보장 표현 금지. 각 항목에 날짜와 출처 이름을 적으세요.\n").format(today, _source_text())
+    if scope == "market":
+        return base + ('조사 대상: 오늘·어제 한국과 미국 증시 상황(지수, 변동성, 반도체·AI 업종 흐름, 금리·연준, 주요 이슈 인물 발언, 공포탐욕 지수).\n'
+                       '출력 JSON: {"market": {"summary": "...", "drivers": ["..."], "sentiment": "...", "key_events_ahead": ["..."]}, "not_found": ["..."]}')
+    return base + ("조사 대상 종목(오늘·최근 5일 주가 움직임 자료 포함):\n" + json.dumps(rows, ensure_ascii=False) +
+                   '\n종목마다: 최근 주가가 움직인 이유(뉴스·인물 발언·실적·규제·수급), 월가·국내 증권사의 최근 목표주가·투자의견 변화, Investing.com 등의 애널리스트 의견/기술적 지표 요약, 강세 논거와 약세 논거, 향후 주요 일정을 조사하세요. '
+                   'ETF는 구성 종목·자금 흐름·운용 이슈를 조사하세요.\n출력 JSON: {"tickers": [{"ticker": "...", "name": "...", "move_reason": "...", "analyst_view": "...", "price_targets": "...", "bull": "...", "bear": "...", "next_events": "...", '
+                   '"sources": [{"name": "...", "date": "..."}]}], "not_found": ["..."]}')
+
+
+def research(get_conn, packet, force=False):
+    """시장 1회 + 종목 묶음(4개씩) 검색 조사. 6시간 안의 결과는 재사용한다. -> (결과 dict, 출처목록, 경고목록)"""
+    scope_key = ",".join(sorted(h["ticker"] for h in packet["holdings"]))
+    if not force:
+        try:
+            df = ai_agent._run(get_conn, "SELECT created_at, scope, content FROM research_log ORDER BY id DESC LIMIT 1", fetch=True)
+            if df is not None and len(df):
+                r = df.iloc[0]
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(r["created_at"]))).total_seconds() / 3600
+                if age < RESEARCH_TTL_HOURS and r["scope"] == scope_key:
+                    out = json.loads(r["content"])
+                    return out["res"], out["sources"], ["{}시간 안의 검색 조사 결과를 재사용했습니다(새로 검색하려면 '검색 새로 하기'를 체크하세요).".format(RESEARCH_TTL_HOURS)]
+        except Exception:  # noqa: BLE001
+            pass
+    from concurrent.futures import ThreadPoolExecutor
+    rows = [{"ticker": h["ticker"], "name": h["name"], "market": h["market"], "move_1d_pct": h.get("move_1d_pct"), "move_5d_pct": h.get("move_5d_pct")} for h in packet["holdings"]]
+    batches = [rows[i:i + 4] for i in range(0, len(rows), 4)]
+    jobs = [("market", [])] + [("tickers", b) for b in batches]
+    warns, all_src, res = [], [], {"market": None, "tickers": [], "not_found": []}
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        outs = list(ex.map(lambda j: _grounded(_research_prompt(j[0], j[1])), jobs))
+    for (kind, b), (r_, srcs, err) in zip(jobs, outs):
+        if err or not r_:
+            warns.append("검색 조사 실패({}): {}".format("시장" if kind == "market" else ", ".join(x["ticker"] for x in b), err))
+            continue
+        all_src += srcs
+        if kind == "market":
+            res["market"] = r_.get("market")
+        else:
+            res["tickers"] += r_.get("tickers") or []
+        res["not_found"] += r_.get("not_found") or []
+    if res["market"] or res["tickers"]:
+        try:
+            ai_agent._run(get_conn, "INSERT INTO research_log (created_at,scope,content) VALUES (%s,%s,%s)", (_now(), scope_key, json.dumps({"res": res, "sources": all_src}, ensure_ascii=False)))
+        except Exception:  # noqa: BLE001
+            pass
+    return res, all_src, warns
+
+
+def coverage(sources):
+    """실제로 참조된 지정 출처(도메인 기준)."""
+    hit = set()
+    for s_ in sources:
+        blob = (str(s_.get("title", "")) + " " + str(s_.get("uri", ""))).lower()
+        for dom, nm in SOURCE_DOMAINS.items():
+            if dom in blob:
+                hit.add(nm)
+    return sorted(hit)
 
 
 def _now():
@@ -45,6 +162,7 @@ def ensure_tables(get_conn):
     for sql in (
         "CREATE TABLE IF NOT EXISTS strategy_log (id SERIAL PRIMARY KEY, created_at TEXT, status TEXT, deposit BIGINT, content TEXT)",
         "CREATE TABLE IF NOT EXISTS cash_events (id SERIAL PRIMARY KEY, event_date TEXT, amount_krw BIGINT, memo TEXT, created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS research_log (id SERIAL PRIMARY KEY, created_at TEXT, scope TEXT, content TEXT)",
         "CREATE TABLE IF NOT EXISTS chat_log (id SERIAL PRIMARY KEY, created_at TEXT, role TEXT, text TEXT)",
     ):
         ai_agent._run(get_conn, sql)
@@ -63,7 +181,21 @@ def _avg_down(it, n_list):
     return out
 
 
-def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_text, prev_strategy):
+def _move(get_prices, tk):
+    """최근 1일·5일 등락률(%). 자료가 없으면 (None, None)."""
+    if not get_prices:
+        return None, None
+    try:
+        df, _ = get_prices(tk, "1mo")
+        c = df["Close"].dropna()
+        if len(c) < 6:
+            return None, None
+        return round((c.iloc[-1] / c.iloc[-2] - 1) * 100, 2), round((c.iloc[-1] / c.iloc[-6] - 1) * 100, 2)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_text, prev_strategy, get_prices=None):
     total = sum((i.get("value") or 0) * (fx if i["cur"] == "USD" else 1.0) for i in items) or 1.0
     rows = []
     for i in items:
@@ -76,20 +208,26 @@ def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_t
              "score_total": None if not sc else round(sc["total"], 1), "score_parts": None if not sc else {p: round(v[0], 1) for p, v in sc["parts"].items()},
              "excluded_reason": None if not sc else sc.get("gate"), "egg_phase": i.get("plabel"), "company_stance": i.get("sv_txt"),
              "ai_industry_outlook": i.get("outlook"), "ai_target_price": i.get("target")}
+        a["move_1d_pct"], a["move_5d_pct"] = _move(get_prices, i["tk"])
         if i.get("ret") is not None and i["ret"] < 0:
             try:
-                r = recovery.assess(i, recovery.consensus(i["tk"] if str(i["tk"]).endswith((".KS", ".KQ")) else str(i["tk"]).replace(".", "-")), i.get("target"))
+                sym_ = i["tk"] if str(i["tk"]).endswith((".KS", ".KQ")) else str(i["tk"]).replace(".", "-")
+                need_ = (i["avg"] / i["price"] - 1) if i.get("price") else 0
+                r = recovery.assess(i, recovery.consensus(sym_), i.get("target"), recovery.hist_rate(sym_, round(need_, 3)))
             except Exception:  # noqa: BLE001
                 r = None
             if r:
                 a["recovery_check"] = {"need_rise_to_avg_pct": round(r["평단까지 필요한 상승"] * 100, 1), "consensus_mean_target": r["목표가(평균)"],
-                                       "upside_to_target_pct": None if r["여력"] is None else round(r["여력"] * 100, 1), "verdict": r["판정"], "source": r["출처"]}
+                                       "upside_to_target_pct": None if r["여력"] is None else round(r["여력"] * 100, 1), "verdict": r["판정"], "source": r["출처"],
+                                       "past_frequency_reached_avg_within_12m_pct": None if r.get("과거빈도12m") is None else round(r["과거빈도12m"], 1),
+                                       "past_frequency_reached_avg_within_6m_pct": None if r.get("과거빈도6m") is None else round(r["과거빈도6m"], 1)}
             a["average_down_simulation"] = _avg_down(i, [1, 2, 3] if i["cur"] == "KRW" else [])
         rows.append(a)
     pk = {
         "today": date.today().isoformat(),
         "fx_krw_per_usd": round(fx, 1) if fx else None,
         "portfolio_total_krw": round(total),
+        "index_moves_pct": {nm: dict(zip(("1d", "5d"), _move(get_prices, sym))) for nm, sym in (("KOSPI", "^KS11"), ("S&P500", "^GSPC"), ("NASDAQ", "^IXIC"), ("SOX(반도체)", "^SOX"), ("VIX", "^VIX"))},
         "holdings": rows,
         "risk": None if not risk else {"ai_exposure_pct": round(risk["ai_total"] * 100, 1), "top3_weight_pct": round(risk["top3"] * 100, 1),
                                         "effective_holdings": round(risk["eff_n"], 1),
@@ -112,7 +250,9 @@ def _prompt(packet, task, extra=""):
         "당신은 장기 투자자를 돕는 펀드매니저 보조입니다. 아래 JSON 자료는 앱이 계산한 사실이며, 모든 수치 계산(평단·손익률·합계)은 이미 끝나 있으니 새로 계산하지 말고 주어진 값만 인용하세요.\n"
         "원칙: (1) 승률·확률·수익 보장 표현 금지. (2) 모든 판단에 반대 근거를 함께 적는다. (3) 평단가는 참고일 뿐 매수·매도 근거가 아니다. 가격이 내렸다는 것만으로 싸다고 하지 않는다. "
         "(4) 산업 성장성, 기업의 이익 포착 능력, 주가 매력을 구분한다. (5) 시장 스트레스가 높다는 것은 기업이 나빠졌다는 뜻이 아니다. 급락을 바닥이라고 단정하지 않고 나눠 투입한다. "
-        "(6) 자료가 없는 것은 '자료 없음'이라 쓰고 추측으로 채우지 않는다. (7) user_policy_text는 사용자가 정한 큰 틀이다. 따르되, 강한 데이터가 있어 벗어나는 제안은 '정책과 다른 제안'이라고 명시하고 이유와 조건을 적는다. "
+        "(6) 자료가 없는 것은 '자료 없음'이라 쓰고 추측으로 채우지 않는다. (7) user_policy_text는 사용자의 기본 선호일 뿐 결론을 대신하지 않는다. 증거(research의 검색 결과, 종목별 등락·점수·회복 점검)가 정책과 충돌하면 증거를 우선하고, 벗어난 부분은 policy_deviations에 이유와 함께 적는다. "
+        "(7-1) 입금액을 코어 두 종목에 일괄 배분하는 식의 단순 결론 금지. 보유 종목 전부를 priorities에 넣고, 종목마다 오늘 매수 매력을 비교해 금액을 나눈다. 오늘 크게 하락·급등한 종목은 research의 move_reason을 근거로 일시적 요인인지 구조적 요인인지 판단하고, evidence에 출처 이름과 날짜를 적는다. "
+        "research가 비어 있거나 실패하면 '실시간 검색 미반영'이라고 headline과 unknowns에 명시하고 확신도를 낮춘다. "
         "(8) 금액은 원화 정수. allocation의 kr_krw+us_krw+cash_krw는 new_deposit.amount_krw와 정확히 같아야 한다(입금이 0이면 모두 0). "
         "(9) 한국 주식은 정수 주 단위, 미국 주식은 소수점 가능. 자동 주문은 없고 사람이 직접 실행한다.\n\n"
         "과제: " + task + "\n" + extra + "\n\n자료(JSON):\n" + json.dumps(packet, ensure_ascii=False)[:60000]
@@ -176,16 +316,62 @@ def validate(strategy, deposit, items):
     return strategy, warns
 
 
-def make_strategy(get_conn, packet, items, deposit):
-    res, err = _gemini(_prompt(packet, "입금 {:,}원을 포함해 현재 포트폴리오의 큰 전략·세부 전략·배분·우선순위를 새로 짜세요. 큰 틀은 user_policy_text를 기반으로 하고 데이터로 점검하세요. "
+def postprocess(strategy, items, fx):
+    """보유 종목 누락 보완, 시장별 금액 상한, 달러 환산, 근거 누락 표시."""
+    warns = []
+    by_name = {i["name"]: i for i in items}
+    by_tk = {i["tk"]: i for i in items}
+    pri = strategy.get("priorities") or []
+    seen = set()
+    for p in pri:
+        it = by_tk.get(p.get("ticker")) or by_name.get(p.get("name"))
+        p["_item"] = it["tk"] if it else None
+        if it:
+            seen.add(it["tk"])
+            p["market"] = it["mkt"]
+        try:
+            p["amount_krw"] = max(0, int(float(p.get("amount_krw") or 0)))
+        except Exception:  # noqa: BLE001
+            p["amount_krw"] = 0
+        if p.get("action") == "매수" and not str(p.get("evidence", "")).strip():
+            warns.append("'{}' 매수 제안에 검색·데이터 근거(evidence)가 없습니다. 근거 없는 제안으로 보세요.".format(p.get("name")))
+    for it in items:
+        if it["tk"] not in seen:
+            pri.append({"rank": 99, "name": it["name"], "ticker": it["tk"], "action": "AI 미언급", "amount_krw": 0, "weight_hint": "-", "reason": "AI가 이 종목을 다루지 않았습니다.", "evidence": "", "counter": "", "_item": it["tk"], "market": it["mkt"]})
+    al = strategy.get("allocation") or {}
+    for mk, key in (("한국", "kr_krw"), ("미국", "us_krw")):
+        tot = sum(p["amount_krw"] for p in pri if p.get("market") == mk and p.get("action") == "매수")
+        cap = int(al.get(key, 0) or 0)
+        if tot > cap:
+            warns.append("{} 종목별 금액 합계({:,}원)가 {} 배분({:,}원)을 넘어 비율대로 줄였습니다.".format(mk, tot, mk, cap))
+            for p in pri:
+                if p.get("market") == mk and p.get("action") == "매수":
+                    p["amount_krw"] = int(p["amount_krw"] * cap / tot) if tot else 0
+    for p in pri:
+        p["amount_usd"] = round(p["amount_krw"] / fx, 2) if (fx and p.get("market") == "미국") else None
+    al["us_usd"] = round(int(al.get("us_krw", 0) or 0) / fx, 2) if fx else None
+    al["fx"] = round(fx, 1) if fx else None
+    strategy["allocation"], strategy["priorities"] = al, sorted(pri, key=lambda p: (p.get("rank") or 99))
+    return strategy, warns
+
+
+def make_strategy(get_conn, packet, items, deposit, fx, force_research=False):
+    res_r, srcs, rwarns = research(get_conn, packet, force_research)
+    packet["research"] = res_r
+    packet["research_status"] = "정상" if (res_r.get("market") or res_r.get("tickers")) else "실패: 실시간 검색 미반영"
+    res, err = _gemini(_prompt(packet, "입금 {:,}원을 포함해 현재 포트폴리오의 큰 전략·세부 전략·배분·우선순위를 새로 짜세요. research(오늘의 검색 조사)와 종목별 등락·점수·회복 점검을 근거로 종목마다 판단하세요. "
                                "손실 종목마다 물타기가 유리한지 불리한지도 avg_down_review에 검토하세요.".format(deposit), "반드시 아래 JSON 스키마만 출력하세요.\n" + SCHEMA))
     if err:
-        return None, err, []
+        return None, err, rwarns
     res, warns = validate(res, deposit, items)
+    res, w2 = postprocess(res, items, fx)
     res["_deposit"] = int(deposit)
+    res["_coverage"] = coverage(srcs)
+    res["_research_ok"] = bool(res_r.get("market") or res_r.get("tickers"))
+    res["_research_src"] = [{"title": x.get("title", ""), "uri": x.get("uri", "")} for x in srcs][:30]
     ai_agent._run(get_conn, "INSERT INTO strategy_log (created_at,status,deposit,content) VALUES (%s,%s,%s,%s)",
                   (_now(), "draft", int(deposit), json.dumps(res, ensure_ascii=False)))
-    return res, None, warns
+    return res, None, rwarns + warns + w2
 
 
 def load_latest(get_conn):
@@ -199,24 +385,78 @@ def load_latest(get_conn):
     return None, None, None, None
 
 
-def chat_reply(get_conn, packet, strategy, history, msg, items):
+def chat_reply(get_conn, packet, strategy, history, msg, items, fx=None):
     hist = "\n".join("{}: {}".format("나" if h["role"] == "user" else "펀드매니저", h["text"]) for h in history[-8:])
     extra = ("지금 확정 전 전략(JSON):\n" + json.dumps(strategy, ensure_ascii=False)[:20000] + "\n\n지금까지 대화:\n" + hist + "\n\n사용자 의견: " + msg +
              "\n\n사용자의 의견이 타당하면 반영하고, 근거가 약하면 이유를 들어 정중히 반대하세요. 정책과 충돌하면 그 점을 말하세요. 아래 JSON으로만 답하세요.\n"
              '{"reply": "사용자에게 하는 답(간결하게)", "revised_strategy": null 또는 위 전략 스키마 전체(전략을 바꿔야 할 때만)}\n전략 스키마:\n' + SCHEMA)
-    res, err = _gemini(_prompt(packet, "사용자와 전략에 대해 대화하세요.", extra))
+    pr = _prompt(packet, "사용자와 전략에 대해 대화하세요. 사용자가 최신 이슈를 묻거나 판단에 새 사실이 필요하면 웹 검색으로 확인하고 출처 이름과 날짜를 답에 적으세요.", extra)
+    res, srcs, err = _grounded(pr)
+    note = ""
+    if err or not res:
+        res, err = _gemini(pr)
+        note = "\n\n(실시간 검색을 하지 못해 기존 자료로만 답했습니다.)"
     if err:
         return None, err, []
     warns = []
     rs = res.get("revised_strategy")
     if isinstance(rs, dict) and rs.get("master"):
         rs, warns = validate(rs, int(strategy.get("_deposit", 0) or 0), items)
+        rs, w2_ = postprocess(rs, items, fx)
+        warns += w2_
         rs["_deposit"] = strategy.get("_deposit", 0)
+        rs["_coverage"], rs["_research_ok"] = strategy.get("_coverage", []), strategy.get("_research_ok", False)
         ai_agent._run(get_conn, "INSERT INTO strategy_log (created_at,status,deposit,content) VALUES (%s,%s,%s,%s)",
                       (_now(), "draft", int(rs["_deposit"] or 0), json.dumps(rs, ensure_ascii=False)))
     else:
         rs = None
-    return {"reply": str(res.get("reply", "")), "revised": rs}, None, warns
+    return {"reply": str(res.get("reply", "")) + note, "revised": rs}, None, warns
+
+
+# ------------------------------------------------------------------ 실행 계획
+def execution_rows(strategy, items, fx):
+    """AI 우선순위를 수량으로 환산한다. 한국 주식은 정수 주, 미국 주식은 소수점. 금액은 환율로 달러 환산."""
+    by_tk = {i["tk"]: i for i in items}
+    rows = []
+    for p in strategy.get("priorities") or []:
+        it = by_tk.get(p.get("_item"))
+        amt = int(p.get("amount_krw") or 0)
+        row = {"순위": p.get("rank") if p.get("rank") != 99 else None, "종목": p.get("name"), "행동": p.get("action"), "금액(원)": amt if amt else None,
+               "금액(USD)": None, "수량": None, "현재가": None, "체결 후 평단": None, "규칙 점수": None, "비중 방향": p.get("weight_hint"),
+               "근거": p.get("reason"), "오늘의 증거(출처)": p.get("evidence"), "반대 근거": p.get("counter")}
+        if it:
+            row["규칙 점수"] = None if not it.get("score") else round(it["score"]["total"], 1)
+            px = it.get("price")
+            if px:
+                row["현재가"] = ("${:,.2f}".format(px) + " (≈{:,.0f}원)".format(px * fx)) if it["cur"] == "USD" and fx else "{:,.0f}원".format(px)
+            if px and amt and p.get("action") == "매수":
+                if it["cur"] == "USD" and fx:
+                    usd = amt / fx
+                    q = usd / px
+                    row["금액(USD)"] = round(usd, 2)
+                    row["수량"] = "{:.4f}주".format(q)
+                    row["체결 후 평단"] = "${:,.2f}".format((it["qty"] * it["avg"] + q * px) / (it["qty"] + q))
+                else:
+                    q = int(amt // px)
+                    row["수량"] = "{}주".format(q) if q else "1주 금액 부족"
+                    if q:
+                        row["금액(원)"] = int(q * px)
+                        row["체결 후 평단"] = "{:,.0f}원".format((it["qty"] * it["avg"] + q * px) / (it["qty"] + q))
+        rows.append(row)
+    return rows
+
+
+def plan_for_banner(strategy, items, fx):
+    """맨 위 '오늘 투입 안내'용 요약(확정된 AI 전략)."""
+    rows = [r for r in execution_rows(strategy, items, fx) if r["행동"] == "매수" and r["금액(원)"]]
+    lines = []
+    for n, r in enumerate(rows, 1):
+        txt = "{:,}원".format(r["금액(원)"]) + (" (${:,.2f}, {})".format(r["금액(USD)"], r["수량"]) if r["금액(USD)"] else " ({})".format(r["수량"]))
+        lines.append({"행동순서": n, "종목": r["종목"], "전략": "AI 제안", "금액(원)": r["금액(원)"], "표시": txt})
+    al = strategy.get("allocation") or {}
+    used = sum(r["금액(원)"] for r in rows)
+    dep = int(strategy.get("_deposit", 0) or 0)
+    return {"rows": lines, "used": used, "reserved": 0, "hold_cash": max(0, dep - used), "board": [], "notes": []}
 
 
 # ------------------------------------------------------------------ 화면
@@ -232,26 +472,33 @@ def _load_chat(get_conn, n=30):
         return []
 
 
-def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg, hub):
+def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg, hub, get_prices=None):
     import plotly.graph_objects as go
+    import ledger
     ensure_tables(get_conn)
     c = load_cfg(get_conn)
     policy = c.get("policy_text") or DEFAULT_POLICY
-    st.markdown("### AI 펀드매니저")
-    st.caption("앱의 모든 데이터(보유·점수·국면·시장 스트레스·손실 종목 회복 점검·물타기 시뮬레이션)를 모아 큰 전략과 입금 배분, 우선순위를 짭니다. 최종 결정과 주문은 내가 합니다. "
-               "AI에 보내는 내용: 종목명·비중·수량·평단·평가금액·현금·입금액·내 정책 메모(계좌번호·로그인 정보·이름은 보내지 않음). 무료 API는 입력이 구글 서비스 개선에 쓰일 수 있습니다.")
-    with st.expander("내 투자 정책 메모 (AI가 전략의 큰 틀로 삼습니다)", expanded=False):
+    cfg_pk = {"goal": hub.get("goal"), "invested": hub.get("invested"), "band": st.session_state.get("_ai_band"), "freeze": hub.get("freeze"), "core": hub.get("core")}
+    st.markdown("### AI 투자 에이전트")
+    st.caption("입금액을 넣으면 ① 지정 기관·매체·인물을 웹 검색으로 먼저 조사하고 ② 보유 종목별 등락·점수·회복 점검 자료와 합쳐 ③ 큰 전략, 국장·미국·현금 배분, 종목별 우선순위와 수량을 짭니다. "
+               "최종 결정과 주문은 내가 합니다. AI에 보내는 내용: 종목명·비중·수량·평단·평가금액·현금·입금액·정책 메모(계좌번호·로그인·이름은 보내지 않음). 무료 API 입력은 구글 서비스 개선에 쓰일 수 있습니다.")
+    with st.expander("내 투자 정책 메모 (기본 선호 — 데이터가 강하게 반대하면 AI가 예외를 제안할 수 있음)", expanded=False):
         with st.form("policy_text_form"):
             txt = st.text_area("정책", value=policy, height=220, key="policy_text_area")
             if st.form_submit_button("정책 저장"):
                 save_cfg(get_conn, "policy_text", txt)
                 st.rerun()
+    with st.expander("검색 조사 대상으로 지정한 기관·매체·인물"):
+        for k_, v_ in SOURCES.items():
+            st.markdown("**{}** — {}".format(k_, ", ".join(v_)))
+        st.caption("AI가 검색 때 이 이름들을 우선 찾도록 지시하지만, 검색 엔진이 실제로 어떤 사이트를 보여 줄지는 보장할 수 없습니다. 결과 화면에 실제로 참조된 지정 출처를 표시합니다.")
     sid, status, strat, created = load_latest(get_conn)
     with st.form("deposit_form"):
         d1, d2, d3 = st.columns([1, 1, 2])
         ev_date = d1.date_input("입금 날짜", value=date.today(), key="dep_date")
         amt = d2.number_input("새로 생긴 투자금 (원, 없으면 0)", min_value=0, value=0, step=100000, key="dep_amt")
         memo = d3.text_input("메모 (선택)", key="dep_memo")
+        force = st.checkbox("검색을 새로 하기 (끄면 6시간 안의 검색 결과를 재사용)", value=False, key="dep_force")
         b1, b2 = st.columns(2)
         go_new = b1.form_submit_button("기록하고 AI 전략·배분 받기")
         go_chk = b2.form_submit_button("입금 없이 전략만 다시 점검")
@@ -262,10 +509,9 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
                 ai_agent._run(get_conn, "INSERT INTO cash_events (event_date,amount_krw,memo,created_at) VALUES (%s,%s,%s,%s)", (ev_date.isoformat(), dep, memo, _now()))
             except Exception as e:  # noqa: BLE001
                 st.error("입금 기록 실패: " + str(e)[:100])
-        packet = build_packet(items, risk, stress, fx, {"goal": hub.get("goal"), "invested": hub.get("invested"), "band": st.session_state.get("_ai_band"),
-                                                          "freeze": hub.get("freeze"), "core": hub.get("core")}, dep, memo, cash_map, policy, strat)
-        with st.spinner("AI가 전체 데이터를 분석해 전략을 짜는 중... (최대 1~2분)"):
-            res, err, warns = make_strategy(get_conn, packet, items, dep)
+        packet = build_packet(items, risk, stress, fx, cfg_pk, dep, memo, cash_map, policy, strat, get_prices)
+        with st.spinner("지정 출처를 검색 조사하고 전략을 짜는 중... (1~3분 걸릴 수 있습니다)"):
+            res, err, warns = make_strategy(get_conn, packet, items, dep, fx, force_research=force)
         if err:
             st.error("전략을 만들지 못했습니다: " + err)
         else:
@@ -273,13 +519,24 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
             st.rerun()
     sid, status, strat, created = load_latest(get_conn)
     if not strat:
-        st.info("아직 전략이 없습니다. 위에서 '입금 없이 전략만 다시 점검'을 눌러도 현재 포트폴리오 기준의 큰 전략을 받을 수 있습니다.")
-        return
+        st.info("아직 전략이 없습니다. 위에서 '입금 없이 전략만 다시 점검'을 눌러도 현재 포트폴리오 기준의 전략을 받을 수 있습니다.")
+        return None
     for w in st.session_state.get("_strat_warn", []):
         st.warning(w)
     mstr = strat.get("master") or {}
+    al = strat.get("allocation") or {}
+    dep = int(strat.get("_deposit", 0) or 0)
     st.markdown("#### {}".format(strat.get("headline", "")))
+    cov = strat.get("_coverage") or []
     st.caption("상태: {} · 작성 {} UTC · 신뢰도 {} · AI 초안이며 검증 전입니다".format("확정" if status == "confirmed" else "초안(확정 전)", created[:16].replace("T", " "), strat.get("confidence", "-")))
+    if strat.get("_research_ok"):
+        st.caption("실시간 검색 반영: 예 · 실제로 참조된 지정 출처 {}곳 — {}".format(len(cov), ", ".join(cov) if cov else "지정 출처가 직접 확인되지 않음(일반 웹 결과)"))
+    else:
+        st.error("실시간 검색이 반영되지 않았습니다. 이 전략은 앱 자료와 AI의 기존 지식에만 근거하므로 참고만 하세요. (무료 API 한도 초과이면 잠시 뒤 다시 시도)")
+    if strat.get("research_summary"):
+        st.markdown("**오늘의 핵심 발견** — " + str(strat["research_summary"]))
+    for d_ in strat.get("policy_deviations") or []:
+        st.warning("정책과 다른 제안: " + str(d_))
     col1, col2 = st.columns([3, 2])
     with col1:
         st.write(mstr.get("summary", ""))
@@ -287,28 +544,29 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
             if mstr.get(k):
                 st.markdown("**{}** — {}".format(lab, mstr[k]))
     with col2:
-        al = strat.get("allocation") or {}
-        dep = int(strat.get("_deposit", 0) or 0)
         if dep > 0:
             fig = go.Figure(go.Pie(labels=["국장", "미국", "현금 보유"], values=[al.get("kr_krw", 0), al.get("us_krw", 0), al.get("cash_krw", 0)], hole=0.55,
                                    textinfo="label+percent", sort=False, marker=dict(colors=["#14213D", "#0F766E", "#B8B4A8"])))
-            fig.update_layout(height=250, margin=dict(l=0, r=0, t=0, b=0), showlegend=False, paper_bgcolor="rgba(0,0,0,0)",
+            fig.update_layout(height=230, margin=dict(l=0, r=0, t=0, b=0), showlegend=False, paper_bgcolor="rgba(0,0,0,0)",
                               annotations=[dict(text="{:,}원".format(dep), x=0.5, y=0.5, showarrow=False, font=dict(size=14))])
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            st.caption("국장 {:,}원 · 미국 {:,}원 · 현금 {:,}원 — {}".format(al.get("kr_krw", 0), al.get("us_krw", 0), al.get("cash_krw", 0), al.get("reason", "")))
+            usd_txt = " (${:,.2f}, 환율 {:,.0f}원)".format(al["us_usd"], al["fx"]) if al.get("us_usd") is not None else ""
+            st.caption("국장 {:,}원 · 미국 {:,}원{} · 현금 {:,}원 — {}".format(al.get("kr_krw", 0), al.get("us_krw", 0), usd_txt, al.get("cash_krw", 0), al.get("reason", "")))
         else:
             st.caption("이번 전략은 입금 없이 만든 점검이라 배분 금액이 없습니다.")
-    pri = strat.get("priorities") or []
-    if pri:
-        st.markdown("**우선순위와 비중 방향**")
-        st.dataframe(pd.DataFrame([{"순위": p.get("rank"), "종목": p.get("name"), "행동": p.get("action"), "금액(원)": p.get("amount_krw"), "비중 방향": p.get("weight_hint"),
-                                    "근거": p.get("reason"), "반대 근거": p.get("counter")} for p in pri]), use_container_width=True, hide_index=True)
+    ex = execution_rows(strat, items, fx)
+    if ex:
+        st.markdown("**실행 계획 — 우선순위 · 금액 · 수량**")
+        st.dataframe(pd.DataFrame(ex), use_container_width=True, hide_index=True,
+                     column_config={"금액(원)": st.column_config.NumberColumn("금액(원)", format="%d"), "금액(USD)": st.column_config.NumberColumn("금액(USD)", format="$%.2f")})
+        st.caption("미국 종목은 오늘 환율로 달러 환산했고 소수점 수량으로 계산했습니다. 한국 종목은 정수 주 단위라 남는 금액은 현금으로 둡니다. '규칙 점수'는 앱의 기존 점수 규칙으로, AI 판단과 비교하는 참고값입니다.")
     ad = strat.get("avg_down_review") or []
     if ad:
         st.markdown("**손실 종목 물타기 검토**")
-        st.dataframe(pd.DataFrame([{"종목": a.get("name"), "판정": a.get("verdict"), "근거": a.get("reason"), "성립 조건": a.get("conditions")} for a in ad]), use_container_width=True, hide_index=True)
-        st.caption("물타기 시뮬레이션(추가 수량별 새 평단)은 앱이 계산해 AI에 전달한 값입니다. 평단을 낮추는 것 자체는 근거가 되지 못하므로 조건이 충족될 때만 참고하세요.")
-    with st.expander("세부 규칙 · 위험 · AI가 확인하고 싶은 것"):
+        st.dataframe(pd.DataFrame([{"종목": a.get("name"), "판정": a.get("verdict"), "회복 가능성 수치": a.get("recovery_pct_note"), "근거": a.get("reason"), "성립 조건": a.get("conditions")} for a in ad]),
+                     use_container_width=True, hide_index=True)
+        st.caption("평단을 낮추는 것 자체는 근거가 되지 못합니다. 조건이 충족될 때만 참고하세요.")
+    with st.expander("세부 규칙 · 위험 · 질문 · 검색 출처 목록"):
         for r in strat.get("detail_rules") or []:
             st.markdown("**{}** — {}".format(r.get("topic"), r.get("rule")))
         for r in mstr.get("risk_notes") or []:
@@ -317,32 +575,34 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
             st.caption("질문: " + str(q))
         for u in strat.get("unknowns") or []:
             st.caption("확인 못함: " + str(u))
+        for x in (strat.get("_research_src") or [])[:20]:
+            st.caption("출처: {} {}".format(x.get("title", ""), x.get("uri", "")[:90]))
     if status != "confirmed" and dep > 0:
-        if st.button("이 배분을 확정하고 현금 플래너에 반영", key="strat_confirm", type="primary"):
+        if st.button("이 계획을 확정하고 기록하기", key="strat_confirm", type="primary"):
             try:
                 for key_, val_ in (("KR_KRW", al.get("kr_krw", 0)), ("US_KRW", al.get("us_krw", 0))):
                     ai_agent._run(get_conn, "INSERT INTO cash_balance (currency,amount,updated_at) VALUES (%s,%s,%s) ON CONFLICT (currency) DO UPDATE SET amount=EXCLUDED.amount, updated_at=EXCLUDED.updated_at",
                                   (key_, float(val_), _now()))
                 save_cfg(get_conn, "kr_freeze", "1" if not al.get("kr_krw") else "0")
                 ai_agent._run(get_conn, "UPDATE strategy_log SET status='confirmed' WHERE id=%s", (sid,))
+                ledger.log_recs(get_conn, sid, strat, items, fx)
                 st.rerun()
             except Exception as e:  # noqa: BLE001
                 st.error("반영하지 못했습니다: " + str(e)[:120])
     elif status == "confirmed" and dep > 0:
-        st.success("확정되어 아래 현금 플래너에 국내·미국 금액으로 반영되었습니다. 종목별 수량은 플래너가 점수로 계산합니다.")
+        st.success("확정되었습니다. 이 제안은 기록되어 아래 '기록·백테스트'에서 시간이 지난 뒤의 성과를 점검합니다. 실제 매수는 내가 증권사 앱에서 하고, 체결 후 미국주 수량·평단을 고쳐 주세요.")
     # ---- 채팅 ----
     st.markdown("#### 펀드매니저와 의견 나누기")
     hist = _load_chat(get_conn)
     for h in hist[-10:]:
         with st.chat_message("user" if h["role"] == "user" else "assistant"):
             st.write(h["text"])
-    msg = st.chat_input("의견을 적어 주세요 (예: 두산은 3주만 더 사면 평단이 80만원대인데 이번엔 어떻게 보나?)", key="mgr_chat")
+    msg = st.chat_input("의견을 적어 주세요 (예: 오늘 엔비디아가 빠진 이유가 일시적인지 찾아보고 비중을 다시 짜줘)", key="mgr_chat")
     if msg:
-        packet = build_packet(items, risk, stress, fx, {"goal": hub.get("goal"), "invested": hub.get("invested"), "band": st.session_state.get("_ai_band"),
-                                                          "freeze": hub.get("freeze"), "core": hub.get("core")}, int(strat.get("_deposit", 0) or 0), "", cash_map, policy, None)
+        packet = build_packet(items, risk, stress, fx, cfg_pk, dep, "", cash_map, policy, None, get_prices)
         _log_chat(get_conn, "user", msg)
-        with st.spinner("펀드매니저가 답을 정리하는 중..."):
-            out, err, warns = chat_reply(get_conn, packet, strat, hist, msg, items)
+        with st.spinner("펀드매니저가 확인하고 답을 정리하는 중..."):
+            out, err, warns = chat_reply(get_conn, packet, strat, hist, msg, items, fx)
         if err:
             st.error("답을 받지 못했습니다: " + err)
         else:
@@ -350,3 +610,4 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
             _log_chat(get_conn, "assistant", text)
             st.session_state["_strat_warn"] = warns
             st.rerun()
+    return strat if status == "confirmed" else None

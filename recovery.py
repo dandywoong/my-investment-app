@@ -22,13 +22,34 @@ def consensus(symbol):
     return {"mean": mean, "low": low, "high": high, "n": int(n) if n else None, "rec": info.get("recommendationKey")}
 
 
-def assess(it, cons, ai_target=None):
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def hist_rate(symbol, need):
+    """과거 10년 중, 어느 날 샀다면 이후 6개월/12개월 안에 고가가 +need 이상 오른 적이 있던 날의 비율(%). 과거 빈도이지 예측이 아니다."""
+    try:
+        import yfinance as yf
+        h = yf.Ticker(symbol).history(period="10y", auto_adjust=True)
+        c, hi = h["Close"].dropna(), h["High"].dropna()
+    except Exception:  # noqa: BLE001
+        return None
+    if len(c) < 400:
+        return None
+    out = {"표본": int(len(c))}
+    for lab, d in (("6개월", 126), ("12개월", 252)):
+        fut = hi[::-1].rolling(d, min_periods=d).max()[::-1].shift(-1)
+        ok = (fut / c - 1).dropna()
+        out[lab] = None if ok.empty else float((ok >= need).mean() * 100)
+    return out
+
+
+def assess(it, cons, ai_target=None, hist=None):
     """한 종목의 회복 점검 결과(dict). 손실 종목이 아니면 None."""
     price, avg, ret = it.get("price"), it.get("avg"), it.get("ret")
     if not price or not avg or ret is None or ret >= 0:
         return None
     need = avg / price - 1
-    out = {"종목": it["name"], "평단 대비": ret, "평단까지 필요한 상승": need, "목표가(평균)": None, "여력": None, "범위": None, "판정": "자료 없음", "출처": ""}
+    out = {"종목": it["name"], "평단 대비": ret, "평단까지 필요한 상승": need, "목표가(평균)": None, "여력": None, "범위": None, "판정": "자료 없음", "출처": "", "과거빈도6m": None, "과거빈도12m": None, "표본": None}
+    if hist:
+        out["과거빈도6m"], out["과거빈도12m"], out["표본"] = hist.get("6개월"), hist.get("12개월"), hist.get("표본")
     mean = (cons or {}).get("mean")
     src = "야후 집계 컨센서스" + (" ({}명)".format(cons["n"]) if cons and cons.get("n") else "")
     if mean is None and ai_target:

@@ -32,7 +32,8 @@ def render_recovery_overview(items, fx):
     res = {}
     with st.spinner("손실 종목의 전문가 목표가를 확인하는 중... (6시간마다 갱신)"):
         for i in loss:
-            res[i["name"]] = recovery.assess(i, recovery.consensus(_yf(i["tk"])), i.get("target"))
+            need_ = (i["avg"] / i["price"] - 1) if i["price"] else 0
+            res[i["name"]] = recovery.assess(i, recovery.consensus(_yf(i["tk"])), i.get("target"), recovery.hist_rate(_yf(i["tk"]), round(need_, 3)))
     rows = [r for r in res.values() if r]
     if not rows:
         return res
@@ -47,6 +48,12 @@ def render_recovery_overview(items, fx):
     fig.update_layout(barmode="group", height=300, margin=dict(l=0, r=0, t=10, b=0), yaxis=dict(ticksuffix="%"), legend=dict(orientation="h", y=1.12),
                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.dataframe(pd.DataFrame([{"종목": r["종목"], "평단 대비": r["평단 대비"] * 100, "평단까지 필요한 상승": r["평단까지 필요한 상승"] * 100,
+                                "평균 목표가 여력": None if r["여력"] is None else r["여력"] * 100,
+                                "과거 12개월 내 도달 빈도": r["과거빈도12m"], "과거 6개월 내 도달 빈도": r["과거빈도6m"], "판정": r["판정"]} for r in rows]),
+                 use_container_width=True, hide_index=True,
+                 column_config={k: st.column_config.NumberColumn(k, format="%.1f%%") for k in ("평단 대비", "평단까지 필요한 상승", "평균 목표가 여력", "과거 12개월 내 도달 빈도", "과거 6개월 내 도달 빈도")})
+    st.caption("'과거 도달 빈도'는 최근 10년 중 아무 날에나 샀다면 이후 6·12개월 안에 고가가 평단까지 필요한 상승률 이상 오른 날의 비율입니다. 과거 빈도일 뿐 앞으로의 확률이 아니며 겹치는 기간이 많아 표본이 실제보다 적습니다.")
     return res
 
 

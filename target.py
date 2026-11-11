@@ -40,7 +40,7 @@ def render_banner(box, P, kr_amt, us_amt, fx, core_names, share, share_why, risk
         else:
             rows = P.get("rows") or []
             if rows:
-                lines = ["{}. **{}** {} — {:,.0f}원".format(r["행동순서"], r["종목"], r["전략"], r["금액(원)"]) for r in rows]
+                lines = ["{}. **{}** {} — {}".format(r["행동순서"], r["종목"], r["전략"], r.get("표시") or "{:,.0f}원".format(r["금액(원)"])) for r in rows]
                 st.success("오늘 쓸 돈 {:,.0f}원 중 **{:,.0f}원 투입**, {:,.0f}원은 대기·보유".format(
                     kr_amt + us_amt, P["used"], P["reserved"] + P["hold_cash"]))
                 st.markdown("\n".join(lines))
