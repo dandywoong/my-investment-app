@@ -16,6 +16,8 @@ import streamlit as st
 import market
 import planner
 import signals
+import fx as fxmod
+import kostolany
 import ledger
 import strategist
 import target
@@ -1243,6 +1245,27 @@ def _render_ai_panel(get_conn, items, stances, ai_views):
         st.rerun()
 
 
+def _render_pick_ai(get_conn, it, stances, ai_views):
+    """종목 보드에서 고른 종목의 AI 기업 분석을 바로 실행한다(선택 종목 1개)."""
+    prev = ai_views.get(it["tk"])
+    c1, c2 = st.columns([1, 3])
+    run = c1.button("{} AI 분석 실행".format(it["name"]), key="pickai_" + it["tk"], type="primary")
+    c2.caption("선택한 종목만 지금 분석해 갱신합니다. 마지막 분석: {}".format(str(prev["created_at"])[:16].replace("T", " ") + " UTC" if prev is not None else "아직 없음"))
+    msg = st.session_state.pop("_pickai_msg", None)
+    if msg:
+        (st.error if msg[0] == "err" else st.success)(msg[1])
+    if run:
+        rec = stances.get(it["tk"])
+        prior = None if rec is None else {"stance": rec["stance"], "as_of": rec["as_of"], "memo": rec["memo"], "invalidation": rec["invalidation"]}
+        t = {"tk": it["tk"], "name": it["name"], "mkt": it["mkt"], "mode": it["mode"], "plabel": it["plabel"],
+             "dd60": _fmt_pct(it["dd60"]) if it["dd60"] is not None else "자료 없음", "prior": prior, "score": (it["score"]["total"] if it.get("score") else None),
+             "prev_ai_summary": (str(prev["summary"])[:500] if prev is not None else None)}
+        with st.spinner("{} 분석 중... (10~40초)".format(it["name"])):
+            done, errs, changes = ai_agent.refresh(get_conn, [t], ai_views, max_n=1, sleep_s=0, force_tks=[it["tk"]])
+        st.session_state["_pickai_msg"] = ("err", " / ".join(errs)) if errs else ("ok", "{} 분석을 갱신했습니다. 아래 'AI 분석' 탭에서 확인하세요.".format(it["name"]))
+        st.rerun()
+
+
 def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamentals, load_decisions):
     import supervision as sv
     st.markdown("##### EGGFOLIO · 내 투자")
@@ -1410,6 +1433,10 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
     except Exception as e:  # noqa: BLE001
         st.caption("손실 종목 회복 점검을 표시하지 못했습니다: " + str(e)[:100])
     it = workspace.render_board(items, fx_use, P_)
+    try:
+        _render_pick_ai(get_conn, it, stances, ai_views)
+    except Exception as e:  # noqa: BLE001
+        st.caption("선택 종목 AI 분석 버튼을 표시하지 못했습니다: " + str(e)[:100])
     t_sum, t_ai, t_px, t_rec = st.tabs(["요약", "AI 분석", "가격대·시뮬레이션", "기록·설정"])
     with t_sum:
         try:
@@ -1570,6 +1597,34 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
                 sv._render_egg_panel(mres[mp], mp, "dashmkt_" + mp, ())
             except Exception as e:  # noqa: BLE001
                 st.error("표시하지 못했습니다: " + str(e)[:150])
+
+    # ---- 코스톨라니 심리 · 핵심/조절 물량 · 환전 ----
+    st.divider()
+    t_k1, t_k2, t_k3 = st.tabs(["심리·가치 괴리·운용 판단", "핵심/조절 물량·기록", "환전·달러 예수금"], on_change="rerun")
+    if t_k1.open:
+        with t_k1:
+            try:
+                with st.spinner("심리·예상 이익 자료를 계산하는 중... (처음 한 번은 수십 초, 이후 15분간 재사용)"):
+                    an_ = kostolany.cached_analysis(items, get_prices, fx_use)
+                kostolany.render_sentiment_board(get_conn, items, an_, fx_use)
+            except Exception as e:  # noqa: BLE001
+                st.error("심리 분석을 표시하지 못했습니다: " + str(e)[:150])
+    if t_k2.open:
+        with t_k2:
+            try:
+                an_ = kostolany.cached_analysis(items, get_prices, fx_use)
+                kostolany.render_split_and_log(get_conn, items, an_, fx_use)
+            except Exception as e:  # noqa: BLE001
+                st.error("핵심/조절 물량 화면을 표시하지 못했습니다: " + str(e)[:150])
+    if t_k3.open:
+        with t_k3:
+            try:
+                _l = strategist.load_latest(get_conn)
+                _c = (_l[2] or {}) if _l and _l[2] else {}
+                us_krw_ = int((_c.get("allocation") or {}).get("us_krw", 0) or 0)
+                fxmod.render(get_conn, items, fx_use, us_krw_, _c.get("_ai_fx"))
+            except Exception as e:  # noqa: BLE001
+                st.error("환전·예수금 화면을 표시하지 못했습니다: " + str(e)[:150])
 
     # ---- 기록과 성적표 ----
     try:
