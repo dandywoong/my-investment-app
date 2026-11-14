@@ -16,6 +16,7 @@ import streamlit as st
 import market
 import planner
 import signals
+import ai_agent
 import fx as fxmod
 import kostolany
 import ledger

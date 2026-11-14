@@ -336,7 +336,10 @@ def _prompt(packet, task, extra=""):
         "(7-2) 판단은 다섯 단계로 하세요: ①사용자 정책 확인(임의 변경 금지) ②기업 투자 논리(실적·현금흐름·경쟁력, 주가 하락만으로 훼손 판단 금지) ③현재 가격·시장심리(sentiment_and_value_gap의 코스톨라니 5단계, 주가 vs 기업가치 괴리 유형) "
         "④전체 포트폴리오 위험(국내+미국 합산, VOO 안에도 엔비디아·구글 등 AI·빅테크가 들어 있어 VOO 보유가 개별 AI 노출을 완전히 분산하지 않음) ⑤신규 자금 최종 배분(종목별 매수/보유/대기/제외, 투자하지 않고 남기는 현금 허용). "
         "소신파/부화뇌동파는 직접 관찰할 수 없는 추정임을 지키고, 심리 신호 하나로 매매를 결론짓지 마세요. 과매수·과매도는 매매 명령이 아니라 판단 입력값입니다. 기업이 훌륭하다는 평가와 지금 가격에 사기 좋다는 평가는 구분하세요. "
-        "(7-3) 점수·배분 일관성: 앱 점수(score_total)가 낮은 종목에 큰 금액을 주려면 reason에 그 이유(정책 예외 등)를 반드시 쓰고, AI 노출(risk.ai_exposure_pct)이 편안 구간을 넘었다면 개별 AI·반도체 종목 배분을 줄이거나 그 이유를 쓰세요. "
+        "(7-3) 코어(VOO·버크셔)를 가장 높은 비중으로 두는 것은 사용자의 기본 선호이지만, 코어끼리·코어와 개별 종목 사이의 금액은 정해진 비율이 아니라 오늘의 가격 매력·심리 단계(sentiment_and_value_gap)·뉴스·시장 흐름을 보고 직접 판단하세요. "
+        "AI 노출(risk.ai_exposure_pct)은 고려 요소 중 하나일 뿐 개별 AI 종목을 무조건 배제하는 근거가 아닙니다. 심리 1~2단계이면서 이익 전망이 유지되는 종목(rule_final이 '매수 검토')은 분할 매수 후보로 진지하게 검토하고, 사지 않는다면 그 이유를 구체적으로 쓰세요. "
+        "앱 규칙 판단(rule_final)과 다르게 결론 내리면 이유를 쓰고, 매수 후보로 검토한 모든 종목에 대해 '왜 이 금액인가/왜 0원인가'를 비교해서 쓰세요. 점수(score_total)가 낮은 종목에 큰 금액을 주면 reason에 이유를 쓰세요. "
+        "좋은 매수 가격이 보이지 않으면 현금(cash_krw)을 남기는 것도 하나의 결정입니다. 각 판단에 근거의 기준일·출처·실제 데이터인지 추정인지·판단이 바뀌는 조건을 포함하세요. "
         "좋은 매수 가격이 보이지 않으면 현금(cash_krw)을 남기는 것도 하나의 결정입니다. 각 판단에 근거의 기준일·출처·실제 데이터인지 추정인지·판단이 바뀌는 조건을 포함하세요. "
         "(7-4) 환전과 매수는 별개: cash_accounts_and_fx에 달러 예수금이 있으면 환전 없이 그 달러로 매수할 수 있다는 점을 고려하고, 환율 조사 의견은 참고로만 쓰세요. "
         "(9) 한국 주식은 정수 주 단위, 미국 주식은 소수점 가능. 자동 주문은 없고 사람이 직접 실행한다.\n\n"
@@ -402,46 +405,17 @@ def validate(strategy, deposit, items):
 
 
 def enforce_limits(pri, warns):
-    """AI가 개별 종목에 몰아줘도 정책 한도 안으로 앱이 보정한다(총액은 그대로, 코어로 이동).
-    - 코어(VOO·버크셔)가 미국 매수액의 floor 이상, 코어 외 한 종목은 cap 이하. AI 노출이 클수록 floor가 높다."""
-    lim = st.session_state.get("_limits") or {}
-    floor, cap = lim.get("floor"), lim.get("cap")
-    if not floor:
+    """금액을 바꾸지 않고 알리기만 한다. 코어 비율·종목 상한을 앱이 강제하지 않는다(AI가 시장 흐름을 보고 판단)."""
+    buys = [p for p in pri if p.get("market") == "미국" and p.get("action") == "매수" and p.get("amount_krw", 0) > 0]
+    tot = sum(p["amount_krw"] for p in buys)
+    if not tot:
         return
-    core = [p for p in pri if p.get("market") == "미국" and p.get("action") == "매수" and str(p.get("ticker", "")).upper() in ("VOO", "BRK-B", "BRK.B", "BRKB")]
-    other = [p for p in pri if p.get("market") == "미국" and p.get("action") == "매수" and p not in core and p.get("amount_krw", 0) > 0]
-    tot = sum(p["amount_krw"] for p in core) + sum(p["amount_krw"] for p in other)
-    if not tot or not core:
-        return
-    moved = 0
-    for p in other:  # 한 종목 상한
-        over = p["amount_krw"] - int(tot * cap)
-        if over > 0:
-            p["amount_krw"] -= over
-            moved += over
-            p["_adj"] = "정책 한도(한 종목 최대 {:.0f}%)로 {:,}원 줄임".format(cap * 100, over)
-    cur_core = sum(p["amount_krw"] for p in core)
-    need = int(tot * floor) - cur_core - moved
-    if need > 0:  # 코어 하한: 코어 외에서 비례해 추가로 줄임
-        pool = sum(p["amount_krw"] for p in other)
-        take = min(need, pool)
-        for p in other:
-            cut = int(take * p["amount_krw"] / pool) if pool else 0
-            p["amount_krw"] -= cut
-            moved += cut
-            p["_adj"] = (p.get("_adj", "") + " / " if p.get("_adj") else "") + "코어 하한({:.0f}%)을 맞추려고 {:,}원 줄임".format(floor * 100, cut)
-    if moved > 0:
-        base = sum(p["amount_krw"] for p in core)
-        left = moved
-        for i_, p in enumerate(core):
-            if i_ == len(core) - 1:
-                add = left
-            else:
-                add = moved // len(core)  # 코어 종목끼리 균등 분배(VOO·버크셔 모두 코어)
-            p["amount_krw"] += add
-            left -= add
-            p["_adj"] = "코어 배분 확대: +{:,}원(정책 한도 보정)".format(add)
-        warns.append("AI 제안이 정책 한도를 넘어 앱이 {:,}원을 코어(VOO·버크셔)로 옮겼습니다. (코어 최소 {:.0f}%, 코어 외 한 종목 최대 {:.0f}% — AI 노출이 클수록 코어 하한이 높아짐)".format(moved, floor * 100, cap * 100))
+    core = ("VOO", "BRK-B", "BRK.B", "BRKB")
+    for p in buys:
+        if str(p.get("ticker", "")).upper() not in core and p["amount_krw"] / tot > 0.6:
+            warns.append("참고: '{}' 한 종목에 미국 매수액의 {:.0f}%가 배정됐습니다(앱은 비율을 강제하지 않고 알리기만 합니다).".format(p.get("name"), p["amount_krw"] / tot * 100))
+    if len(buys) == 1:
+        warns.append("참고: 오늘 매수가 '{}' 한 종목뿐입니다. 아래 종목별 근거(왜 0원인지)와 '앱 규칙 판단'을 비교해 보세요.".format(buys[0].get("name")))
 
 
 def postprocess(strategy, items, fx):
@@ -529,7 +503,7 @@ def make_strategy(get_conn, packet, items, deposit, fx, force_research=False):
         ai_ = float((packet.get("risk") or {}).get("ai_exposure_pct") or 0) / 100.0
         band_ = float(packet.get("ai_exposure_comfort_band_pct") or 45) / 100.0
         share_ = max(0.30, min(0.85, 0.40 + 1.6 * (ai_ - band_)))
-        st.session_state["_limits"] = {"floor": max(0.40, share_ - 0.15), "cap": 0.20 if ai_ > band_ else 0.30}
+        st.session_state["_limits"] = None  # 비율을 강제하지 않는다(AI가 판단). 집중도는 경고로만 알린다.
     except Exception:  # noqa: BLE001
         st.session_state["_limits"] = None
     res_r, srcs, rwarns = research(get_conn, packet, force_research)
@@ -610,7 +584,7 @@ def execution_rows(strategy, items, fx):
         amt = int(p.get("amount_krw") or 0)
         row = {"순위": p.get("rank") if p.get("rank") != 99 else None, "종목": p.get("name"), "행동": p.get("action"), "금액(원)": amt if amt else None,
                "금액(USD)": None, "수량": None, "현재가": None, "체결 후 평단": None, "규칙 점수": None, "비중 방향": p.get("weight_hint"),
-               "근거": (str(p.get("reason") or "") + ("  [앱 보정: {}]".format(p["_adj"]) if p.get("_adj") else "")), "오늘의 증거(출처)": p.get("evidence"), "반대 근거": p.get("counter")}
+               "앱 규칙 판단(심리)": ((st.session_state.get("_kost_compact") or {}).get(p.get("_item")) or {}).get("rule_final"), "근거": (str(p.get("reason") or "") + ("  [앱 보정: {}]".format(p["_adj"]) if p.get("_adj") else "")), "오늘의 증거(출처)": p.get("evidence"), "반대 근거": p.get("counter")}
         if it:
             row["규칙 점수"] = None if not it.get("score") else round(it["score"]["total"], 1)
             px = it.get("price")
