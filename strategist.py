@@ -14,25 +14,31 @@ import ai_agent
 import recovery
 
 DEFAULT_POLICY = (
-    "※ 아래는 내가 지금까지 세운 기본 선호입니다. 오늘의 검색 결과·데이터가 강하게 반대하면 데이터를 우선해 예외를 제안해도 됩니다(예외는 명시).\n"
-    "1) 국장(ISA) 보유 종목은 손실이 커도 기업 가치가 견고하면 손절하지 않고 보유한다. 국장 신규 매수는 기본적으로 중지한다.\n"
-    "2) 미국 순투자금이 2000만원이 될 때까지 새 돈은 미국에 먼저 투자해 국장과 비율을 맞춘다.\n"
-    "3) VOO와 버크셔 해서웨이 B는 위험이 상대적으로 낮은 코어이므로 새 돈이 생길 때마다 가장 높은 비중으로 적립한다. 기술주(AI) 비중이 너무 크면 이 비중을 더 키우고, 적정 수준이 되면 줄인다.\n"
-    "4) 기술주는 그때그때 데이터 분석으로 투자금액에 따라 비중을 정한다. 투자 매력이 크면 비중을 더 줄 수 있다.\n"
-    "5) 두산, SOL AI반도체TOP2는 평단 회복 시 정리가 기본이다. 단 그때 상승 여력이 크면 더 보유할 수 있고, 매도하면 그 현금을 어디로 옮길지 제안한다.\n"
-    "6) 평단가는 참고일 뿐 매수·매도 근거가 아니다. 물타기도 산업·가격대·기업 상태를 분석해 유리한 국면일 때만 전략에 포함한다.\n"
-    "7) 모든 돈을 투자할지, 현금을 얼마 둘지도 시장 상황에 따라 정한다."
+    "[투자 헌법 — 절대 준수, AI가 임의로 바꿀 수 없음]\n"
+    "H1) 장기 투자가 기본이다(5·10·20년). 핵심 보유 물량은 AI가 임의로 매도하라고 제안하지 않는다.\n"
+    "H2) 비상금·부채 상환 자금은 투자 가능 자금에서 제외한다. 실제 보유 달러(환전 순수령 포함)를 초과하는 매수는 제안하지 않는다.\n"
+    "H3) 보유 목록에 없는 새 종목은 편입을 제안하지 않는다(필요하면 질문으로만).\n"
+    "H4) 국장(ISA) 보유 종목은 기업 가치가 견고하면 손실이 커도 손절하지 않는다. 평단가는 참고일 뿐 매수·매도 근거가 아니다.\n"
+    "H5) 두산·SOL AI반도체TOP2는 평단 회복 시 정리가 기본이며, 그때 상승 여력이 크면 더 보유할 수 있고, 매도하면 그 현금을 어디로 옮길지 제안한다.\n"
+    "\n[전략 가이드라인 — 기본 방향이며 AI가 시장 상황에 따라 조정 가능. 조정하면 변경 이유·근거·위험·철회 조건을 쓴다]\n"
+    "G1) 국장 신규 매수는 기본적으로 중지하고, 미국 순투자금 2000만원이 될 때까지 새 돈은 미국에 먼저 투자한다.\n"
+    "G2) VOO와 버크셔 해서웨이 B는 코어이며 기본적으로 가장 높은 비중으로 적립한다. 단 매번 두 종목에 일정액을 넣을 의무는 없고, 어느 쪽이 더 매력적인지·VOO 안의 기술주 중복 노출까지 보고 AI가 정한다.\n"
+    "G3) 기술주는 그때그때 가격·심리·이익 전망 분석으로 투자액을 정한다. 매력이 크면 비중을 더 줄 수 있다.\n"
+    "G4) 물타기는 산업·가격대·기업 상태를 분석해 유리한 국면일 때만 포함한다.\n"
+    "G5) 모든 돈을 투자할지, 달러·원화 현금으로 얼마를 남길지는 시장 상황과 투자 매력에 따라 AI가 정한다(매력적인 곳이 없으면 전액 대기도 가능).\n"
+    "G6) 환전과 주식 매수는 별개의 결정이다. 환율이 좋아도 주식이 비싸면 달러로 보유할 수 있다."
 )
 
 SCHEMA = """{
  "headline": "한 줄 결론",
  "master": {"summary": "큰 전략 요약(3~5문장)", "phase_goal": "지금 단계의 목표", "kr_policy": "국장 운용", "us_policy": "미국 운용",
-            "core_policy": "코어(VOO·버크셔) 운용", "tech_policy": "기술주 운용", "cash_policy": "현금 보유 원칙과 이상적 비율", "risk_notes": ["주요 위험"]},
+            "core_policy": "코어(VOO·버크셔) 운용", "tech_policy": "기술주 운용", "cash_policy": "현금 보유 원칙과 이상적 비율", "risk_notes": ["주요 위험"],
+            "guideline_changes": [{"guideline": "바꾼 가이드라인(G1~G6 중)", "why": "변경 이유", "evidence": "오늘 확인한 데이터·출처", "better_than_default": "기본 배분보다 유리하다고 본 근거", "extra_risk": "추가 위험", "revert_if": "철회 조건"}]},
  "detail_rules": [{"topic": "주제", "rule": "세부 규칙(조건 포함)"}],
- "allocation": {"kr_krw": 0, "us_krw": 0, "cash_krw": 0, "reason": "왜 이렇게 나눴는지"},
+ "allocation": {"kr_krw": 0, "us_krw": 0, "cash_krw": 0, "reason": "왜 이렇게 나눴는지", "cash_reason": "현금(달러·원화)으로 남기는 금액과 이유", "market_view": "오늘의 시장·거시경제 판단"},
  "research_summary": "오늘 검색·데이터에서 가장 중요했던 발견 3~5줄(출처명 포함)",
  "policy_deviations": ["내 정책과 다르게 제안한 부분과 이유(없으면 빈 배열)"],
- "priorities": [{"rank": 1, "name": "종목명", "ticker": "티커", "action": "매수|보류|홀드|정리검토", "amount_krw": 0, "weight_hint": "목표 비중 방향(예: 늘림/유지/줄임)", "reason": "근거", "evidence": "오늘 검색·데이터에서 찾은 이 종목의 근거(출처명·날짜)", "counter": "반대 근거"}],
+ "priorities": [{"rank": 1, "name": "종목명", "ticker": "티커", "action": "매수|보류|홀드|정리검토", "amount_krw": 0, "weight_hint": "목표 비중 방향(예: 늘림/유지/줄임)", "reason": "근거", "evidence": "오늘 검색·데이터에서 찾은 이 종목의 근거(출처명·날짜)", "counter": "반대 근거", "quality": "기업 품질 한 줄", "valuation": "가격 매력(밸류에이션) 한 줄", "scenario": "3~5년 기대수익 시나리오(낙관/기준/비관, 정성)", "vs_others": "다른 후보보다 우선/후순위인 이유, 매수하지 않았다면 왜 0원인지", "change_if": "판단이 바뀌는 조건"}],
  "avg_down_review": [{"name": "손실 종목", "verdict": "유리|조건부|불리", "reason": "근거", "conditions": "물타기가 성립하려면 필요한 조건", "recovery_pct_note": "평단까지 필요한 상승률·과거 도달 빈도·목표가 여력을 인용한 한 줄"}],
  "fx_view": {"lean": "환전 유리|중립|환전 불리|판단 불가", "confidence": "낮음|보통|높음", "level_note": "원/달러 판단 근거(research.fx 헤드라인·fx_rule에서 확인된 것만, 정확한 예측은 불가)", "institution_views": [{"name": "기관·매체", "view": "의견", "date": "날짜"}]},
  "questions_to_user": ["내게 확인하고 싶은 것"],
@@ -310,6 +316,7 @@ def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_t
         "new_deposit": {"amount_krw": int(deposit), "memo": memo},
         "user_policy_text": policy_text,
         "previous_strategy": prev_strategy,
+        "look_through": look_through(items, fx),
     }
     try:  # 코스톨라니 심리·가치 괴리·환전/예수금 자료
         import kostolany
@@ -341,6 +348,9 @@ def _prompt(packet, task, extra=""):
         "앱 규칙 판단(rule_final)과 다르게 결론 내리면 이유를 쓰고, 매수 후보로 검토한 모든 종목에 대해 '왜 이 금액인가/왜 0원인가'를 비교해서 쓰세요. 점수(score_total)가 낮은 종목에 큰 금액을 주면 reason에 이유를 쓰세요. "
         "좋은 매수 가격이 보이지 않으면 현금(cash_krw)을 남기는 것도 하나의 결정입니다. 각 판단에 근거의 기준일·출처·실제 데이터인지 추정인지·판단이 바뀌는 조건을 포함하세요. "
         "좋은 매수 가격이 보이지 않으면 현금(cash_krw)을 남기는 것도 하나의 결정입니다. 각 판단에 근거의 기준일·출처·실제 데이터인지 추정인지·판단이 바뀌는 조건을 포함하세요. "
+        "(7-6) 권한 구조: 투자 헌법(H1~H5)은 절대 어기지 말고, 가이드라인(G1~G6)은 오늘의 데이터에 비추어 더 유리한 선택이 있으면 적극적으로 조정하세요(조정하면 master.guideline_changes에 이유·근거·위험·철회 조건). "
+        "특정 종목을 먼저 정하고 남은 돈을 나누지 말고, 모든 투자 후보와 현금을 동시에 비교해 우선순위와 금액을 정하세요(후보별 기업 품질·가격 매력·심리·3~5년 시나리오·하방 위험·VOO 포함 중복 노출·우선순위). 모든 후보가 매력적이지 않다면 전액 대기도 자신 있게 결론 내리세요. "
+        "look_through(VOO 안의 종목 + 직접 보유 합산 노출)를 반드시 반영하고, VOO 매수를 단순히 기술주 위험을 줄이는 선택으로 보지 마세요. 매수하지 않은 종목도 vs_others에 왜 0원인지 쓰세요. "
         "(7-4) 환전과 매수는 별개: cash_accounts_and_fx에 달러 예수금이 있으면 환전 없이 그 달러로 매수할 수 있다는 점을 고려하고, 환율 조사 의견은 참고로만 쓰세요. "
         "(9) 한국 주식은 정수 주 단위, 미국 주식은 소수점 가능. 자동 주문은 없고 사람이 직접 실행한다.\n\n"
         "과제: " + task + "\n" + extra + "\n\n자료(JSON):\n" + json.dumps(packet, ensure_ascii=False)[:60000]
@@ -575,16 +585,90 @@ def chat_reply(get_conn, packet, strategy, history, msg, items, fx=None):
 
 
 # ------------------------------------------------------------------ 실행 계획
-def execution_rows(strategy, items, fx):
+CORE_SET = ("VOO", "BRK-B", "BRK.B", "BRKB")
+
+
+def verify_plan(strat, items, fx, pl, freeze=True):
+    """확정 전 자동 검증. hard=통과해야 확정 가능, soft=주의. -> [{"등급","항목","결과","설명"}]"""
+    out = []
+
+    def add(kind, name, ok, why):
+        out.append({"등급": "필수" if kind == "hard" else "주의", "항목": name, "결과": "통과" if ok else ("실패" if kind == "hard" else "주의"), "설명": why})
+    al = strat.get("allocation") or {}
+    dep = int(strat.get("_deposit", 0) or 0)
+    tot = int(al.get("kr_krw", 0) or 0) + int(al.get("us_krw", 0) or 0) + int(al.get("cash_krw", 0) or 0)
+    add("hard", "배분 합계 = 가용 자금", tot == dep, "배분 {:,}원 / 가용 {:,}원".format(tot, dep))
+    if pl:
+        add("hard", "미국 매수 달러 ≤ 보유 달러 + 환전 순수령 달러", pl["us_buy_usd"] <= pl["avail_usd"] + 0.01, "매수 ${:,.2f} / 사용 가능 ${:,.2f}".format(pl["us_buy_usd"], pl["avail_usd"]))
+        add("hard", "국장 매수 + 환전 ≤ CMA 사용 가능 원화(비상금 제외)", pl["cma_left_krw"] >= -1, "남는 원화 {:,.0f}원".format(pl["cma_left_krw"]))
+        add("hard", "체결 후 달러 잔액 ≥ 0", pl["usd_left"] >= -0.01, "예상 달러 잔액 ${:,.2f}".format(pl["usd_left"]))
+        if pl.get("us_scale", 1.0) < 0.9999:
+            add("soft", "환전 비용으로 미국 매수액 조정", False, "매수액을 {:.2f}%로 줄여 표시했습니다".format(pl["us_scale"] * 100))
+    held = {i["tk"] for i in items}
+    names = {i["name"] for i in items}
+    pri = strat.get("priorities") or []
+    newbuy = [p.get("name") for p in pri if p.get("action") == "매수" and p.get("ticker") not in held and p.get("name") not in names]
+    add("hard", "보유 목록에 없는 새 종목 매수 없음", not newbuy, "새 종목: " + ", ".join(map(str, newbuy)) if newbuy else "해당 없음")
+    sells = [p.get("name") for p in pri if p.get("action") == "정리검토" and str(p.get("ticker", "")).upper() in CORE_SET]
+    add("hard", "핵심 보유(VOO·버크셔) 매도 제안 없음", not sells, ", ".join(map(str, sells)) if sells else "해당 없음")
+    noprice = [p.get("name") for p in pri if p.get("action") == "매수" and int(p.get("amount_krw") or 0) > 0 and not next((i for i in items if i["tk"] == p.get("_item") and i.get("price")), None)]
+    add("hard", "매수 종목의 현재가 확인", not noprice, ", ".join(map(str, noprice)) if noprice else "해당 없음")
+    miss = [p.get("name") for p in pri if p.get("action") == "AI 미언급"]
+    add("soft", "보유 종목 전부에 대한 판단", not miss, ", ".join(map(str, miss)) if miss else "전부 포함")
+    noev = [p.get("name") for p in pri if p.get("action") == "매수" and not str(p.get("evidence", "")).strip()]
+    add("soft", "매수 종목마다 근거·출처", not noev, ", ".join(map(str, noev)) if noev else "전부 있음")
+    if freeze and int(al.get("kr_krw", 0) or 0) > 0:
+        add("soft", "국장 신규 매수 동결 가이드라인", bool((strat.get("master") or {}).get("guideline_changes")), "국장 매수 {:,}원이 배정됨 — guideline_changes에 변경 이유가 있어야 함".format(int(al.get("kr_krw", 0))))
+    add("soft", "뉴스 자료 반영", bool(strat.get("_research_ok")), "헤드라인 {}건".format(strat.get("_headlines_total") or 0))
+    return out
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _voo_holdings():
+    """VOO 상위 구성 종목 비중(Yahoo). 실패하면 None."""
+    try:
+        import yfinance as yf
+        df = yf.Ticker("VOO").funds_data.top_holdings
+        out = {}
+        for sym, r in df.iterrows():
+            w = r.get("Holding Percent")
+            if w is not None:
+                out[str(sym).upper().replace(".", "-")] = float(w)
+        return out or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def look_through(items, fx):
+    """VOO 안의 종목 비중 × VOO 보유액 + 직접 보유액 = 실질 노출(원). VOO 구성 자료가 없으면 '자료 없음'."""
+    voo = next((i for i in items if str(i["tk"]).upper() == "VOO"), None)
+    total = sum((i.get("value") or 0) * (fx if i["cur"] == "USD" else 1.0) for i in items) or 1.0
+    h = _voo_holdings()
+    if not voo or not h:
+        return {"status": "자료 없음(VOO 구성 종목을 가져오지 못함 또는 VOO 미보유)"}
+    vkrw = (voo.get("value") or 0) * (fx if voo["cur"] == "USD" else 1.0)
+    direct = {str(i["tk"]).upper().replace(".", "-"): (i.get("value") or 0) * (fx if i["cur"] == "USD" else 1.0) for i in items}
+    rows = []
+    for sym, w in sorted(h.items(), key=lambda x: -x[1])[:12]:
+        via = vkrw * w
+        d = direct.get(sym, 0.0)
+        rows.append({"symbol": sym, "voo_weight_pct": round(w * 100, 2), "via_voo_krw": round(via), "direct_krw": round(d), "effective_pct_of_portfolio": round((via + d) / total * 100, 2)})
+    return {"status": "Yahoo funds_data 기준 상위 구성 종목", "voo_value_krw": round(vkrw), "top_overlap": rows,
+            "note": "VOO 상위 종목과 직접 보유 종목이 겹치는 부분의 합산 노출입니다. 한국 보유(반도체 등)와의 산업 중복은 별도로 고려하세요."}
+
+
+def execution_rows(strategy, items, fx, us_scale=1.0):
     """AI 우선순위를 수량으로 환산한다. 한국 주식은 정수 주, 미국 주식은 소수점. 금액은 환율로 달러 환산."""
     by_tk = {i["tk"]: i for i in items}
     rows = []
     for p in strategy.get("priorities") or []:
         it = by_tk.get(p.get("_item"))
         amt = int(p.get("amount_krw") or 0)
+        if us_scale < 0.9999 and (by_tk.get(p.get("_item")) or {}).get("cur") == "USD":
+            amt = int(amt * us_scale)  # 환전 비용 때문에 줄어든 미국 매수 가능액 반영
         row = {"순위": p.get("rank") if p.get("rank") != 99 else None, "종목": p.get("name"), "행동": p.get("action"), "금액(원)": amt if amt else None,
                "금액(USD)": None, "수량": None, "현재가": None, "체결 후 평단": None, "규칙 점수": None, "비중 방향": p.get("weight_hint"),
-               "앱 규칙 판단(심리)": ((st.session_state.get("_kost_compact") or {}).get(p.get("_item")) or {}).get("rule_final"), "근거": (str(p.get("reason") or "") + ("  [앱 보정: {}]".format(p["_adj"]) if p.get("_adj") else "")), "오늘의 증거(출처)": p.get("evidence"), "반대 근거": p.get("counter")}
+               "앱 규칙 판단(심리)": ((st.session_state.get("_kost_compact") or {}).get(p.get("_item")) or {}).get("rule_final"), "근거": (str(p.get("reason") or "") + ("  [앱 보정: {}]".format(p["_adj"]) if p.get("_adj") else "")), "다른 후보 대비": p.get("vs_others"), "3~5년 시나리오": p.get("scenario"), "오늘의 증거(출처)": p.get("evidence"), "반대 근거": p.get("counter"), "판단이 바뀌는 조건": p.get("change_if")}
         if it:
             row["규칙 점수"] = None if not it.get("score") else round(it["score"]["total"], 1)
             px = it.get("price")
@@ -653,8 +737,12 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
     with st.expander("내 투자 정책 메모 (기본 선호 — 데이터가 강하게 반대하면 AI가 예외를 제안할 수 있음)", expanded=False):
         with st.form("policy_text_form"):
             txt = st.text_area("정책", value=policy, height=220, key="policy_text_area")
-            if st.form_submit_button("정책 저장"):
+            c_a, c_b = st.columns(2)
+            if c_a.form_submit_button("정책 저장"):
                 save_cfg(get_conn, "policy_text", txt)
+                st.rerun()
+            if c_b.form_submit_button("새 구조(투자 헌법 / 전략 가이드라인)로 바꾸기"):
+                save_cfg(get_conn, "policy_text", DEFAULT_POLICY)
                 st.rerun()
     with st.expander("검색 조사 대상으로 지정한 기관·매체·인물"):
         for k_, v_ in SOURCES.items():
@@ -674,6 +762,11 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
     m4.metric("이번에 배분할 수 있는 총액", "{:,.0f}원".format(max(0.0, cma0 - reserve0) + usd0 * (fx or 0)))
     st.caption("누적 입금 {:,.0f}원 · 누적 환전 {:,.0f}원 · 누적 미국 매수 ${:,.2f}. 이 잔액은 '실제로 한 일'을 기록해야만 바뀝니다(아래 계획 화면과 '환전·달러 예수금' 탭에서 기록). "
                "처음이라면 지금 CMA 잔액과 달러 잔액을 '환전·달러 예수금' 탭의 '잔액 바로잡기'로 한 번 맞춰 두세요.".format(dep_cum, fx_cum, buy_cum))
+    with st.expander("예수금 기록 고치기 · 지우기 (잘못 넣은 입금 삭제, 잔액 바로잡기)"):
+        try:
+            fxmod.render_edit(get_conn)
+        except Exception as e:  # noqa: BLE001
+            st.error("표시하지 못했습니다: " + str(e)[:120])
     with st.form("deposit_form"):
         d1, d2, d3 = st.columns([1, 1, 2])
         ev_date = d1.date_input("입금 날짜", value=date.today(), key="dep_date")
@@ -754,6 +847,7 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
             st.caption("국장 {:,}원 · 미국 {:,}원{} · 현금 {:,}원 — {}".format(al.get("kr_krw", 0), al.get("us_krw", 0), usd_txt, al.get("cash_krw", 0), al.get("reason", "")))
         else:
             st.caption("배분할 수 있는 돈이 없어(CMA·달러 예수금이 0원) 이번 전략은 점검만 합니다. 위 '내 돈 현황'에 잔액을 먼저 맞춰 주세요.")
+    pl_ = None
     try:
         import fx as fxmod2
         pool_ = strat.get("_pool") or {}
@@ -767,7 +861,10 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
                 st.caption("AI 환율 의견(참고, 정확한 예측 불가): {} · 신뢰도 {} — {}".format(afx_.get("lean", "-"), afx_.get("confidence", "-"), afx_.get("level_note", "")))
     except Exception as e:  # noqa: BLE001
         st.caption("자금 계획을 표시하지 못했습니다: " + str(e)[:100])
-    ex = execution_rows(strat, items, fx)
+    for gc_ in (mstr.get("guideline_changes") or []):
+        if isinstance(gc_, dict):
+            st.info("가이드라인 조정 — {}: {} (근거: {} / 추가 위험: {} / 철회 조건: {})".format(gc_.get("guideline", ""), gc_.get("why", ""), gc_.get("evidence", ""), gc_.get("extra_risk", ""), gc_.get("revert_if", "")))
+    ex = execution_rows(strat, items, fx, (pl_ or {}).get("us_scale", 1.0))
     if ex:
         st.markdown("**실행 계획 — 우선순위 · 금액 · 수량**")
         st.dataframe(pd.DataFrame(ex), use_container_width=True, hide_index=True,
@@ -790,8 +887,21 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
             st.caption("확인 못함: " + str(u))
         for x in (strat.get("_research_src") or [])[:20]:
             st.caption("출처: {} {}".format(x.get("title", ""), x.get("uri", "")[:90]))
+    checks_ = []
+    if dep > 0:
+        try:
+            checks_ = verify_plan(strat, items, fx, pl_, bool(hub.get("freeze")))
+        except Exception as e:  # noqa: BLE001
+            checks_ = [{"등급": "필수", "항목": "검증 실행", "결과": "실패", "설명": str(e)[:100]}]
+        hard_fail = [c_ for c_ in checks_ if c_["등급"] == "필수" and c_["결과"] != "통과"]
+        st.markdown("**자동 검증 — 확정 전에 코드가 직접 확인한 항목**")
+        st.dataframe(pd.DataFrame(checks_), use_container_width=True, hide_index=True)
+        if hard_fail:
+            st.error("필수 검증에 실패한 항목이 있어 이 계획은 확정할 수 없습니다: " + ", ".join(c_["항목"] for c_ in hard_fail))
+        else:
+            st.success("필수 검증을 모두 통과했습니다(주의 항목은 직접 확인하세요). 확정해도 잔액은 바뀌지 않고, 실제 환전·매수 후 기록해야 바뀝니다.")
     if status != "confirmed" and dep > 0:
-        if st.button("이 계획을 확정하고 기록하기", key="strat_confirm", type="primary"):
+        if st.button("이 계획을 확정하고 기록하기", key="strat_confirm", type="primary", disabled=any(c_["등급"] == "필수" and c_["결과"] != "통과" for c_ in checks_)):
             try:
                 for key_, val_ in (("KR_KRW", al.get("kr_krw", 0)), ("US_KRW", al.get("us_krw", 0))):
                     ai_agent._run(get_conn, "INSERT INTO cash_balance (currency,amount,updated_at) VALUES (%s,%s,%s) ON CONFLICT (currency) DO UPDATE SET amount=EXCLUDED.amount, updated_at=EXCLUDED.updated_at",

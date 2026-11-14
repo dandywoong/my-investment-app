@@ -157,10 +157,18 @@ def plan(al, rate, cma_avail, usd_cash, spread_pct, view=None, ai_fx=None, goal_
         extra = min(rem * capr, float(sg["amount"]))
         why = (sg["reasons"] or [""])[0]
     ex_total = ex_need + extra
-    usd_after = usd_cash - use_usd_cash + (ex_total * (1 - sp) / rate if rate else 0.0)
+    usd_net = ex_total * (1 - sp) / rate if rate else 0.0  # 환전 후 실제로 받는 달러(스프레드 차감)
+    # 하드 검사: 미국 매수 달러는 (보유 달러 + 환전 순수령 달러)를 넘을 수 없다. 넘으면 매수액을 줄인다(환전 비용 때문에 생기는 차이).
+    avail_usd = usd_cash + usd_net
+    scale = 1.0
+    if us_usd > avail_usd + 1e-9:
+        scale = max(0.0, avail_usd / us_usd) if us_usd else 1.0
+        us, us_usd = us * scale, us_usd * scale
+        use_usd_cash = min(usd_cash, us_usd)
+    usd_after = usd_cash + usd_net - us_usd
     cma_after = cma_avail - kr - ex_total
-    return {"kr_buy_krw": kr, "us_buy_krw": us, "us_buy_usd": us_usd, "use_usd_cash": use_usd_cash, "exchange_for_buy_krw": ex_need, "exchange_extra_krw": extra, "exchange_total_krw": ex_total,
-            "usd_from_exchange": ex_total * (1 - sp) / rate if rate else 0.0, "cost_krw": ex_total * sp, "cma_left_krw": cma_after, "usd_left": usd_after,
+    return {"us_scale": scale, "avail_usd": avail_usd, "kr_buy_krw": kr, "us_buy_krw": us, "us_buy_usd": us_usd, "use_usd_cash": use_usd_cash, "exchange_for_buy_krw": ex_need, "exchange_extra_krw": extra, "exchange_total_krw": ex_total,
+            "usd_from_exchange": usd_net, "cost_krw": ex_total * sp, "cma_left_krw": cma_after, "usd_left": usd_after,
             "extra_why": why, "fx_level": None if not view else view["level"], "rate": rate}
 
 
@@ -181,6 +189,8 @@ def render_plan(get_conn, p, pool, tag="plan"):
         lines.append("환율 위치가 '{}'라 목표 달성에 필요한 달러를 미리 쌓으려고 {:,.0f}원을 추가 환전 — {}".format(p["fx_level"], p["exchange_extra_krw"], p["extra_why"]))
     elif p["fx_level"]:
         lines.append("환율 위치 '{}' — 오늘 필요한 만큼만 환전합니다(추가 환전 없음).".format(p["fx_level"]))
+    if p.get("us_scale", 1.0) < 0.9999:
+        lines.append("환전 비용(스프레드) 때문에 환전으로 받는 달러가 계획보다 적어 미국 매수액을 {:.2f}%로 줄였습니다(매수 ≤ 보유 달러 + 환전 순수령 달러 검사).".format(p["us_scale"] * 100))
     if p["exchange_total_krw"]:
         lines.append("예상 환전 비용 약 {:,.0f}원 (적용 환율 {:,.1f}원 기준)".format(p["cost_krw"], p["rate"]))
     for l_ in lines:
@@ -305,3 +315,59 @@ def render(get_conn, items, fx_use, us_alloc_krw=0, ai_fx=None):
                     st.success("삭제했습니다. 새로고침하세요.")
         except Exception:  # noqa: BLE001
             pass
+
+
+def render_edit(get_conn):
+    """예수금 기록 고치기: 잔액 바로잡기 · 기록 선택 삭제 · 전체 초기화. 보유 종목·거래 기록은 건드리지 않는다(fx_events 표만)."""
+    ensure_tables(get_conn)
+    cma, usd = balances(get_conn)[:2]
+    v = st.session_state.get("_fxed_v", 0)
+    st.caption("현재 잔액: CMA {:,.0f}원 · 달러 ${:,.2f}. 입력을 잘못했다면 아래에서 기록을 지우거나 잔액을 바로잡으세요. (여기서 바뀌는 것은 예수금 기록뿐이며 보유 종목 수량·평단은 바뀌지 않습니다.)".format(cma, usd))
+    with st.form("fxed_adjust_%d" % v):
+        a1, a2 = st.columns(2)
+        want_krw = a1.number_input("CMA 원화 잔액을 이 값으로 맞추기", min_value=0.0, value=float(round(cma)), step=10000.0)
+        want_usd = a2.number_input("달러 예수금을 이 값으로 맞추기($)", min_value=0.0, value=float(round(usd, 2)), step=1.0)
+        ok = st.form_submit_button("잔액 바로잡기(차이만큼 한 줄 추가)")
+    if ok:
+        try:
+            ai_agent._run(get_conn, "INSERT INTO fx_events (created_at,event_date,kind,krw_delta,usd_delta,rate,memo) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                          (datetime.now(timezone.utc).isoformat(timespec="seconds"), date.today().isoformat(), "adjust", want_krw - cma, want_usd - usd, None, "잔액 바로잡기"))
+            st.session_state["_fxed_v"] = v + 1
+            st.rerun()
+        except Exception as e:  # noqa: BLE001
+            st.error("실패: " + str(e)[:120])
+    try:
+        ev = ai_agent._run(get_conn, "SELECT id, event_date, kind, krw_delta, usd_delta, memo FROM fx_events ORDER BY id DESC LIMIT 40", fetch=True)
+    except Exception:  # noqa: BLE001
+        ev = None
+    if ev is not None and len(ev):
+        ev["종류"] = ev["kind"].map(lambda k: KINDS.get(k, k))
+        ev["삭제"] = False
+        view = ev[["삭제", "id", "event_date", "종류", "krw_delta", "usd_delta", "memo"]].rename(columns={"event_date": "날짜", "krw_delta": "원화 변화", "usd_delta": "달러 변화", "memo": "메모"})
+        ed = st.data_editor(view, hide_index=True, use_container_width=True, key="fxed_tbl_%d" % v, disabled=["id", "날짜", "종류", "원화 변화", "달러 변화", "메모"])
+        if st.button("체크한 기록 삭제", key="fxed_del_%d" % v):
+            ids = [int(x) for x in ed.loc[ed["삭제"], "id"]]
+            if not ids:
+                st.info("삭제할 기록을 체크하세요.")
+            else:
+                try:
+                    for r in ev[ev["id"].isin(ids)].itertuples():
+                        if r.kind == "deposit":  # 입금 기록은 기록·성적표용 cash_events에도 같이 들어가므로 짝을 지운다
+                            ai_agent._run(get_conn, "DELETE FROM cash_events WHERE id = (SELECT id FROM cash_events WHERE event_date=%s AND amount_krw=%s ORDER BY id DESC LIMIT 1)",
+                                          (r.event_date, int(r.krw_delta)))
+                    ai_agent._run(get_conn, "DELETE FROM fx_events WHERE id = ANY(%s)", (ids,))
+                    st.session_state["_fxed_v"] = v + 1
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.error("삭제 실패: " + str(e)[:120])
+    else:
+        st.caption("기록이 없습니다.")
+    with st.expander("예수금 기록 전체 지우고 처음부터 다시"):
+        sure = st.checkbox("예수금(CMA·달러) 기록을 모두 지우는 것에 동의합니다. 보유 종목·거래 기록은 지워지지 않습니다.", key="fxed_sure_%d" % v)
+        if st.button("예수금 기록 전체 지우기", key="fxed_all_%d" % v, disabled=not sure):
+            try:
+                ai_agent._run(get_conn, "DELETE FROM fx_events")
+                st.session_state["_fxed_v"] = v + 1
+                st.rerun()
+            except Exception as e:  # noqa: BLE001
+                st.error("실패: " + str(e)[:120])

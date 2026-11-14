@@ -16,6 +16,7 @@ import streamlit as st
 import market
 import planner
 import signals
+import accounts
 import ai_agent
 import fx as fxmod
 import kostolany
@@ -1264,6 +1265,7 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
     import supervision as sv
     st.markdown("##### EGGFOLIO · 내 투자")
     hub_box = st.container()
+    acct_box = st.container()
     st.subheader("종목별 판단")
     st.caption("보유 전체(한국·미국)를 한 표로 보고, 종목을 골라 행동 지침을 확인합니다. 행동 후보는 '가격 국면 × 내가 기록한 기업 상태 × 운용 방식'을 "
                "규칙으로 조합한 검증 전 후보이며 승률·확률이 아닙니다. 주문 기능은 없습니다.")
@@ -1380,6 +1382,11 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
                 i["score"] = signals.score_item(i, i["sig"], moods.get(i["mkt"]), avg_w, i.get("ctx"), (stress_d.get(i["mkt"]) or {}).get("level"))
     items.sort(key=lambda i: (KIND_VIEW[i["kind"]][0], -(i["value"] or 0)))
 
+    with acct_box:
+        try:
+            accounts.render(items, fx_use)
+        except Exception as e:  # noqa: BLE001
+            st.caption("계좌별 현황을 표시하지 못했습니다: " + str(e)[:100])
     # ---- 시장 상황과 내 위험 (맨 위) ----
     try:
         market.render_overview(items, risk, stress_d.get("한국"), stress_d.get("미국"), fx_, get_conn, cfg_, _save_cfg, get_prices)
