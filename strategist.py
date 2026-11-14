@@ -34,6 +34,7 @@ SCHEMA = """{
  "policy_deviations": ["내 정책과 다르게 제안한 부분과 이유(없으면 빈 배열)"],
  "priorities": [{"rank": 1, "name": "종목명", "ticker": "티커", "action": "매수|보류|홀드|정리검토", "amount_krw": 0, "weight_hint": "목표 비중 방향(예: 늘림/유지/줄임)", "reason": "근거", "evidence": "오늘 검색·데이터에서 찾은 이 종목의 근거(출처명·날짜)", "counter": "반대 근거"}],
  "avg_down_review": [{"name": "손실 종목", "verdict": "유리|조건부|불리", "reason": "근거", "conditions": "물타기가 성립하려면 필요한 조건", "recovery_pct_note": "평단까지 필요한 상승률·과거 도달 빈도·목표가 여력을 인용한 한 줄"}],
+ "fx_view": {"lean": "환전 유리|중립|환전 불리|판단 불가", "confidence": "낮음|보통|높음", "level_note": "원/달러 판단 근거(research.fx 헤드라인·fx_rule에서 확인된 것만, 정확한 예측은 불가)", "institution_views": [{"name": "기관·매체", "view": "의견", "date": "날짜"}]},
  "questions_to_user": ["내게 확인하고 싶은 것"],
  "confidence": "낮음|보통|높음",
  "unknowns": ["확인하지 못한 것"]
@@ -129,6 +130,38 @@ def _research_prompt(scope, rows):
 
 
 def research(get_conn, packet, force=False):
+    """뉴스 헤드라인은 앱이 직접 수집한다(AI 한도와 무관). secrets에 GEMINI_SEARCH=1 이 있으면 구글 검색 근거 조사를 먼저 시도하고, 실패하면 헤드라인으로 대신한다.
+    -> (결과 dict, 출처목록, 경고목록)"""
+    warns = []
+    if force:
+        try:
+            import newsfeed
+            newsfeed.fetch.clear()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        flag = str(st.secrets.get("GEMINI_SEARCH", "")).strip() in ("1", "true", "True")
+    except Exception:  # noqa: BLE001
+        flag = False
+    if flag:
+        res, srcs, w = research_grounded(get_conn, packet, force)
+        if res.get("market") or res.get("tickers"):
+            return res, srcs, w
+        warns += w
+    try:
+        import newsfeed
+        hold = [{"ticker": h["ticker"], "name": h["name"], "market": h["market"]} for h in packet["holdings"]]
+        res, srcs = newsfeed.collect(hold)
+    except Exception as e:  # noqa: BLE001
+        return {"market": None, "fx": None, "tickers": [], "not_found": []}, [], warns + ["뉴스 헤드라인 수집 실패: " + str(e)[:100]]
+    if res["total"] == 0:
+        warns.append("뉴스 헤드라인을 하나도 가져오지 못했습니다(네트워크 제한일 수 있음). 이 경우 앱 자료만으로 판단하며 확신도를 낮게 표시합니다.")
+        return {"market": None, "fx": None, "tickers": [], "not_found": []}, [], warns
+    res["market"]["_note"] = res["how"]
+    return res, srcs, warns
+
+
+def research_grounded(get_conn, packet, force=False):
     """시장 1회 + 종목 묶음(4개씩) 검색 조사. 6시간 안의 결과는 재사용한다. -> (결과 dict, 출처목록, 경고목록)"""
     scope_key = ",".join(sorted(h["ticker"] for h in packet["holdings"]))
     if not force:
@@ -185,7 +218,7 @@ def coverage(sources):
     for s_ in sources:
         blob = (str(s_.get("title", "")) + " " + str(s_.get("uri", ""))).lower()
         for dom, nm in SOURCE_DOMAINS.items():
-            if dom in blob:
+            if dom in blob or nm.lower() in blob:
                 hit.add(nm)
     return sorted(hit)
 
@@ -368,6 +401,49 @@ def validate(strategy, deposit, items):
     return strategy, warns
 
 
+def enforce_limits(pri, warns):
+    """AI가 개별 종목에 몰아줘도 정책 한도 안으로 앱이 보정한다(총액은 그대로, 코어로 이동).
+    - 코어(VOO·버크셔)가 미국 매수액의 floor 이상, 코어 외 한 종목은 cap 이하. AI 노출이 클수록 floor가 높다."""
+    lim = st.session_state.get("_limits") or {}
+    floor, cap = lim.get("floor"), lim.get("cap")
+    if not floor:
+        return
+    core = [p for p in pri if p.get("market") == "미국" and p.get("action") == "매수" and str(p.get("ticker", "")).upper() in ("VOO", "BRK-B", "BRK.B", "BRKB")]
+    other = [p for p in pri if p.get("market") == "미국" and p.get("action") == "매수" and p not in core and p.get("amount_krw", 0) > 0]
+    tot = sum(p["amount_krw"] for p in core) + sum(p["amount_krw"] for p in other)
+    if not tot or not core:
+        return
+    moved = 0
+    for p in other:  # 한 종목 상한
+        over = p["amount_krw"] - int(tot * cap)
+        if over > 0:
+            p["amount_krw"] -= over
+            moved += over
+            p["_adj"] = "정책 한도(한 종목 최대 {:.0f}%)로 {:,}원 줄임".format(cap * 100, over)
+    cur_core = sum(p["amount_krw"] for p in core)
+    need = int(tot * floor) - cur_core - moved
+    if need > 0:  # 코어 하한: 코어 외에서 비례해 추가로 줄임
+        pool = sum(p["amount_krw"] for p in other)
+        take = min(need, pool)
+        for p in other:
+            cut = int(take * p["amount_krw"] / pool) if pool else 0
+            p["amount_krw"] -= cut
+            moved += cut
+            p["_adj"] = (p.get("_adj", "") + " / " if p.get("_adj") else "") + "코어 하한({:.0f}%)을 맞추려고 {:,}원 줄임".format(floor * 100, cut)
+    if moved > 0:
+        base = sum(p["amount_krw"] for p in core)
+        left = moved
+        for i_, p in enumerate(core):
+            if i_ == len(core) - 1:
+                add = left
+            else:
+                add = moved // len(core)  # 코어 종목끼리 균등 분배(VOO·버크셔 모두 코어)
+            p["amount_krw"] += add
+            left -= add
+            p["_adj"] = "코어 배분 확대: +{:,}원(정책 한도 보정)".format(add)
+        warns.append("AI 제안이 정책 한도를 넘어 앱이 {:,}원을 코어(VOO·버크셔)로 옮겼습니다. (코어 최소 {:.0f}%, 코어 외 한 종목 최대 {:.0f}% — AI 노출이 클수록 코어 하한이 높아짐)".format(moved, floor * 100, cap * 100))
+
+
 def postprocess(strategy, items, fx):
     """보유 종목 누락 보완, 시장별 금액 상한, 달러 환산, 근거 누락 표시."""
     warns = []
@@ -390,6 +466,7 @@ def postprocess(strategy, items, fx):
     for it in items:
         if it["tk"] not in seen:
             pri.append({"rank": 99, "name": it["name"], "ticker": it["tk"], "action": "AI 미언급", "amount_krw": 0, "weight_hint": "-", "reason": "AI가 이 종목을 다루지 않았습니다.", "evidence": "", "counter": "", "_item": it["tk"], "market": it["mkt"]})
+    enforce_limits(pri, warns)
     try:  # 점수·배분 일관성과 AI 집중 점검(앱이 다시 확인)
         by_item = {i["tk"]: i for i in items}
         tot_dep = sum(p["amount_krw"] for p in pri if p.get("action") == "매수") or 0
@@ -421,20 +498,63 @@ def postprocess(strategy, items, fx):
     return strategy, warns
 
 
+def _fill_missing(packet, res, items):
+    """AI가 빠뜨린 보유 종목을 한 번 더 물어 채운다(금액은 이미 정한 배분을 건드리지 않도록 0원)."""
+    miss = [p for p in res.get("priorities") or [] if p.get("action") == "AI 미언급"]
+    if not miss:
+        return []
+    names = [p.get("name") for p in miss]
+    keep = {"today": packet.get("today"), "holdings": [h for h in packet["holdings"] if h["name"] in names], "research": {"tickers": [t for t in (packet.get("research") or {}).get("tickers", []) if t.get("name") in names]},
+            "sentiment_and_value_gap": packet.get("sentiment_and_value_gap"), "already_decided_allocation": res.get("allocation"), "policy": packet.get("user_policy_text")}
+    pr = ("당신은 펀드매니저 보조입니다. 오늘 배분은 이미 정해졌습니다(already_decided_allocation). 아래 종목에 대해서만 오늘의 판단을 JSON으로 쓰세요. 금액은 배정하지 않습니다(0원). "
+          "action은 매수후보|보류|홀드|정리검토 중 하나, reason과 evidence(헤드라인 근거와 날짜·매체, 없으면 '자료 없음'), counter(반대 근거)를 쓰세요. 승률·확률 표현 금지, 헤드라인에 없는 사실은 추측 금지.\n"
+          '출력: {"priorities": [{"name": "", "ticker": "", "action": "", "reason": "", "evidence": "", "counter": ""}]}\n자료:\n' + json.dumps(keep, ensure_ascii=False)[:30000])
+    out, err = _gemini(pr)
+    if err or not isinstance(out, dict):
+        return ["일부 종목({})은 AI가 다루지 못했습니다: {}".format(", ".join(names), err or "응답 형식 오류")]
+    by = {(p.get("ticker") or "", p.get("name") or ""): p for p in out.get("priorities") or []}
+    got = 0
+    for p in miss:
+        q = next((v for k, v in by.items() if k[0] == p.get("ticker") or k[1] == p.get("name")), None)
+        if q:
+            p["action"] = q.get("action") or "보류"
+            p["reason"], p["evidence"], p["counter"] = q.get("reason", ""), q.get("evidence", ""), q.get("counter", "")
+            p["amount_krw"] = 0
+            got += 1
+    return [] if got == len(miss) else ["{}개 종목은 끝내 판단을 받지 못했습니다.".format(len(miss) - got)]
+
+
 def make_strategy(get_conn, packet, items, deposit, fx, force_research=False):
+    try:
+        ai_ = float((packet.get("risk") or {}).get("ai_exposure_pct") or 0) / 100.0
+        band_ = float(packet.get("ai_exposure_comfort_band_pct") or 45) / 100.0
+        share_ = max(0.30, min(0.85, 0.40 + 1.6 * (ai_ - band_)))
+        st.session_state["_limits"] = {"floor": max(0.40, share_ - 0.15), "cap": 0.20 if ai_ > band_ else 0.30}
+    except Exception:  # noqa: BLE001
+        st.session_state["_limits"] = None
     res_r, srcs, rwarns = research(get_conn, packet, force_research)
     packet["research"] = res_r
-    packet["research_status"] = "정상" if (res_r.get("market") or res_r.get("tickers")) else "실패: 실시간 검색 미반영"
-    res, err = _gemini(_prompt(packet, "입금 {:,}원을 포함해 현재 포트폴리오의 큰 전략·세부 전략·배분·우선순위를 새로 짜세요. research(오늘의 검색 조사)와 종목별 등락·점수·회복 점검을 근거로 종목마다 판단하세요. "
-                               "손실 종목마다 물타기가 유리한지 불리한지도 avg_down_review에 검토하세요.".format(deposit), "반드시 아래 JSON 스키마만 출력하세요.\n" + SCHEMA))
+    packet["research_status"] = ("정상: 뉴스 헤드라인 {}건 반영(앱이 직접 수집, 본문은 못 읽음)".format(res_r.get("total", "")) if res_r.get("total") else "정상") if (res_r.get("market") or res_r.get("tickers")) else "실패: 뉴스 자료 없음"
+    task = ("이번에 배분할 가용 자금 {:,}원(= CMA에서 쓸 수 있는 원화 + 이미 보유한 달러의 원화 환산, packet.cash_pool 참고)을 포함해 현재 포트폴리오의 큰 전략·세부 전략·배분·우선순위를 새로 짜세요. "
+            "국장 매수(kr_krw)는 CMA 원화(cash_pool.cma_available_krw) 범위 안에서만, 미국 매수(us_krw)는 보유 달러를 먼저 쓰고 부족분만 환전합니다. 환율 등급(cash_accounts_and_fx.fx_rule_level)이 낮음·매우 낮음이면 환전이 필요한 미국 매수는 줄이거나 미루고, 이미 가진 달러 범위에서 먼저 매수를 검토하세요. "
+            "research의 뉴스 헤드라인(앱이 수집, 본문은 못 읽음)과 종목별 등락·점수·회복 점검·심리 단계를 근거로 '보유 종목 전부'를 priorities에 넣어 종목마다 판단하세요(하나라도 빠뜨리지 마세요. 사지 않는 종목도 보류·홀드와 이유를 쓰세요). "
+            "헤드라인에 없는 사실은 추측하지 말고 unknowns에 적으세요. 환율은 fx_view에 헤드라인에서 확인된 범위로만 판단하고 정확한 예측은 불가함을 전제하세요. "
+            "손실 종목마다 물타기가 유리한지 불리한지도 avg_down_review에 검토하세요.").format(deposit)
+    res, err = _gemini(_prompt(packet, task, "반드시 아래 JSON 스키마만 출력하세요.\n" + SCHEMA))
     if err:
         return None, err, rwarns
     res, warns = validate(res, deposit, items)
     res, w2 = postprocess(res, items, fx)
+    w2 += _fill_missing(packet, res, items)
     res["_deposit"] = int(deposit)
+    res["_pool"] = packet.get("cash_pool")
     res["_coverage"] = coverage(srcs)
     res["_research_ok"] = bool(res_r.get("market") or res_r.get("tickers"))
-    res["_ai_fx"] = res_r.get("fx")
+    afx = res.get("fx_view")
+    if not (isinstance(afx, dict) and afx.get("lean")):
+        afx = res_r.get("fx") if isinstance(res_r.get("fx"), dict) and res_r["fx"].get("lean") else None
+    res["_ai_fx"] = afx
+    res["_headlines_total"] = res_r.get("total")
     res["_research_src"] = [{"title": x.get("title", ""), "uri": x.get("uri", "")} for x in srcs][:30]
     ai_agent._run(get_conn, "INSERT INTO strategy_log (created_at,status,deposit,content) VALUES (%s,%s,%s,%s)",
                   (_now(), "draft", int(deposit), json.dumps(res, ensure_ascii=False)))
@@ -490,7 +610,7 @@ def execution_rows(strategy, items, fx):
         amt = int(p.get("amount_krw") or 0)
         row = {"순위": p.get("rank") if p.get("rank") != 99 else None, "종목": p.get("name"), "행동": p.get("action"), "금액(원)": amt if amt else None,
                "금액(USD)": None, "수량": None, "현재가": None, "체결 후 평단": None, "규칙 점수": None, "비중 방향": p.get("weight_hint"),
-               "근거": p.get("reason"), "오늘의 증거(출처)": p.get("evidence"), "반대 근거": p.get("counter")}
+               "근거": (str(p.get("reason") or "") + ("  [앱 보정: {}]".format(p["_adj"]) if p.get("_adj") else "")), "오늘의 증거(출처)": p.get("evidence"), "반대 근거": p.get("counter")}
         if it:
             row["규칙 점수"] = None if not it.get("score") else round(it["score"]["total"], 1)
             px = it.get("price")
@@ -567,25 +687,55 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
             st.markdown("**{}** — {}".format(k_, ", ".join(v_)))
         st.caption("AI가 검색 때 이 이름들을 우선 찾도록 지시하지만, 검색 엔진이 실제로 어떤 사이트를 보여 줄지는 보장할 수 없습니다. 결과 화면에 실제로 참조된 지정 출처를 표시합니다.")
     sid, status, strat, created = load_latest(get_conn)
+    import fx as fxmod
+    fxmod.ensure_tables(get_conn)
+    cma0, usd0, dep_cum, fx_cum, buy_cum = fxmod.balances(get_conn)
+    reserve0 = int(float(c.get("fx_reserve", 0) or 0))
+    spread0 = float(c.get("fx_spread", 0.25) or 0.25)
+    st.markdown("##### 내 돈 현황 — 원화 예수금 · 달러 예수금 · 투자 가능 금액")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("CMA 원화 예수금", "{:,.0f}원".format(cma0))
+    m2.metric("달러 예수금", "${:,.2f}".format(usd0), "{:,.0f}원 환산".format(usd0 * fx) if fx else None)
+    m3.metric("비상금·부채 제외 후 투자 가능 원화", "{:,.0f}원".format(max(0.0, cma0 - reserve0)))
+    m4.metric("이번에 배분할 수 있는 총액", "{:,.0f}원".format(max(0.0, cma0 - reserve0) + usd0 * (fx or 0)))
+    st.caption("누적 입금 {:,.0f}원 · 누적 환전 {:,.0f}원 · 누적 미국 매수 ${:,.2f}. 이 잔액은 '실제로 한 일'을 기록해야만 바뀝니다(아래 계획 화면과 '환전·달러 예수금' 탭에서 기록). "
+               "처음이라면 지금 CMA 잔액과 달러 잔액을 '환전·달러 예수금' 탭의 '잔액 바로잡기'로 한 번 맞춰 두세요.".format(dep_cum, fx_cum, buy_cum))
     with st.form("deposit_form"):
         d1, d2, d3 = st.columns([1, 1, 2])
         ev_date = d1.date_input("입금 날짜", value=date.today(), key="dep_date")
-        amt = d2.number_input("새로 생긴 투자금 (원, 없으면 0)", min_value=0, value=0, step=100000, key="dep_amt")
+        amt = d2.number_input("CMA에 새로 입금한 돈 (원, 없으면 0)", min_value=0, value=0, step=100000, key="dep_amt")
         memo = d3.text_input("메모 (선택)", key="dep_memo")
-        force = st.checkbox("검색을 새로 하기 (끄면 6시간 안의 검색 결과를 재사용)", value=False, key="dep_force")
+        r1, r2 = st.columns(2)
+        reserve_in = r1.number_input("CMA 중 투자에 쓰지 않을 돈 (비상금·부채 상환 예정액)", min_value=0, value=reserve0, step=100000, key="dep_reserve")
+        spread_in = r2.number_input("증권사 환전 스프레드 (우대 반영, %)", min_value=0.0, max_value=3.0, value=spread0, step=0.05, key="dep_spread")
+        force = st.checkbox("뉴스를 새로 모으기 (끄면 30분 안에 모은 헤드라인을 재사용)", value=False, key="dep_force")
         b1, b2 = st.columns(2)
-        go_new = b1.form_submit_button("기록하고 AI 전략·배분 받기")
-        go_chk = b2.form_submit_button("입금 없이 전략만 다시 점검")
+        go_new = b1.form_submit_button("입금 기록하고 오늘 운용 계획 받기")
+        go_chk = b2.form_submit_button("입금 없이 오늘 운용 계획 받기")
     if go_new or go_chk:
-        dep = int(amt) if go_new else 0
-        if go_new and dep > 0:
+        try:
+            save_cfg(get_conn, "fx_reserve", str(int(reserve_in)))
+            save_cfg(get_conn, "fx_spread", str(float(spread_in)))
+        except Exception:  # noqa: BLE001
+            pass
+        new_dep = int(amt) if go_new else 0
+        if new_dep > 0:
             try:
-                ai_agent._run(get_conn, "INSERT INTO cash_events (event_date,amount_krw,memo,created_at) VALUES (%s,%s,%s,%s)", (ev_date.isoformat(), dep, memo, _now()))
+                ai_agent._run(get_conn, "INSERT INTO fx_events (created_at,event_date,kind,krw_delta,usd_delta,rate,memo) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                              (_now(), ev_date.isoformat(), "deposit", new_dep, 0, None, memo))
+                ai_agent._run(get_conn, "INSERT INTO cash_events (event_date,amount_krw,memo,created_at) VALUES (%s,%s,%s,%s)", (ev_date.isoformat(), new_dep, memo, _now()))
             except Exception as e:  # noqa: BLE001
                 st.error("입금 기록 실패: " + str(e)[:100])
-        packet = build_packet(items, risk, stress, fx, cfg_pk, dep, memo, cash_map, policy, strat, get_prices)
-        with st.spinner("지정 출처를 검색 조사하고 전략을 짜는 중... (1~3분 걸릴 수 있습니다)"):
-            res, err, warns = make_strategy(get_conn, packet, items, dep, fx, force_research=force)
+        cma1, usd1 = fxmod.balances(get_conn)[:2]
+        cma_av = max(0.0, cma1 - reserve_in)
+        pool = int(cma_av + usd1 * (fx or 0))
+        pool_info = {"cma_krw": round(cma1), "cma_available_krw": round(cma_av), "reserve_excluded_krw": int(reserve_in), "usd_cash_usd": round(usd1, 2), "usd_cash_krw": round(usd1 * (fx or 0)),
+                     "new_deposit_today_krw": new_dep, "fx_spread_pct": float(spread_in), "total_pool_krw": pool}
+        packet = build_packet(items, risk, stress, fx, cfg_pk, pool, memo, cash_map, policy, strat, get_prices)
+        packet["cash_pool"] = pool_info
+        packet["new_deposit"]["note"] = "amount_krw는 이번에 배분할 전체 가용 자금(CMA 사용 가능 원화 + 보유 달러의 원화 환산)이며, 오늘 새로 들어온 돈은 new_deposit_today_krw입니다."
+        with st.spinner("뉴스를 모으고 전략을 짜는 중... (30초~1분)"):
+            res, err, warns = make_strategy(get_conn, packet, items, pool, fx, force_research=force)
         if err:
             st.error("전략을 만들지 못했습니다: " + err)
         else:
@@ -604,9 +754,11 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
     cov = strat.get("_coverage") or []
     st.caption("상태: {} · 작성 {} UTC · 신뢰도 {} · AI 초안이며 검증 전입니다".format("확정" if status == "confirmed" else "초안(확정 전)", created[:16].replace("T", " "), strat.get("confidence", "-")))
     if strat.get("_research_ok"):
-        st.caption("실시간 검색 반영: 예 · 실제로 참조된 지정 출처 {}곳 — {}".format(len(cov), ", ".join(cov) if cov else "지정 출처가 직접 확인되지 않음(일반 웹 결과)"))
+        n_h = strat.get("_headlines_total")
+        st.caption("뉴스 반영: 예{} · 참조된 지정 기관·매체 {}곳 — {} · 헤드라인(제목·매체·날짜)만 읽었고 기사 본문은 읽지 못했습니다.".format(
+            " · 헤드라인 {}건".format(n_h) if n_h else "", len(cov), ", ".join(cov) if cov else "지정 기관이 직접 확인되지 않음"))
     else:
-        st.error("실시간 검색이 반영되지 않았습니다. 이 전략은 앱 자료와 AI의 기존 지식에만 근거하므로 참고만 하세요. (무료 API 한도 초과이면 잠시 뒤 다시 시도)")
+        st.error("뉴스 자료를 가져오지 못했습니다. 이 전략은 앱 자료(시세·점수·컨센서스)에만 근거하므로 참고만 하세요.")
     if strat.get("research_summary"):
         st.markdown("**오늘의 핵심 발견** — " + str(strat["research_summary"]))
     for d_ in strat.get("policy_deviations") or []:
@@ -627,7 +779,20 @@ def render_panel(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, loa
             usd_txt = " (${:,.2f}, 환율 {:,.0f}원)".format(al["us_usd"], al["fx"]) if al.get("us_usd") is not None else ""
             st.caption("국장 {:,}원 · 미국 {:,}원{} · 현금 {:,}원 — {}".format(al.get("kr_krw", 0), al.get("us_krw", 0), usd_txt, al.get("cash_krw", 0), al.get("reason", "")))
         else:
-            st.caption("이번 전략은 입금 없이 만든 점검이라 배분 금액이 없습니다.")
+            st.caption("배분할 수 있는 돈이 없어(CMA·달러 예수금이 0원) 이번 전략은 점검만 합니다. 위 '내 돈 현황'에 잔액을 먼저 맞춰 주세요.")
+    try:
+        import fx as fxmod2
+        pool_ = strat.get("_pool") or {}
+        if dep > 0 and fx:
+            gap_ = max(0.0, float(cfg_pk.get("goal") or 0) - float(cfg_pk.get("invested") or 0))
+            pl_ = fxmod2.plan(al, fx, float(pool_.get("cma_available_krw", 0)), float(pool_.get("usd_cash_usd", 0)), float(pool_.get("fx_spread_pct", 0.25)),
+                              fxmod2.fx_view(), strat.get("_ai_fx"), gap_)
+            fxmod2.render_plan(get_conn, pl_, dep, "p%s" % sid)
+            afx_ = strat.get("_ai_fx")
+            if afx_:
+                st.caption("AI 환율 의견(참고, 정확한 예측 불가): {} · 신뢰도 {} — {}".format(afx_.get("lean", "-"), afx_.get("confidence", "-"), afx_.get("level_note", "")))
+    except Exception as e:  # noqa: BLE001
+        st.caption("자금 계획을 표시하지 못했습니다: " + str(e)[:100])
     ex = execution_rows(strat, items, fx)
     if ex:
         st.markdown("**실행 계획 — 우선순위 · 금액 · 수량**")

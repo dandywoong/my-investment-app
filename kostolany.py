@@ -361,7 +361,11 @@ def render_sentiment_board(get_conn, items, an, fx_use):
         return
     pick = st.selectbox("종목별 자세히 보기", names, key="kost_pick")
     it = next(i for i in items if i["name"] == pick)
-    a = an[it["tk"]]
+    render_detail(get_conn, it, an[it["tk"]])
+
+
+def render_detail(get_conn, it, a):
+    """종목 하나의 코스톨라니 판단 상세(심리 단계·근거·가치 괴리·다음 조건·변화 이력)."""
     s, j = a["sen"], a["judge"]
     c1, c2, c3 = st.columns(3)
     c1.metric("시장심리(추정)", "자료 없음" if not s else "{}단계".format(s["stage"]), None if not s else s["label"])

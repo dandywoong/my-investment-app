@@ -12,7 +12,7 @@ import streamlit as st
 import ai_agent
 
 LEVELS = ["매우 낮음", "낮음", "보통", "양호", "매우 양호"]
-KINDS = {"deposit": "원화 입금(CMA)", "fx_done": "환전 완료(원화→달러)", "usd_buy": "미국 주식 매수 체결(달러 사용)", "usd_in": "달러 유입(매도·배당)", "adjust": "잔액 바로잡기"}
+KINDS = {"deposit": "원화 입금(CMA)", "fx_done": "환전 완료(원화→달러)", "usd_buy": "미국 주식 매수 체결(달러 사용)", "usd_in": "달러 유입(매도·배당)", "kr_buy": "국내 주식 매수 체결(원화 사용)", "kr_in": "원화 유입(국내 매도·배당)", "adjust": "잔액 바로잡기"}
 _ONCE = {"done": False}
 
 
@@ -137,6 +137,79 @@ def packet_part(get_conn, view, ai_fx):
             "fx_notes": None if not view else view["notes"], "fx_ai_research": ai_fx, "note": "환전 결정과 주식 매수 결정은 별개입니다. 달러 예수금이 있으면 환전 없이 그 달러로 매수 가능."}
 
 
+def plan(al, rate, cma_avail, usd_cash, spread_pct, view=None, ai_fx=None, goal_gap_krw=0):
+    """AI가 정한 배분(국장 kr_krw / 미국 us_krw / 현금 cash_krw)을 실제 자금 흐름으로 바꾼다.
+    미국 매수는 보유 달러를 먼저 쓰고 부족분만 환전한다. 환율이 양호하면 목표까지 필요한 미국 투자금을 위해 '추가 환전'을 권할 수 있다. -> dict"""
+    kr = float(al.get("kr_krw", 0) or 0)
+    us = float(al.get("us_krw", 0) or 0)
+    us_usd = us / rate if rate else 0.0
+    use_usd_cash = min(usd_cash, us_usd)
+    need_usd = us_usd - use_usd_cash
+    sp = spread_pct / 100.0
+    ex_need = need_usd * rate / (1 - sp) if need_usd > 0 else 0.0
+    ex_need = min(ex_need, max(0.0, cma_avail - kr))
+    extra, why = 0.0, ""
+    if view and not view.get("stale") and goal_gap_krw > 0:
+        rem = max(0.0, cma_avail - kr - ex_need)
+        held = usd_cash - use_usd_cash + (ex_need * (1 - sp) / rate if rate else 0.0)
+        sg = suggest(view, ai_fx, rem, 0, held, goal_gap_krw, spread_pct)
+        capr = 0.5 if view.get("level") == "매우 양호" else 0.3  # 하루에 몰아서 환전하지 않도록 남은 CMA의 일부만(분할 환전)
+        extra = min(rem * capr, float(sg["amount"]))
+        why = (sg["reasons"] or [""])[0]
+    ex_total = ex_need + extra
+    usd_after = usd_cash - use_usd_cash + (ex_total * (1 - sp) / rate if rate else 0.0)
+    cma_after = cma_avail - kr - ex_total
+    return {"kr_buy_krw": kr, "us_buy_krw": us, "us_buy_usd": us_usd, "use_usd_cash": use_usd_cash, "exchange_for_buy_krw": ex_need, "exchange_extra_krw": extra, "exchange_total_krw": ex_total,
+            "usd_from_exchange": ex_total * (1 - sp) / rate if rate else 0.0, "cost_krw": ex_total * sp, "cma_left_krw": cma_after, "usd_left": usd_after,
+            "extra_why": why, "fx_level": None if not view else view["level"], "rate": rate}
+
+
+def render_plan(get_conn, p, pool, tag="plan"):
+    """오늘의 자금 계획 카드 + 실제로 한 일 기록 양식."""
+    st.markdown("**오늘의 자금 계획 — 환전 · 투자 · 남길 돈**")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("오늘 환전(원화→달러)", "{:,.0f}원".format(p["exchange_total_krw"]) if p["exchange_total_krw"] else "환전 안 함", "${:,.2f} 확보".format(p["usd_from_exchange"]) if p["exchange_total_krw"] else None)
+    c2.metric("오늘 미국 투자", "${:,.2f}".format(p["us_buy_usd"]), "{:,.0f}원 상당".format(p["us_buy_krw"]))
+    c3.metric("오늘 국장 투자", "{:,.0f}원".format(p["kr_buy_krw"]))
+    c4.metric("남는 돈", "원화 {:,.0f}원".format(p["cma_left_krw"]), "달러 ${:,.2f}".format(p["usd_left"]))
+    lines = []
+    if p["use_usd_cash"] > 0:
+        lines.append("미국 매수 ${:,.2f} 중 이미 가진 달러 ${:,.2f}를 먼저 사용".format(p["us_buy_usd"], p["use_usd_cash"]))
+    if p["exchange_for_buy_krw"] > 0:
+        lines.append("부족한 달러를 채우려고 {:,.0f}원 환전(스프레드 반영)".format(p["exchange_for_buy_krw"]))
+    if p["exchange_extra_krw"] > 0:
+        lines.append("환율 위치가 '{}'라 목표 달성에 필요한 달러를 미리 쌓으려고 {:,.0f}원을 추가 환전 — {}".format(p["fx_level"], p["exchange_extra_krw"], p["extra_why"]))
+    elif p["fx_level"]:
+        lines.append("환율 위치 '{}' — 오늘 필요한 만큼만 환전합니다(추가 환전 없음).".format(p["fx_level"]))
+    if p["exchange_total_krw"]:
+        lines.append("예상 환전 비용 약 {:,.0f}원 (적용 환율 {:,.1f}원 기준)".format(p["cost_krw"], p["rate"]))
+    for l_ in lines:
+        st.write("- " + l_)
+    st.caption("이 화면은 계획이며 잔액을 바꾸지 않습니다. 실제로 환전·매수를 마친 뒤 아래에 실제 값을 기록해야 잔액이 바뀝니다.")
+    with st.form("fx_exec_" + tag):
+        e1, e2, e3, e4 = st.columns(4)
+        a = e1.number_input("실제 환전한 원화", min_value=0.0, value=float(round(p["exchange_total_krw"])), step=10000.0)
+        b = e2.number_input("환전으로 받은 달러($)", min_value=0.0, value=float(round(p["usd_from_exchange"], 2)), step=1.0)
+        c = e3.number_input("미국 매수에 쓴 달러($)", min_value=0.0, value=float(round(p["us_buy_usd"], 2)), step=1.0)
+        d = e4.number_input("국장 매수에 쓴 원화", min_value=0.0, value=float(round(p["kr_buy_krw"])), step=10000.0)
+        ok = st.form_submit_button("실제로 한 일 기록하기 (잔액에 반영)")
+    if ok:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        today = date.today().isoformat()
+        try:
+            if a > 0 or b > 0:
+                ai_agent._run(get_conn, "INSERT INTO fx_events (created_at,event_date,kind,krw_delta,usd_delta,rate,memo) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                              (now, today, "fx_done", -a, b, (a / b) if b else None, "운용 계획에서 기록"))
+            if c > 0:
+                ai_agent._run(get_conn, "INSERT INTO fx_events (created_at,event_date,kind,krw_delta,usd_delta,rate,memo) VALUES (%s,%s,%s,%s,%s,%s,%s)", (now, today, "usd_buy", 0, -c, None, "운용 계획에서 기록"))
+            if d > 0:
+                ai_agent._run(get_conn, "INSERT INTO fx_events (created_at,event_date,kind,krw_delta,usd_delta,rate,memo) VALUES (%s,%s,%s,%s,%s,%s,%s)", (now, today, "kr_buy", -d, 0, None, "운용 계획에서 기록"))
+            st.success("기록했습니다. 잔액이 바뀌었습니다. 보유 수량·평단은 '보유·거래 입력'에서 따로 고쳐 주세요.")
+            st.rerun()
+        except Exception as e:  # noqa: BLE001
+            st.error("기록 실패: " + str(e)[:150])
+
+
 # ------------------------------------------------------------------ 화면
 def render(get_conn, items, fx_use, us_alloc_krw=0, ai_fx=None):
     """환전·달러 예수금 섹션(요청서 A~E). us_alloc_krw: 전략가가 정한 오늘 미국 배분(원)."""
@@ -209,6 +282,10 @@ def render(get_conn, items, fx_use, us_alloc_krw=0, ai_fx=None):
                 ud = -usd_v
             elif kind == "usd_in":
                 ud = usd_v
+            elif kind == "kr_buy":
+                kd = -krw
+            elif kind == "kr_in":
+                kd = krw
             else:
                 kd, ud = krw - cma, usd_v - usd
             try:

@@ -92,7 +92,7 @@ INFO_KEYS = ["shortName", "sector", "industry", "currency", "currentPrice", "mar
              "fiftyTwoWeekHigh", "fiftyTwoWeekLow"]
 
 
-def gather_packet(sym):
+def gather_packet(sym, name=None, mkt=None):
     """야후 파이낸스의 최근 뉴스·재무 요약·애널리스트 목표가를 모은다. -> (패킷 dict, 날짜 있는 뉴스 수)"""
     import yfinance as yf
     tk = yf.Ticker(sym)
@@ -117,6 +117,14 @@ def gather_packet(sym):
                 news.append({"date": str(when)[:10], "title": title[:200], "publisher": pub, "summary": str(c.get("summary") or "")[:300], "url": url})
     except Exception:  # noqa: BLE001
         news = []
+    try:  # 구글 뉴스 헤드라인(한도 없음)을 더해 한국 종목도 근거가 충분하도록 한다
+        import newsfeed
+        have = {n["title"][:30] for n in news}
+        for x in newsfeed.headlines_for(sym, name or sym, mkt, 8):
+            if x["title"][:30] not in have:
+                news.append({"date": x["date"], "title": x["title"], "publisher": x["source"], "summary": "", "url": x["link"]})
+    except Exception:  # noqa: BLE001
+        pass
     return {"info": info, "news": news}, sum(1 for n in news if n["date"])
 
 
@@ -206,11 +214,13 @@ def analyze_one(key, models, t):
         use_search = False
     packet, n_dated = None, 0
     try:
-        packet, n_dated = gather_packet(t["tk"])
+        packet, n_dated = gather_packet(t["tk"], t.get("name"), t.get("mkt"))
     except Exception:  # noqa: BLE001
         packet, n_dated = None, 0
     packet_ok = bool(packet) and (n_dated >= 2 or len((packet or {}).get("info", {})) >= 8)
-    prompt = _prompt(t, packet if packet_ok else None)
+    has_any = bool(packet) and bool(packet.get("news") or packet.get("info"))
+    packet_ok = packet_ok or has_any
+    prompt = _prompt(t, packet if has_any else None)
     last, saw429 = None, False
     for model in models:
         for grounded in ((True, False) if (use_search or not packet_ok) else (False,)):

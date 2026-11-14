@@ -1245,25 +1245,18 @@ def _render_ai_panel(get_conn, items, stances, ai_views):
         st.rerun()
 
 
-def _render_pick_ai(get_conn, it, stances, ai_views):
-    """종목 보드에서 고른 종목의 AI 기업 분석을 바로 실행한다(선택 종목 1개)."""
+def _pick_ai_run(get_conn, it, stances, ai_views):
+    """선택 종목 1개의 AI 기업 분석을 지금 실행. -> (성공 여부, 메시지)"""
     prev = ai_views.get(it["tk"])
-    c1, c2 = st.columns([1, 3])
-    run = c1.button("{} AI 분석 실행".format(it["name"]), key="pickai_" + it["tk"], type="primary")
-    c2.caption("선택한 종목만 지금 분석해 갱신합니다. 마지막 분석: {}".format(str(prev["created_at"])[:16].replace("T", " ") + " UTC" if prev is not None else "아직 없음"))
-    msg = st.session_state.pop("_pickai_msg", None)
-    if msg:
-        (st.error if msg[0] == "err" else st.success)(msg[1])
-    if run:
-        rec = stances.get(it["tk"])
-        prior = None if rec is None else {"stance": rec["stance"], "as_of": rec["as_of"], "memo": rec["memo"], "invalidation": rec["invalidation"]}
-        t = {"tk": it["tk"], "name": it["name"], "mkt": it["mkt"], "mode": it["mode"], "plabel": it["plabel"],
-             "dd60": _fmt_pct(it["dd60"]) if it["dd60"] is not None else "자료 없음", "prior": prior, "score": (it["score"]["total"] if it.get("score") else None),
-             "prev_ai_summary": (str(prev["summary"])[:500] if prev is not None else None)}
-        with st.spinner("{} 분석 중... (10~40초)".format(it["name"])):
-            done, errs, changes = ai_agent.refresh(get_conn, [t], ai_views, max_n=1, sleep_s=0, force_tks=[it["tk"]])
-        st.session_state["_pickai_msg"] = ("err", " / ".join(errs)) if errs else ("ok", "{} 분석을 갱신했습니다. 아래 'AI 분석' 탭에서 확인하세요.".format(it["name"]))
-        st.rerun()
+    rec = stances.get(it["tk"])
+    prior = None if rec is None else {"stance": rec["stance"], "as_of": rec["as_of"], "memo": rec["memo"], "invalidation": rec["invalidation"]}
+    t = {"tk": it["tk"], "name": it["name"], "mkt": it["mkt"], "mode": it["mode"], "plabel": it["plabel"],
+         "dd60": _fmt_pct(it["dd60"]) if it["dd60"] is not None else "자료 없음", "prior": prior, "score": (it["score"]["total"] if it.get("score") else None),
+         "prev_ai_summary": (str(prev["summary"])[:500] if prev is not None else None)}
+    done, errs, changes = ai_agent.refresh(get_conn, [t], ai_views, max_n=1, sleep_s=0, force_tks=[it["tk"]])
+    if errs:
+        return False, " / ".join(errs)
+    return True, "{} 분석을 오늘 날짜로 갱신했습니다.".format(it["name"])
 
 
 def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamentals, load_decisions):
@@ -1433,11 +1426,7 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
     except Exception as e:  # noqa: BLE001
         st.caption("손실 종목 회복 점검을 표시하지 못했습니다: " + str(e)[:100])
     it = workspace.render_board(items, fx_use, P_)
-    try:
-        _render_pick_ai(get_conn, it, stances, ai_views)
-    except Exception as e:  # noqa: BLE001
-        st.caption("선택 종목 AI 분석 버튼을 표시하지 못했습니다: " + str(e)[:100])
-    t_sum, t_ai, t_px, t_rec = st.tabs(["요약", "AI 분석", "가격대·시뮬레이션", "기록·설정"])
+    t_sum, t_ai, t_px, t_rec = st.tabs(["요약", "AI 분석", "가격대·시뮬레이션", "기록·설정"], on_change="rerun")
     with t_sum:
         try:
             workspace.render_summary(it, items, fx_use, risk, rec_)
@@ -1451,8 +1440,53 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
 
     cur_rec = stances.get(it["tk"])
     with t_ai:
+        _pv = ai_views.get(it["tk"])
+        _today = date.today().isoformat()
+        _stale = _pv is None or str(_pv["created_at"])[:10] != _today
+        _flag = "_aiauto_{}_{}".format(it["tk"], _today)
+        _msg_key = "_aimsg_" + it["tk"]
+        if t_ai.open and _stale and not st.session_state.get(_flag):
+            st.session_state[_flag] = True  # 같은 날 같은 종목은 자동 실행을 한 번만(실패해도 반복하지 않음)
+            with st.spinner("{} AI 분석을 오늘 날짜로 갱신하는 중... (10~40초)".format(it["name"])):
+                try:
+                    ok_, m_ = _pick_ai_run(get_conn, it, stances, ai_views)
+                except Exception as e:  # noqa: BLE001
+                    ok_, m_ = False, "분석 중 오류: " + str(e)[:150]
+            st.session_state[_msg_key] = (ok_, m_)
+            if ok_:
+                st.rerun()
+        _m = st.session_state.get(_msg_key)
+        if _m:
+            (st.success if _m[0] else st.error)(_m[1] + ("" if _m[0] else " — 아래 '다시 분석'으로 재시도할 수 있습니다."))
+        bc1, bc2 = st.columns([1, 4])
+        if bc1.button("다시 분석", key="aire_" + it["tk"]):
+            with st.spinner("분석 중..."):
+                try:
+                    ok_, m_ = _pick_ai_run(get_conn, it, stances, ai_views)
+                except Exception as e:  # noqa: BLE001
+                    ok_, m_ = False, "분석 중 오류: " + str(e)[:150]
+            st.session_state[_msg_key] = (ok_, m_)
+            st.rerun()
+        bc2.caption("이 탭을 열면 오늘 분석이 없을 때 자동으로 갱신합니다. 마지막 분석: {}".format(str(_pv["created_at"])[:16].replace("T", " ") + " UTC" if _pv is not None else "아직 없음"))
+        e1, e2 = st.columns([1, 1])
+        with e1:
+            st.markdown("**달걀 국면 (가격·거래량 규칙)**")
+            if it["res"] is not None:
+                try:
+                    sv._render_egg_panel(it["res"], it["name"], "ai_" + it["tk"], it["res"].get("ext_keys", ()))
+                except Exception as e:  # noqa: BLE001
+                    st.error("달걀 국면을 표시하지 못했습니다: " + str(e)[:120])
+            else:
+                st.info("가격 자료가 부족해 국면을 표시할 수 없습니다.")
+        with e2:
+            st.markdown("**코스톨라니 심리 · 주가 vs 기업가치**")
+            try:
+                _an = kostolany.cached_analysis(items, get_prices, fx_use)
+                if _an.get(it["tk"]):
+                    kostolany.render_detail(get_conn, it, _an[it["tk"]])
+            except Exception as e:  # noqa: BLE001
+                st.error("심리 분석을 표시하지 못했습니다: " + str(e)[:120])
         try:
-            import ai_agent
             ai_agent.render_view(ai_views.get(it["tk"]))
         except Exception as e:  # noqa: BLE001
             st.error("AI 분석을 표시하지 못했습니다: " + str(e)[:120])
@@ -1522,14 +1556,7 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
                 except Exception as e:  # noqa: BLE001
                     st.error("저장하지 못했습니다: " + str(e)[:150])
 
-        if st.checkbox("근거 상세 보기 (달걀 그림 · 판정 근거 · 기업 자동 점검 · 최근 판단 기록)", key="dash_basis_" + it["tk"]):
-            if it["res"] is not None:
-                try:
-                    sv._render_egg_panel(it["res"], it["name"], "dash_" + it["tk"], it["res"].get("ext_keys", ()))
-                except Exception as e:  # noqa: BLE001
-                    st.error("근거 화면을 표시하지 못했습니다: " + str(e)[:150])
-            else:
-                st.info("가격 자료가 부족해 국면 근거를 표시할 수 없습니다.")
+        if st.checkbox("근거 상세 보기 (기업 자동 점검 · 최근 판단 기록)", key="dash_basis_" + it["tk"]):
             _render_fund(sv, it["tk"], get_fundamentals)
             try:
                 dec = load_decisions()
@@ -1544,8 +1571,8 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
 
 
     # ---- AI 분석 관리 ----
-    st.markdown("### AI 분석 관리")
-    _render_ai_panel(get_conn, items, stances, ai_views)
+    with st.expander("AI 분석 전체 관리 (여러 종목 한꺼번에 갱신 · 연결 진단)", expanded=False):
+        _render_ai_panel(get_conn, items, stances, ai_views)
 
     # ---- 판단 복기 ----
     if st.checkbox("판단 복기 보기 (내가 남긴 결정 이후 가격 변화)", key="dash_review"):
