@@ -172,7 +172,7 @@ def plan(al, rate, cma_avail, usd_cash, spread_pct, view=None, ai_fx=None, goal_
             "extra_why": why, "fx_level": None if not view else view["level"], "rate": rate}
 
 
-def render_plan(get_conn, p, pool, tag="plan"):
+def render_plan(get_conn, p, pool, tag="plan", with_form=True):
     """오늘의 자금 계획 카드 + 실제로 한 일 기록 양식."""
     st.markdown("**오늘의 자금 계획 — 환전 · 투자 · 남길 돈**")
     c1, c2, c3, c4 = st.columns(4)
@@ -196,6 +196,8 @@ def render_plan(get_conn, p, pool, tag="plan"):
     for l_ in lines:
         st.write("- " + l_)
     st.caption("이 화면은 계획이며 잔액을 바꾸지 않습니다. 실제로 환전·매수를 마친 뒤 아래에 실제 값을 기록해야 잔액이 바뀝니다.")
+    if not with_form:
+        return
     with st.form("fx_exec_" + tag):
         e1, e2, e3, e4 = st.columns(4)
         a = e1.number_input("실제 환전한 원화", min_value=0.0, value=float(round(p["exchange_total_krw"])), step=10000.0)

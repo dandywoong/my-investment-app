@@ -25,8 +25,14 @@ def ensure_tables(get_conn):
         "CREATE TABLE IF NOT EXISTS portfolio_snapshots (snap_date TEXT PRIMARY KEY, total_krw BIGINT, cost_krw BIGINT, fx REAL, detail TEXT)",
         "CREATE TABLE IF NOT EXISTS rec_log (id SERIAL PRIMARY KEY, rec_date TEXT, strategy_id INT, ticker TEXT, name TEXT, market TEXT, action TEXT, amount_krw BIGINT, price REAL, currency TEXT)",
         "CREATE TABLE IF NOT EXISTS cash_events (id SERIAL PRIMARY KEY, event_date TEXT, amount_krw BIGINT, memo TEXT, created_at TEXT)",
+        "ALTER TABLE rec_log ADD COLUMN IF NOT EXISTS fill_price REAL",
+        "ALTER TABLE rec_log ADD COLUMN IF NOT EXISTS fill_qty REAL",
+        "ALTER TABLE rec_log ADD COLUMN IF NOT EXISTS filled_at TEXT",
     ):
-        ai_agent._run(get_conn, sql)
+        try:
+            ai_agent._run(get_conn, sql)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def save_snapshot(get_conn, items, fx):
@@ -134,7 +140,7 @@ def render_ledger(get_conn, items, fx, get_prices):
             m3.metric("코스피 대용", "-" if not ok_k else "{:,.0f}원".format(val_k), delta=None if not ok_k else "{:+.1f}%".format((val_k / tot_in - 1) * 100), delta_color="off")
             st.caption("같은 입금을 지수 하나에 전부 넣었다고 가정한 단순 비교입니다. 내 실제 포트폴리오의 같은 기간 성과와 비교해 보세요(환율·배당·수수료·세금 제외).")
     with t3:
-        rl = ai_agent._run(get_conn, "SELECT rec_date, ticker, name, market, action, amount_krw, price FROM rec_log ORDER BY rec_date DESC, id", fetch=True)
+        rl = ai_agent._run(get_conn, "SELECT rec_date, ticker, name, market, action, amount_krw, COALESCE(fill_price, price) AS price FROM rec_log ORDER BY rec_date DESC, id", fetch=True)
         if rl is None or rl.empty:
             st.info("확정한 AI 제안이 아직 없습니다. AI 투자 에이전트에서 '이 계획을 확정하고 기록하기'를 누르면 그날의 제안이 가격과 함께 저장되고, 시간이 지나면 여기에 성과가 나옵니다.")
             return
@@ -171,3 +177,38 @@ def render_ledger(get_conn, items, fx, get_prices):
             a2.metric("매수 제안: 시장 초과 평균", "-" if buy.empty else "{:+.1f}%p".format(buy["20일 후 시장 대비"].mean()), delta="{}건".format(len(buy)), delta_color="off")
             a3.metric("보류·정리 제안: 시장 초과 평균", "-" if avoid.empty else "{:+.1f}%p".format(avoid["20일 후 시장 대비"].mean()), delta="{}건 (낮을수록 잘 피함)".format(len(avoid)), delta_color="off")
         st.caption("표본이 {}개가 되기 전에는 통계적 의미가 없고 승률로 읽으면 안 됩니다(현재 20일 경과 {}개). 같은 날 제안들은 서로 독립이 아니며, 과거 성과가 앞으로를 보장하지 않습니다.".format(MIN_SAMPLE, n_done))
+
+
+def record_fill(get_conn, strategy_id, ticker, qty, price):
+    """체결 내용을 제안 기록에 남긴다(성과는 '실제 체결가'를 기준으로 계산)."""
+    ai_agent._run(get_conn, "UPDATE rec_log SET fill_price=%s, fill_qty=%s, filled_at=%s WHERE strategy_id=%s AND ticker=%s", (float(price), float(qty), _now(), int(strategy_id), ticker))
+
+
+def track_record(get_conn, get_prices, min_days=10):
+    """AI에게 돌려줄 과거 제안 성과 요약. 매수 제안 중 min_days 이상 지난 것만, 같은 기간 시장(미국 VOO / 한국 코스피) 대비 초과수익. -> dict | None"""
+    try:
+        rl = ai_agent._run(get_conn, "SELECT rec_date, ticker, name, market, action, amount_krw, COALESCE(fill_price, price) AS price FROM rec_log WHERE action='매수' ORDER BY rec_date", fetch=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if rl is None or rl.empty:
+        return {"n_recommendations": 0, "note": "아직 확정된 매수 제안 기록이 없음"}
+    rows, cache = [], {}
+    for _, r in rl.iterrows():
+        age = (date.today() - datetime.fromisoformat(r["rec_date"]).date()).days
+        if age < min_days:
+            continue
+        bm = BENCH.get(r["market"], BENCH["미국"])[0]
+        for tk in (r["ticker"], bm):
+            if tk not in cache:
+                cache[tk] = _close(get_prices, tk)
+        c, b = cache[r["ticker"]], cache[bm]
+        if c is None or b is None or not r["price"]:
+            continue
+        p1, b0, b1 = float(c.iloc[-1]), _at(b, r["rec_date"]), float(b.iloc[-1])
+        if b0:
+            rows.append({"date": r["rec_date"], "name": r["name"], "days": age, "return_pct": round((p1 / r["price"] - 1) * 100, 1), "market_pct": round((b1 / b0 - 1) * 100, 1)})
+    if not rows:
+        return {"n_recommendations": len(rl), "n_evaluable": 0, "note": "평가할 만큼 시간이 지난(10일 이상) 매수 제안이 아직 없음"}
+    ex = [x["return_pct"] - x["market_pct"] for x in rows]
+    return {"n_recommendations": len(rl), "n_evaluable": len(rows), "avg_excess_vs_market_pctp": round(sum(ex) / len(ex), 2), "recent": rows[-8:],
+            "note": "표본 {}건. 30건 미만이면 통계적 의미가 없으므로 결론이 아니라 가설로만 참고(같은 날 제안은 서로 독립이 아님)".format(len(rows))}

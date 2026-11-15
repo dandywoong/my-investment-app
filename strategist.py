@@ -317,6 +317,7 @@ def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_t
         "user_policy_text": policy_text,
         "previous_strategy": prev_strategy,
         "look_through": look_through(items, fx),
+        "past_lessons": st.session_state.get("_lessons") or "아직 복기된 교훈 없음(기록이 쌓이는 중)",
     }
     try:  # 코스톨라니 심리·가치 괴리·환전/예수금 자료
         import kostolany
@@ -351,6 +352,7 @@ def _prompt(packet, task, extra=""):
         "(7-6) 권한 구조: 투자 헌법(H1~H5)은 절대 어기지 말고, 가이드라인(G1~G6)은 오늘의 데이터에 비추어 더 유리한 선택이 있으면 적극적으로 조정하세요(조정하면 master.guideline_changes에 이유·근거·위험·철회 조건). "
         "특정 종목을 먼저 정하고 남은 돈을 나누지 말고, 모든 투자 후보와 현금을 동시에 비교해 우선순위와 금액을 정하세요(후보별 기업 품질·가격 매력·심리·3~5년 시나리오·하방 위험·VOO 포함 중복 노출·우선순위). 모든 후보가 매력적이지 않다면 전액 대기도 자신 있게 결론 내리세요. "
         "look_through(VOO 안의 종목 + 직접 보유 합산 노출)를 반드시 반영하고, VOO 매수를 단순히 기술주 위험을 줄이는 선택으로 보지 마세요. 매수하지 않은 종목도 vs_others에 왜 0원인지 쓰세요. "
+        "(7-7) past_lessons는 과거 제안의 성과를 복기해 얻은 교훈입니다. 표본이 적으면 참고만 하고, 교훈을 반영했다면 reason에 적으세요. "
         "(7-4) 환전과 매수는 별개: cash_accounts_and_fx에 달러 예수금이 있으면 환전 없이 그 달러로 매수할 수 있다는 점을 고려하고, 환율 조사 의견은 참고로만 쓰세요. "
         "(9) 한국 주식은 정수 주 단위, 미국 주식은 소수점 가능. 자동 주문은 없고 사람이 직접 실행한다.\n\n"
         "과제: " + task + "\n" + extra + "\n\n자료(JSON):\n" + json.dumps(packet, ensure_ascii=False)[:60000]

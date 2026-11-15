@@ -17,6 +17,7 @@ import market
 import planner
 import signals
 import accounts
+import agent
 import ai_agent
 import fx as fxmod
 import kostolany
@@ -1261,6 +1262,31 @@ def _pick_ai_run(get_conn, it, stances, ai_views):
     return True, "{} 분석을 오늘 날짜로 갱신했습니다.".format(it["name"])
 
 
+def _apply_us_fill(get_conn, item_tk, qty, price):
+    """체결된 미국주 매수를 보유 수량·평단에 반영한다(정수 주는 정수 칸, 소수점은 소수점 칸, 1주 이상 모이면 자동 전환). -> (성공, 메시지)"""
+    us = _run(get_conn, "SELECT * FROM us_positions", fetch=True)
+    row = None
+    for _, r in us.iterrows():
+        if r["ticker"] == item_tk or _yf_symbol(r["ticker"]) == item_tk:
+            row = r
+            break
+    if row is None:
+        return False, "{} 보유 행을 찾지 못했습니다(미국주 입력에서 먼저 종목을 추가하세요).".format(item_tk)
+    wq, wa, fq, fa = _lots(row)
+    if abs(qty - round(qty)) < 1e-9:
+        nw = wq + qty
+        wa = (wq * wa + qty * price) / nw
+        wq, kind = nw, "정수 주 매수"
+    else:
+        nf = fq + qty
+        fa = (fq * fa + qty * price) / nf
+        fq, kind = nf, "소수점 적립(자동·수동)"
+        wq, wa, fq, fa, _c = _convert_frac(wq, wa, fq, fa)
+    _run(get_conn, "INSERT INTO us_buys (created_at,ticker,quantity,price,kind,note) VALUES (%s,%s,%s,%s,%s,%s)", (_now(), row["ticker"], qty, price, kind, "AI 계획 체결 반영"))
+    tq, ta = _save_lots(get_conn, row["ticker"], wq, wa, fq, fa)
+    return True, "{} 총 {:.6f}주 · 평단 ${:.3f}".format(item_tk, tq, ta)
+
+
 def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamentals, load_decisions):
     import supervision as sv
     st.markdown("##### EGGFOLIO · 내 투자")
@@ -1406,7 +1432,7 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
     conf_ = None
     with tab_ag:
         try:
-            conf_ = strategist.render_panel(get_conn, items, risk, stress_d, fx_use, cfg_, cash_map, _save_cfg, _load_cfg, hub_, get_prices)
+            conf_ = agent.render(get_conn, items, risk, stress_d, fx_use, cfg_, cash_map, _save_cfg, _load_cfg, hub_, get_prices, _apply_us_fill)
         except Exception as e:  # noqa: BLE001
             st.error("AI 투자 에이전트를 표시하지 못했습니다: " + str(e)[:150])
     with tab_rule:
@@ -1635,7 +1661,7 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
 
     # ---- 코스톨라니 심리 · 핵심/조절 물량 · 환전 ----
     st.divider()
-    t_k1, t_k2, t_k3 = st.tabs(["심리·가치 괴리·운용 판단", "핵심/조절 물량·기록", "환전·달러 예수금"], on_change="rerun")
+    t_k1, t_k2 = st.tabs(["심리·가치 괴리·운용 판단", "핵심/조절 물량·기록"], on_change="rerun")
     if t_k1.open:
         with t_k1:
             try:
@@ -1651,15 +1677,6 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
                 kostolany.render_split_and_log(get_conn, items, an_, fx_use)
             except Exception as e:  # noqa: BLE001
                 st.error("핵심/조절 물량 화면을 표시하지 못했습니다: " + str(e)[:150])
-    if t_k3.open:
-        with t_k3:
-            try:
-                _l = strategist.load_latest(get_conn)
-                _c = (_l[2] or {}) if _l and _l[2] else {}
-                us_krw_ = int((_c.get("allocation") or {}).get("us_krw", 0) or 0)
-                fxmod.render(get_conn, items, fx_use, us_krw_, _c.get("_ai_fx"))
-            except Exception as e:  # noqa: BLE001
-                st.error("환전·예수금 화면을 표시하지 못했습니다: " + str(e)[:150])
 
     # ---- 기록과 성적표 ----
     try:
