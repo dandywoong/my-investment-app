@@ -13,21 +13,24 @@ import streamlit as st
 import ai_agent
 import recovery
 
+POLICY_VER = "v3"
 DEFAULT_POLICY = (
-    "[투자 헌법 — 절대 준수, AI가 임의로 바꿀 수 없음]\n"
-    "H1) 장기 투자가 기본이다(5·10·20년). 핵심 보유 물량은 AI가 임의로 매도하라고 제안하지 않는다.\n"
-    "H2) 비상금·부채 상환 자금은 투자 가능 자금에서 제외한다. 실제 보유 달러(환전 순수령 포함)를 초과하는 매수는 제안하지 않는다.\n"
-    "H3) 보유 목록에 없는 새 종목은 편입을 제안하지 않는다(필요하면 질문으로만).\n"
-    "H4) 국장(ISA) 보유 종목은 기업 가치가 견고하면 손실이 커도 손절하지 않는다. 평단가는 참고일 뿐 매수·매도 근거가 아니다.\n"
-    "H5) 두산·SOL AI반도체TOP2는 평단 회복 시 정리가 기본이며, 그때 상승 여력이 크면 더 보유할 수 있고, 매도하면 그 현금을 어디로 옮길지 제안한다.\n"
-    "\n[전략 가이드라인 — 기본 방향이며 AI가 시장 상황에 따라 조정 가능. 조정하면 변경 이유·근거·위험·철회 조건을 쓴다]\n"
-    "G1) 국장 신규 매수는 기본적으로 중지하고, 미국 순투자금 2000만원이 될 때까지 새 돈은 미국에 먼저 투자한다.\n"
-    "G2) VOO와 버크셔 해서웨이 B는 코어이며 기본적으로 가장 높은 비중으로 적립한다. 단 매번 두 종목에 일정액을 넣을 의무는 없고, 어느 쪽이 더 매력적인지·VOO 안의 기술주 중복 노출까지 보고 AI가 정한다.\n"
-    "G3) 기술주는 그때그때 가격·심리·이익 전망 분석으로 투자액을 정한다. 매력이 크면 비중을 더 줄 수 있다.\n"
-    "G4) 물타기는 산업·가격대·기업 상태를 분석해 유리한 국면일 때만 포함한다.\n"
-    "G5) 모든 돈을 투자할지, 달러·원화 현금으로 얼마를 남길지는 시장 상황과 투자 매력에 따라 AI가 정한다(매력적인 곳이 없으면 전액 대기도 가능).\n"
-    "G6) 환전과 주식 매수는 별개의 결정이다. 환율이 좋아도 주식이 비싸면 달러로 보유할 수 있다."
+    "[기본 상황]\n"
+    "- 이 돈은 ISA 만기(2030년 11월) 이후에도 당장 쓰지 않는 장기 자금이다. 장기(5·10·20년)로 운용한다.\n"
+    "- 목표는 미국 순투자금 2000만원이며, 새로 들어오는 돈은 미국 투자를 중심으로 계획한다.\n"
+    "\n[국내 보유(ISA)]\n"
+    "- 국내 보유 종목은 우선 홀드한다. 기업 가치가 견고하면 손실이 커도 손절하지 않고, 평단가는 매매 근거가 아니다.\n"
+    "- 국내 종목을 추가 매수하거나 정리해야 유리한 시점이 오면 AI가 먼저 근거(가격 매력·심리 단계·이익 전망·뉴스)와 함께 제안한다. 그 전까지 국내 매수 금액은 0이 기본이다.\n"
+    "- 두산·SOL AI반도체TOP2는 평단 회복 시 정리가 기본이며, 정리하면 그 현금을 어디로 옮길지도 제안한다.\n"
+    "\n[배분 — 정해진 비율 없음]\n"
+    "- 종목별 비중·코어(VOO·버크셔) 비율·기술주 비율은 정해 두지 않는다. AI가 내 포트폴리오(국내+미국 합산, VOO 안의 중복 노출 포함), 오늘의 시장·기업 브리핑, 가격 매력, 심리 단계, 과거 제안 성과를 보고 매번 정한다.\n"
+    "- 모든 돈을 투자할지, 달러·원화 현금으로 얼마를 남길지도 AI가 정한다(매력적인 곳이 없으면 전액 대기 가능). 환전과 매수는 별개의 결정이다.\n"
+    "- 비율을 정했다면 왜 그 비율인지, 다른 후보와 비교해 왜 0원인지 설명한다.\n"
+    "\n[앱이 자동으로 검사하는 돈 규칙 — AI도 어길 수 없음]\n"
+    "- 비상금·부채 상환 자금은 투입 금액에서 제외한다. 보유 달러(환전 순수령 포함)를 넘는 매수는 제안하지 않는다.\n"
+    "- 보유 목록에 없는 새 종목은 질문으로만 제안하고 배분하지 않는다. VOO·버크셔의 매도는 제안하지 않는다."
 )
+
 
 SCHEMA = """{
  "headline": "한 줄 결론",
@@ -344,15 +347,16 @@ def _prompt(packet, task, extra=""):
         "(7-2) 판단은 다섯 단계로 하세요: ①사용자 정책 확인(임의 변경 금지) ②기업 투자 논리(실적·현금흐름·경쟁력, 주가 하락만으로 훼손 판단 금지) ③현재 가격·시장심리(sentiment_and_value_gap의 코스톨라니 5단계, 주가 vs 기업가치 괴리 유형) "
         "④전체 포트폴리오 위험(국내+미국 합산, VOO 안에도 엔비디아·구글 등 AI·빅테크가 들어 있어 VOO 보유가 개별 AI 노출을 완전히 분산하지 않음) ⑤신규 자금 최종 배분(종목별 매수/보유/대기/제외, 투자하지 않고 남기는 현금 허용). "
         "소신파/부화뇌동파는 직접 관찰할 수 없는 추정임을 지키고, 심리 신호 하나로 매매를 결론짓지 마세요. 과매수·과매도는 매매 명령이 아니라 판단 입력값입니다. 기업이 훌륭하다는 평가와 지금 가격에 사기 좋다는 평가는 구분하세요. "
-        "(7-3) 코어(VOO·버크셔)를 가장 높은 비중으로 두는 것은 사용자의 기본 선호이지만, 코어끼리·코어와 개별 종목 사이의 금액은 정해진 비율이 아니라 오늘의 가격 매력·심리 단계(sentiment_and_value_gap)·뉴스·시장 흐름을 보고 직접 판단하세요. "
+        "(7-3) 코어(VOO·버크셔)를 포함한 모든 종목의 금액은 정해진 비율이 아니라, 코어끼리·코어와 개별 종목 사이의 금액은 정해진 비율이 아니라 오늘의 가격 매력·심리 단계(sentiment_and_value_gap)·뉴스·시장 흐름을 보고 직접 판단하세요. "
         "AI 노출(risk.ai_exposure_pct)은 고려 요소 중 하나일 뿐 개별 AI 종목을 무조건 배제하는 근거가 아닙니다. 심리 1~2단계이면서 이익 전망이 유지되는 종목(rule_final이 '매수 검토')은 분할 매수 후보로 진지하게 검토하고, 사지 않는다면 그 이유를 구체적으로 쓰세요. "
         "앱 규칙 판단(rule_final)과 다르게 결론 내리면 이유를 쓰고, 매수 후보로 검토한 모든 종목에 대해 '왜 이 금액인가/왜 0원인가'를 비교해서 쓰세요. 점수(score_total)가 낮은 종목에 큰 금액을 주면 reason에 이유를 쓰세요. "
         "좋은 매수 가격이 보이지 않으면 현금(cash_krw)을 남기는 것도 하나의 결정입니다. 각 판단에 근거의 기준일·출처·실제 데이터인지 추정인지·판단이 바뀌는 조건을 포함하세요. "
         "좋은 매수 가격이 보이지 않으면 현금(cash_krw)을 남기는 것도 하나의 결정입니다. 각 판단에 근거의 기준일·출처·실제 데이터인지 추정인지·판단이 바뀌는 조건을 포함하세요. "
-        "(7-6) 권한 구조: 투자 헌법(H1~H5)은 절대 어기지 말고, 가이드라인(G1~G6)은 오늘의 데이터에 비추어 더 유리한 선택이 있으면 적극적으로 조정하세요(조정하면 master.guideline_changes에 이유·근거·위험·철회 조건). "
+        "(7-6) 권한 구조: user_policy_text에는 정해진 비율이 없습니다. 종목별·코어·기술주 비중과 현금 비율은 AI가 매번 정하고, 정책의 기본 상황·국내 보유 방침·돈 규칙만 지키세요. 국내 종목 추가 매수·정리는 유리한 시점이라고 데이터로 판단될 때에만 근거와 함께 제안하세요. "
         "특정 종목을 먼저 정하고 남은 돈을 나누지 말고, 모든 투자 후보와 현금을 동시에 비교해 우선순위와 금액을 정하세요(후보별 기업 품질·가격 매력·심리·3~5년 시나리오·하방 위험·VOO 포함 중복 노출·우선순위). 모든 후보가 매력적이지 않다면 전액 대기도 자신 있게 결론 내리세요. "
         "look_through(VOO 안의 종목 + 직접 보유 합산 노출)를 반드시 반영하고, VOO 매수를 단순히 기술주 위험을 줄이는 선택으로 보지 마세요. 매수하지 않은 종목도 vs_others에 왜 0원인지 쓰세요. "
         "(7-7) past_lessons는 과거 제안의 성과를 복기해 얻은 교훈입니다. 표본이 적으면 참고만 하고, 교훈을 반영했다면 reason에 적으세요. "
+        "(7-8) morning_briefing은 오늘 먼저 정리해 둔 시장·기업 브리핑입니다. 배분은 이 브리핑의 시장 판단·종목 상태·후보 순위를 근거로 하고, 브리핑과 다르게 결론 내리면 이유를 쓰세요. "
         "(7-4) 환전과 매수는 별개: cash_accounts_and_fx에 달러 예수금이 있으면 환전 없이 그 달러로 매수할 수 있다는 점을 고려하고, 환율 조사 의견은 참고로만 쓰세요. "
         "(9) 한국 주식은 정수 주 단위, 미국 주식은 소수점 가능. 자동 주문은 없고 사람이 직접 실행한다.\n\n"
         "과제: " + task + "\n" + extra + "\n\n자료(JSON):\n" + json.dumps(packet, ensure_ascii=False)[:60000]
@@ -547,6 +551,51 @@ def make_strategy(get_conn, packet, items, deposit, fx, force_research=False):
     return res, None, rwarns + warns + w2
 
 
+BRIEF_SCHEMA = """{"headline":"오늘 시장·내 보유에 대한 한 줄 요약",
+ "market":{"summary":"시장 흐름 3~5문장(출처 이름·날짜 포함)","mood":"공포/불안/중립/낙관 중 하나와 근거","key_events":[{"what":"","source":"","date":""}]},
+ "fx":{"summary":"환율 상황 1~2문장"},
+ "companies":[{"name":"보유 종목명","status":"한 줄 상태(최근 등락·이유)","view":"펀더멘털 훼손 여부 / 가격 매력 / 심리 단계 요약","counter":"반대 근거"}],
+ "kr_hold_check":{"verdict":"홀드 유지 / 추가 매수 검토 / 일부 정리 검토 중 하나","reason":"","trigger":"판단이 바뀌는 조건"},
+ "us_ranking":[{"name":"","attractiveness":"높음/중간/낮음","why":"","counter":""}],
+ "risks":["주요 위험"],"unknowns":["확인하지 못한 것"]}"""
+
+
+def ensure_brief_table(get_conn):
+    try:
+        ai_agent._run(get_conn, "CREATE TABLE IF NOT EXISTS brief_log (id SERIAL PRIMARY KEY, created_at TEXT, content TEXT)")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_brief(get_conn):
+    """-> (작성시각 문자열, 브리핑 dict) 또는 (None, None)"""
+    try:
+        df = ai_agent._run(get_conn, "SELECT created_at, content FROM brief_log ORDER BY id DESC LIMIT 1", fetch=True)
+        if df is not None and len(df):
+            return str(df.iloc[0]["created_at"]), json.loads(df.iloc[0]["content"])
+    except Exception:  # noqa: BLE001
+        pass
+    return None, None
+
+
+def make_brief(get_conn, packet, force=False):
+    """접속 시 자동 실행: 뉴스를 모으고 시장·기업 브리핑을 만든다(돈 배분과 별개). -> (brief, err, warns)"""
+    res_r, srcs, rwarns = research(get_conn, packet, force)
+    packet["research"] = res_r
+    ok = bool(res_r.get("market") or res_r.get("tickers"))
+    task = ("오늘의 시장·기업 브리핑을 만드세요. 자금 배분은 하지 마세요. research의 뉴스 헤드라인(앱이 수집, 제목·매체·날짜만 읽음)과 종목별 등락·점수·심리 단계(sentiment_and_value_gap)를 근거로 "
+            "①시장 흐름과 분위기 ②환율 ③보유 종목 전부의 상태(하나도 빠뜨리지 말 것) ④국내(ISA) 보유를 계속 홀드해도 되는지, 추가 매수나 정리가 유리해지는 신호가 있는지 ⑤미국 투자 후보의 매력 순위를 정리하세요. "
+            "헤드라인에 없는 사실은 추측하지 말고 unknowns에 적으세요. 급락을 바닥이라고 단정하지 말고, 반대 근거를 함께 쓰세요.")
+    res, err = _gemini(_prompt(packet, task, "반드시 아래 JSON 스키마만 출력하세요.\n" + BRIEF_SCHEMA))
+    if err:
+        return None, err, rwarns
+    res["_research_ok"] = ok
+    res["_headlines_total"] = res_r.get("total")
+    res["_coverage"] = coverage(srcs)
+    ai_agent._run(get_conn, "INSERT INTO brief_log (created_at,content) VALUES (%s,%s)", (_now(), json.dumps(res, ensure_ascii=False)))
+    return res, None, rwarns
+
+
 def load_latest(get_conn):
     try:
         df = ai_agent._run(get_conn, "SELECT id, created_at, status, deposit, content FROM strategy_log ORDER BY id DESC LIMIT 1", fetch=True)
@@ -619,8 +668,9 @@ def verify_plan(strat, items, fx, pl, freeze=True):
     add("soft", "보유 종목 전부에 대한 판단", not miss, ", ".join(map(str, miss)) if miss else "전부 포함")
     noev = [p.get("name") for p in pri if p.get("action") == "매수" and not str(p.get("evidence", "")).strip()]
     add("soft", "매수 종목마다 근거·출처", not noev, ", ".join(map(str, noev)) if noev else "전부 있음")
-    if freeze and int(al.get("kr_krw", 0) or 0) > 0:
-        add("soft", "국장 신규 매수 동결 가이드라인", bool((strat.get("master") or {}).get("guideline_changes")), "국장 매수 {:,}원이 배정됨 — guideline_changes에 변경 이유가 있어야 함".format(int(al.get("kr_krw", 0))))
+    if int(al.get("kr_krw", 0) or 0) > 0:
+        kr_ev = [p for p in pri if p.get("action") == "매수" and int(p.get("amount_krw") or 0) > 0 and (next((i for i in items if i["tk"] == p.get("_item")), {}) or {}).get("cur") == "KRW" and str(p.get("evidence", "")).strip()]
+        add("soft", "국내 추가 매수는 근거 필요", bool(kr_ev), "국내 매수 {:,}원 — 유리한 시점이라는 근거·출처가 있어야 함".format(int(al.get("kr_krw", 0))))
     add("soft", "뉴스 자료 반영", bool(strat.get("_research_ok")), "헤드라인 {}건".format(strat.get("_headlines_total") or 0))
     return out
 

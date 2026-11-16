@@ -33,6 +33,79 @@ def _set_status(get_conn, sid, status):
     ai_agent._run(get_conn, "UPDATE strategy_log SET status=%s WHERE id=%s", (status, sid))
 
 
+
+# ------------------------------------------------------------------ 시장·기업 브리핑 (맨 위, 접속하면 자동 갱신)
+BRIEF_HOURS = 6
+
+
+def _age_hours(ts):
+    try:
+        t = datetime.fromisoformat(str(ts))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - t).total_seconds() / 3600.0
+    except Exception:  # noqa: BLE001
+        return 9999.0
+
+
+def _section_brief(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, get_prices):
+    st.markdown("#### 오늘의 시장·기업 브리핑")
+    ts, brief = S.load_brief(get_conn)
+    stale = brief is None or _age_hours(ts) > BRIEF_HOURS
+    c1, c2 = st.columns([1, 4])
+    manual = c1.button("지금 새로 조사", key="ag_brief_now")
+    tried = st.session_state.get("_brief_tried")
+    if manual or (stale and not tried):
+        st.session_state["_brief_tried"] = True
+        try:
+            packet = S.build_packet(items, risk, stress, fx, cfg_pk, 0, "", cash_map, c.get("policy_text") or S.DEFAULT_POLICY, None, get_prices)
+            with st.spinner("접속했으니 시장·뉴스·내 보유 종목을 먼저 조사하는 중... (30초~1분)"):
+                nb, err, warns = S.make_brief(get_conn, packet, force=manual)
+            if err:
+                st.error("브리핑을 만들지 못했습니다: " + err + (" (이전 브리핑을 보여 드립니다)" if brief else ""))
+            else:
+                ts, brief = S.load_brief(get_conn)
+                for w in warns:
+                    st.warning(w)
+        except Exception as e:  # noqa: BLE001
+            st.error("브리핑 중 문제가 생겼습니다: " + str(e)[:120])
+    if not brief:
+        st.info("아직 브리핑이 없습니다. '지금 새로 조사'를 눌러 주세요.")
+        return
+    age = _age_hours(ts)
+    c2.caption("작성 {} UTC ({}) · 뉴스 헤드라인 {}건 · 참조 매체: {} · 제목·매체·날짜만 읽음(본문 못 읽음). 접속할 때 {}시간이 지났으면 자동으로 새로 조사합니다.".format(
+        str(ts)[:16].replace("T", " "), "방금" if age < 0.1 else "{:.0f}시간 전".format(age), brief.get("_headlines_total") or 0, ", ".join(brief.get("_coverage") or []) or "없음", BRIEF_HOURS))
+    if not brief.get("_research_ok"):
+        st.error("뉴스를 가져오지 못해 앱 자료(시세·점수)만으로 만든 브리핑입니다. 참고만 하세요.")
+    st.markdown("**{}**".format(brief.get("headline", "")))
+    m = brief.get("market") or {}
+    if m.get("summary"):
+        st.write("**시장** — " + str(m["summary"]))
+    if m.get("mood"):
+        st.write("**분위기** — " + str(m["mood"]))
+    if (brief.get("fx") or {}).get("summary"):
+        st.write("**환율** — " + str(brief["fx"]["summary"]))
+    kh = brief.get("kr_hold_check") or {}
+    if kh:
+        st.info("**국내(ISA) 보유 점검: {}** — {}  (바뀌는 조건: {})".format(kh.get("verdict", "-"), kh.get("reason", ""), kh.get("trigger", "-")))
+    ur = brief.get("us_ranking") or []
+    if ur:
+        st.markdown("**미국 투자 후보 순위**")
+        st.dataframe(pd.DataFrame([{"종목": u.get("name"), "매력": u.get("attractiveness"), "이유": u.get("why"), "반대 근거": u.get("counter")} for u in ur]), use_container_width=True, hide_index=True,
+                     column_config={"이유": st.column_config.TextColumn("이유", width="large"), "반대 근거": st.column_config.TextColumn("반대 근거", width="large")})
+    with st.expander("종목별 상태 · 주요 사건 · 위험 · 확인 못한 것"):
+        cs = brief.get("companies") or []
+        if cs:
+            st.dataframe(pd.DataFrame([{"종목": x.get("name"), "상태": x.get("status"), "판단": x.get("view"), "반대 근거": x.get("counter")} for x in cs]), use_container_width=True, hide_index=True)
+        for e in m.get("key_events") or []:
+            if isinstance(e, dict):
+                st.write("- {} ({} {})".format(e.get("what", ""), e.get("source", ""), e.get("date", "")))
+        for r in brief.get("risks") or []:
+            st.caption("위험: " + str(r))
+        for u in brief.get("unknowns") or []:
+            st.caption("확인 못함: " + str(u))
+
+
 # ------------------------------------------------------------------ ① 내 돈
 def _section_money(get_conn, fx, c, save_cfg):
     cma, usd = fxmod.balances(get_conn)[:2]
@@ -98,6 +171,9 @@ def _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, policy, strat
         st.session_state["_lessons"] = None
     packet = S.build_packet(items, risk, stress, fx, cfg_pk, pool, memo, cash_map, c.get("policy_text") or S.DEFAULT_POLICY, strat, get_prices)
     packet["cash_pool"] = pool_info
+    _bt, _bf = S.load_brief(get_conn)
+    if _bf:
+        packet["morning_briefing"] = {"written_at_utc": _bt, "content": {k: _bf.get(k) for k in ("headline", "market", "fx", "companies", "kr_hold_check", "us_ranking", "risks", "unknowns")}}
     packet["new_deposit"]["note"] = "amount_krw는 이번에 배분할 전체 가용 자금(CMA 사용 가능 원화 + 보유 달러의 원화 환산)이며, 오늘 새로 들어온 돈은 new_deposit_today_krw입니다."
     with st.spinner("뉴스를 모으고 전략을 짜는 중... (30초~1분)"):
         res, err, warns = S.make_strategy(get_conn, packet, items, pool, fx, force_research=bool(st.session_state.get("ag_force")))
@@ -319,7 +395,13 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
     S.ensure_tables(get_conn)
     fxmod.ensure_tables(get_conn)
     ledger.ensure_tables(get_conn)
+    S.ensure_brief_table(get_conn)
     c = load_cfg(get_conn)
+    if c.get("policy_ver") != S.POLICY_VER:  # 예전 정책(고정 비율 포함)을 새 정책으로 교체
+        save_cfg(get_conn, "policy_text", S.DEFAULT_POLICY)
+        save_cfg(get_conn, "policy_ver", S.POLICY_VER)
+        c = dict(c)
+        c["policy_text"] = S.DEFAULT_POLICY
     cfg_pk = {"goal": hub.get("goal"), "invested": hub.get("invested"), "band": st.session_state.get("_ai_band"), "freeze": hub.get("freeze"), "core": hub.get("core")}
     try:
         _l = S.load_latest(get_conn)
@@ -327,10 +409,10 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
     except Exception:  # noqa: BLE001
         pass
     st.markdown("### AI 투자 에이전트")
-    st.caption("정책(큰 방향)을 정해 두면, 입금액만 넣을 때 AI가 시장·뉴스·내 보유를 보고 환전·투자·남길 돈까지 계획합니다. 주문은 내가 하고, 체결 내용을 입력하면 모든 기록이 한 번에 저장됩니다. "
+    st.caption("접속하면 AI가 먼저 시장·뉴스·내 보유를 조사해 브리핑을 만들고, 입금액을 넣으면 그 브리핑을 근거로 환전·투자·남길 돈까지 계획합니다. 주문은 내가 하고, 체결 내용을 입력하면 모든 기록이 한 번에 저장됩니다. "
                "AI에는 종목명·비중·수량·평단·평가금액·현금·정책 메모를 보냅니다(계좌번호·로그인·이름은 보내지 않음). 무료 API 입력은 구글 서비스 개선에 쓰일 수 있습니다.")
     policy = c.get("policy_text") or S.DEFAULT_POLICY
-    with st.expander("내 투자 정책 (헌법: 절대 준수 / 가이드라인: AI가 조정 가능)"):
+    with st.expander("내 투자 정책 (큰 방향만 — 비율은 AI가 정함)"):
         with st.form("policy_text_form"):
             txt = st.text_area("정책", value=policy, height=260, key="policy_text_area")
             c_a, c_b = st.columns(2)
@@ -346,6 +428,9 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
     flash = st.session_state.pop("_fill_flash", None)
     if flash:
         st.success(flash)
+    _section_brief(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, get_prices)
+    st.divider()
+    st.caption("↑ 위는 시장·기업 자료(접속하면 자동 갱신), ↓ 아래는 내 돈을 넣고 배분하는 곳입니다. 배분은 위 브리핑을 근거로 합니다.")
     _section_money(get_conn, fx, c, save_cfg)
     sid, status, strat, created = S.load_latest(get_conn)
     _section_plan_form(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, get_prices)
