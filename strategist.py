@@ -13,22 +13,52 @@ import streamlit as st
 import ai_agent
 import recovery
 
-POLICY_VER = "v3"
+POLICY_VER = "v4"
 DEFAULT_POLICY = (
-    "[기본 상황]\n"
-    "- 이 돈은 ISA 만기(2030년 11월) 이후에도 당장 쓰지 않는 장기 자금이다. 장기(5·10·20년)로 운용한다.\n"
-    "- 목표는 미국 순투자금 2000만원이며, 새로 들어오는 돈은 미국 투자를 중심으로 계획한다.\n"
-    "\n[국내 보유(ISA)]\n"
-    "- 국내 보유 종목은 우선 홀드한다. 기업 가치가 견고하면 손실이 커도 손절하지 않고, 평단가는 매매 근거가 아니다.\n"
-    "- 국내 종목을 추가 매수하거나 정리해야 유리한 시점이 오면 AI가 먼저 근거(가격 매력·심리 단계·이익 전망·뉴스)와 함께 제안한다. 그 전까지 국내 매수 금액은 0이 기본이다.\n"
-    "- 두산·SOL AI반도체TOP2는 평단 회복 시 정리가 기본이며, 정리하면 그 현금을 어디로 옮길지도 제안한다.\n"
-    "\n[배분 — 정해진 비율 없음]\n"
-    "- 종목별 비중·코어(VOO·버크셔) 비율·기술주 비율은 정해 두지 않는다. AI가 내 포트폴리오(국내+미국 합산, VOO 안의 중복 노출 포함), 오늘의 시장·기업 브리핑, 가격 매력, 심리 단계, 과거 제안 성과를 보고 매번 정한다.\n"
-    "- 모든 돈을 투자할지, 달러·원화 현금으로 얼마를 남길지도 AI가 정한다(매력적인 곳이 없으면 전액 대기 가능). 환전과 매수는 별개의 결정이다.\n"
-    "- 비율을 정했다면 왜 그 비율인지, 다른 후보와 비교해 왜 0원인지 설명한다.\n"
-    "\n[앱이 자동으로 검사하는 돈 규칙 — AI도 어길 수 없음]\n"
-    "- 비상금·부채 상환 자금은 투입 금액에서 제외한다. 보유 달러(환전 순수령 포함)를 넘는 매수는 제안하지 않는다.\n"
-    "- 보유 목록에 없는 새 종목은 질문으로만 제안하고 배분하지 않는다. VOO·버크셔의 매도는 제안하지 않는다."
+    "[에그폴리오 투자 정책 v4 — 장기 자산 성장 중심. 고정 규칙이 아니라 검증하며 고쳐 가는 운영 기준]\n"
+    "\n■ 1. 목적과 최우선 철학\n"
+    "- 사용자의 실제 포트폴리오를 바탕으로 시장·기업 상태를 분석해 다음 행동을 판단하는 장기 투자 감독 시스템이다. 자동매매가 아니며 판단은 근거와 함께 제시한다.\n"
+    "- \"손실을 허용하는 것과 방치하는 것은 다르다.\" 주가 손실률보다 투자 논리의 훼손 여부를 먼저 본다. 단순히 손실이 크다고 좋은 기업을 팔지 않고, 일시적 하락을 견딜 수 있다는 이유로 훼손된 논리를 방치하지도 않는다.\n"
+    "- 좋은 기업을 합리적인 가격에 사고, 공포와 탐욕을 기회로 쓰며, 현금을 효율적으로 운용하고, 국내외 후보를 함께 비교하며, 충동적 추격 매수와 잦은 매매를 막는다. 기존 보유 종목에 집착하지 않고 더 나은 대안도 찾는다.\n"
+    "\n■ 2. 투자 성향과 위험\n"
+    "- 장기 자산 성장 우선. 성장주·기술 산업에 적극적이고 단기 변동성은 수용한다. 차트 예측 중심의 단기 매매는 지양한다. 지나친 분산보다 우수한 기회에 자본을 집중할 수 있고, 필요하면 신규 기업·산업도 검토한다(전술적 매수·매도 허용).\n"
+    "- 최대 감내 손실률은 -40%이다. 이것은 자동 손절선도, 무조건 보유해도 되는 한도도 아니고 일시적 변동성을 견딜 범위일 뿐이다.\n"
+    "- 상황별 기본 판단: 시장 전체의 일시적 공포=성급한 매도 금지·기회 검토 / 우량 기업의 단기 하락=적정가치·매수 기회 재평가 / 일시적 실적 부진=원인과 회복 가능성 분석 / 경쟁력·시장 지위의 구조적 훼손=비중 축소·매도 검토 / 회계·재무 건전성 훼손=신속한 위험 평가 / 과도한 밸류에이션=신규 매수 중단·일부 축소 검토 / 지나친 포트폴리오 집중=추가 매수 제한·재배분 검토.\n"
+    "\n■ 3. 자산 배분과 현금\n"
+    "- 성장 70%·방어 30%는 방향일 뿐이며 금·채권 ETF를 기계적으로 사지 않는다. 현재 규모에서는 우량 지수 ETF, 경쟁력 있는 개별 성장 기업, 국내외 매력적 기회, 적절한 기회 대기 현금을 우선한다. 월 투자 가능액은 당분간 약 150만~200만원, 이후 250만~300만원으로 늘어날 수 있다.\n"
+    "- 생활비·비상금·부채 상환·전세보증금 반환 자금은 투자 자금과 분리한다. 이 돈은 ISA 만기(2030년 11월) 이후에도 당장 쓰지 않는 장기 자금이다. 미국 순투자금 목표는 2000만원이다.\n"
+    "- 종목별·코어·기술주 비중과 현금 비율에 정해진 숫자는 없다(60/25/15 같은 옛 비율은 참고 출발점일 뿐). 매번 시장 환경과 기업별 매력도로 정한다.\n"
+    "- 현금은 놀고 있는 돈이 아니라 더 좋은 기회를 위한 선택권이다. 현금이 남았다는 이유만으로 사지 않고, 매력적 기회가 없으면 보유한다. 다만 과도하게 쌓이면 기회비용을 재평가하고, 급락 시에는 단계적으로 투입한다. 현금 보유 여부는 감정이 아니라 기회와 위험의 비교로 정한다. 환전과 주식 매수는 별개의 결정이다.\n"
+    "\n■ 4. 투자 후보와 계좌별 역할\n"
+    "- 새 돈이 들어오면 국내외 모든 후보와 현금을 함께 비교한다. 미국: VOO·BRK.B·NVIDIA·Alphabet·Tesla·Palantir·IonQ 등. 국내: KODEX 200·SK하이닉스·삼성전자·삼성전기·두산·SOL AI반도체TOP2플러스 등. 새 종목은 기존보다 매력이 높고 포트폴리오 위험을 키우지 않을 때만 제안한다.\n"
+    "- ISA(국내): KODEX 200을 상시 핵심 후보로 매번 검토한다(국내 지수 밸류에이션 매력, 개별 종목 과열, 투자심리 위축, 개별 위험 축소, 정리 자금 재배분 때). 두산·SOL AI반도체TOP2플러스를 정리할 때는 그 자금을 KODEX 200으로 옮기는 방안을 우선 검토하되 항상 더 좋은 대안과 비교한다. KODEX 200은 삼성전자·SK하이닉스 비중이 커서 반도체 집중이 자동으로 줄지 않으므로 구성 종목·합산 노출·기존 ISA 중복을 확인한다.\n"
+    "- 미국 개별주: 장기 복리 성장과 주식 수량 축적 중심, 소수점 정기 매수 선호. 밸류에이션이 과도하거나 투자 논리가 훼손되면 금액을 줄이거나 멈춘다. IonQ처럼 불확실성이 큰 종목은 핵심 자산과 구분하고 무조건 물타기하지 않는다.\n"
+    "- 배우자 연금 계좌(17년 이상 장기)는 앱에 자료가 없다. S&P500·나스닥100·빅테크·반도체 ETF 중복 노출은 가계 전체 기준으로 판단해야 하므로 필요하면 사용자에게 질문한다.\n"
+    "\n■ 5. 국내 개별주 매수 — 지정가 규율\n"
+    "- 국내 개별 종목은 가격을 정해 놓고 기다리는 지정가 방식으로만 제안한다. 사용자는 실제 매수 순간에 조급해져 더 비싸게 사는 경향이 있었다.\n"
+    "- 매수를 제안하기 전에 일봉·이동평균(20/60/120)·고저점·지지·저항·거래량·RSI·ATR·추세 전환·시장 대비 강도(technicals)와 실적·현금흐름·밸류에이션, 시장 심리·수급을 분석한다. 단일 지표로 가격을 정하지 않는다.\n"
+    "- 국내 매수 제안에는 1차 매수가·2차 매수가·최대 허용 매수가(넘으면 추격 금지)·주문 유효기간·금액·차트/펀더멘털/심리 근거·무효화 조건을 모두 쓴다(priorities의 limit_plan). 자료가 없어 가격을 정할 수 없으면 임의로 만들지 말고 그 이유를 밝히고 금액은 0원으로 한다.\n"
+    "- 미체결 규칙: 미체결은 실패가 아니다. 당일 가격을 올려 다시 사지 않고 다음 거래일 새 데이터로 가격을 다시 정한다. 투자 논리가 바뀌었으면 기존 주문을 취소한다. 현금이 남았거나 놓쳤다는 느낌, 급등, 남의 수익을 이유로 한 추격 매수를 경계한다. 매수하지 않는 것도 판단이다.\n"
+    "\n■ 6. 기업 분석과 판단 체계\n"
+    "- 먼저 생존력과 경쟁력(경쟁 우위·기술·시장 지위·고객 의존·진입 장벽·재무 건전성·자본 배분·산업 성장성)을 본다. 모든 보유 종목에 견고/보통/훼손/미확인 상태를 주며, 상태는 주가 수익률이 아니라 실제 경쟁력과 투자 논리로 정한다.\n"
+    "- 기업의 질과 매수 가격은 별개다: 견고+합리적 가격=매수 검토 / 견고+과도한 가격=보유·관망 / 보통+저평가=추가 분석 / 훼손+저평가=가치 함정 검토 / 훼손+고평가=축소·매도 검토 / 미확인=판단 보류.\n"
+    "\n■ 7. 시장 심리(코스톨라니 달걀)와 거시·리서치\n"
+    "- 펀더멘털은 기업의 생존 가능성을, 시장 심리는 매수·매도 타이밍을 판단하는 데 쓴다. 달걀 단계는 확정이 아니라 확률적 판단이며 가격 하나로 국면을 판정하지 않는다. 가격·거래량·변동성·뉴스 반응·수급·포지셔닝·실적 전망 조정·업종 자금 흐름을 본다. 근거가 약한 수치를 사실처럼 제시하지 않는다.\n"
+    "- 글로벌 투자은행·리서치의 전망은 날짜·기간·핵심 가정·근거 데이터·이미 반영된 기대·틀릴 조건을 확인해 참고만 하며 정답으로 쓰지 않는다. AI 산업은 인프라 투자 규모, 데이터센터 수익성, GPU·메모리 수요, 공급 확대, 설비투자·감가상각, 클라우드 ROI, 매출화, 경쟁 구도, 공급 과잉 가능성을 보고, 장기 성장성과 현재 가격의 합리성을 따로 평가한다.\n"
+    "\n■ 8. 매도와 재배분\n"
+    "- 매도는 감정적 손실 회피가 아니다. 경쟁 우위·재무 건전성 훼손, 실적 전망의 구조적 하향, 투자 논리 무효화, 과도한 밸류에이션, 과도한 집중, 더 우수한 대안이 있을 때 적극 검토한다. 손실이 크다는 이유, 수익이 났다는 이유만으로는 팔지 않는다.\n"
+    "- 매도 자금은 VOO·BRK.B·KODEX 200·우량 성장 기업·다른 ETF·현금 중 가장 매력적인 곳으로 재배분하며, 반드시 즉시 재투자할 필요는 없다. 평단은 참고일 뿐 매수·매도 근거가 아니다. 두산·SOL AI반도체TOP2플러스는 평단 회복 시 정리가 기본이다.\n"
+    "- 국내 보유(ISA)는 우선 홀드하며, 추가 매수·정리가 유리한 시점은 AI가 근거와 함께 먼저 제안한다.\n"
+    "\n■ 9. 계획과 실제 기록의 구분\n"
+    "- 투자 계획·지정가 주문·환전 계획은 체결이 아니다. 사용자가 실제 체결을 입력해야만 원장(보유·예수금)이 바뀐다. 입력하지 않은 체결을 추정해 기록하지 않는다.\n"
+    "- 사용자가 매매 때 남긴 짧은 이유와 계획 준수 여부, 그 이후 성과는 에이전트가 읽고 판단 습관과 패턴을 복기한다. 표본이 적을 때(대략 30건 미만)는 통계적 결론이 아니라 관찰로만 다룬다.\n"
+    "\n■ 10. 출력 형식과 데이터 원칙\n"
+    "- 각 후보에 판단(매수/보유/관망/축소/매도), 기업 상태, 투자 논리, 시장 심리, 밸류에이션, 주요 위험, 포트폴리오 영향, 추천 금액·비중, 매수 가격·조건(국내는 지정가), 신뢰도, 판단이 틀릴 조건을 포함한다. 미국은 소수점·금액 중심으로 제시한다.\n"
+    "- 최신 데이터를 우선하고 기준 날짜를 표시하며 실제 값과 추정값, 미확인을 구분한다. 데이터가 부족하면 판단 보류를 허용하고, 출처 불분명한 수치·뉴스 제목만으로의 결정·단일 지표 결론을 피한다. 실시간 호가·틱 데이터가 없으면 솔직히 밝힌다.\n"
+    "\n■ 11. 앱이 자동 검사하는 돈 규칙 (AI도 어길 수 없음)\n"
+    "- 비상금·부채 상환 자금은 투입 금액에서 제외하고, 보유 달러(환전 순수령 포함)를 넘는 매수는 제안하지 않는다. 앱에 등록되지 않은 새 종목은 이름과 이유를 제안(new_candidates)만 하고 바로 배분하지 않는다. VOO·BRK.B 매도는 제안하지 않는다.\n"
+    "\n■ 12. 최종 원칙\n"
+    "- 좋은 기업을 찾고, 투자 논리가 유지되는지 계속 확인하고, 심리와 자금 흐름에서 좋은 진입 기회를 찾고, 국내 개별주는 가격이 오지 않으면 기다리고, 더 나은 기회가 보이면 자금을 옮기며, 계획과 체결 기록을 엄격히 구분하고, 틀리면 인정하고 정책을 고친다. 목표는 많이 사는 것도 손실을 피하는 것도 아니라 자본을 가장 유리한 기회에 배분하며 우수한 자산을 장기로 쌓는 것이다."
 )
 
 
@@ -36,12 +66,13 @@ SCHEMA = """{
  "headline": "한 줄 결론",
  "master": {"summary": "큰 전략 요약(3~5문장)", "phase_goal": "지금 단계의 목표", "kr_policy": "국장 운용", "us_policy": "미국 운용",
             "core_policy": "코어(VOO·버크셔) 운용", "tech_policy": "기술주 운용", "cash_policy": "현금 보유 원칙과 이상적 비율", "risk_notes": ["주요 위험"],
-            "guideline_changes": [{"guideline": "바꾼 가이드라인(G1~G6 중)", "why": "변경 이유", "evidence": "오늘 확인한 데이터·출처", "better_than_default": "기본 배분보다 유리하다고 본 근거", "extra_risk": "추가 위험", "revert_if": "철회 조건"}]},
+            "guideline_changes": [{"guideline": "정책에서 어긋나게 제안한 항목", "why": "변경 이유", "evidence": "오늘 확인한 데이터·출처", "better_than_default": "기본 배분보다 유리하다고 본 근거", "extra_risk": "추가 위험", "revert_if": "철회 조건"}]},
  "detail_rules": [{"topic": "주제", "rule": "세부 규칙(조건 포함)"}],
  "allocation": {"kr_krw": 0, "us_krw": 0, "cash_krw": 0, "reason": "왜 이렇게 나눴는지", "cash_reason": "현금(달러·원화)으로 남기는 금액과 이유", "market_view": "오늘의 시장·거시경제 판단"},
  "research_summary": "오늘 검색·데이터에서 가장 중요했던 발견 3~5줄(출처명 포함)",
  "policy_deviations": ["내 정책과 다르게 제안한 부분과 이유(없으면 빈 배열)"],
- "priorities": [{"rank": 1, "name": "종목명", "ticker": "티커", "action": "매수|보류|홀드|정리검토", "amount_krw": 0, "weight_hint": "목표 비중 방향(예: 늘림/유지/줄임)", "reason": "근거", "evidence": "오늘 검색·데이터에서 찾은 이 종목의 근거(출처명·날짜)", "counter": "반대 근거", "quality": "기업 품질 한 줄", "valuation": "가격 매력(밸류에이션) 한 줄", "scenario": "3~5년 기대수익 시나리오(낙관/기준/비관, 정성)", "vs_others": "다른 후보보다 우선/후순위인 이유, 매수하지 않았다면 왜 0원인지", "change_if": "판단이 바뀌는 조건"}],
+ "priorities": [{"rank": 1, "name": "종목명", "ticker": "티커", "action": "매수|보류|홀드|정리검토", "amount_krw": 0, "weight_hint": "목표 비중 방향(예: 늘림/유지/줄임)", "reason": "근거", "evidence": "오늘 검색·데이터에서 찾은 이 종목의 근거(출처명·날짜)", "counter": "반대 근거", "quality": "기업 품질 한 줄", "valuation": "가격 매력(밸류에이션) 한 줄", "scenario": "3~5년 기대수익 시나리오(낙관/기준/비관, 정성)", "vs_others": "다른 후보보다 우선/후순위인 이유, 매수하지 않았다면 왜 0원인지", "change_if": "판단이 바뀌는 조건", "limit_plan": {"first_price": "국내 매수일 때 1차 지정가(숫자, 해당 없으면 null)", "second_price": "2차 지정가", "max_price": "이 가격 초과 시 추격 금지", "valid_days": "주문 유효기간(일)", "basis": "차트·펀더멘털·심리 근거 요약", "invalid_if": "무효화 조건", "note": "자료가 없어 가격을 못 정하면 이유"}}],
+ "new_candidates": [{"name": "앱에 없는 새 후보 종목명", "ticker_hint": "티커(알면)", "why": "왜 기존 후보보다 나은가", "risk": "포트폴리오에 주는 위험"}],
  "avg_down_review": [{"name": "손실 종목", "verdict": "유리|조건부|불리", "reason": "근거", "conditions": "물타기가 성립하려면 필요한 조건", "recovery_pct_note": "평단까지 필요한 상승률·과거 도달 빈도·목표가 여력을 인용한 한 줄"}],
  "fx_view": {"lean": "환전 유리|중립|환전 불리|판단 불가", "confidence": "낮음|보통|높음", "level_note": "원/달러 판단 근거(research.fx 헤드라인·fx_rule에서 확인된 것만, 정확한 예측은 불가)", "institution_views": [{"name": "기관·매체", "view": "의견", "date": "날짜"}]},
  "questions_to_user": ["내게 확인하고 싶은 것"],
@@ -273,6 +304,38 @@ def _move(get_prices, tk):
         return None, None
 
 
+def technicals(get_prices, tk):
+    """앱이 이미 계산하는 지표(이동평균·RSI·ATR·거래량·52주/20·60일 고저)를 에이전트에 그대로 전달한다. 자료가 없으면 None."""
+    if not get_prices:
+        return None
+    try:
+        df, _ = get_prices(tk, "1y")
+        c = df["Close"].dropna()
+        if len(c) < 30:
+            return None
+        last = df.iloc[-1]
+        px = float(c.iloc[-1])
+
+        def g(col, nd=2):
+            v = last.get(col)
+            return None if v is None or pd.isna(v) else round(float(v), nd)
+        out = {"asof": str(df.index[-1])[:10], "close": round(px, 2)}
+        for n in (20, 60, 120):
+            m = g("MA%d" % n)
+            out["ma%d" % n] = m
+            out["gap_to_ma%d_pct" % n] = None if not m else round((px / m - 1) * 100, 1)
+        out.update({"return_20d_pct": g("Return20", 1), "return_60d_pct": g("Return60", 1), "rsi14": g("RSI14", 1), "atr14_pct": g("ATR14_Pct", 2), "volume_ratio_vs_20d": g("VolumeRatio20", 2)})
+        hi, lo = float(df["High"].max()), float(df["Low"].min())
+        out.update({"high_1y": round(hi, 2), "low_1y": round(lo, 2), "from_high_pct": round((px / hi - 1) * 100, 1), "from_low_pct": round((px / lo - 1) * 100, 1)})
+        for n in (20, 60):
+            out["low_%dd" % n] = round(float(df["Low"].tail(n).min()), 2)
+            out["high_%dd" % n] = round(float(df["High"].tail(n).max()), 2)
+        out["note"] = "지지·저항은 최근 20/60일 저점·고점으로 본 근사치입니다(차트 패턴 해석 아님)."
+        return out
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_text, prev_strategy, get_prices=None):
     total = sum((i.get("value") or 0) * (fx if i["cur"] == "USD" else 1.0) for i in items) or 1.0
     rows = []
@@ -287,6 +350,14 @@ def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_t
              "excluded_reason": None if not sc else sc.get("gate"), "egg_phase": i.get("plabel"), "company_stance": i.get("sv_txt"),
              "ai_industry_outlook": i.get("outlook"), "ai_target_price": i.get("target")}
         a["move_1d_pct"], a["move_5d_pct"] = _move(get_prices, i["tk"])
+        a["technicals"] = technicals(get_prices, i["tk"])
+        if i.get("is_candidate"):
+            a["is_candidate_not_held"] = True
+        if i.get("lad") and isinstance(i["lad"], dict):
+            try:
+                a["app_price_ladder"] = {"buys": (i["lad"].get("buys") or [])[:3], "sells": (i["lad"].get("sells") or [])[:3]}
+            except Exception:  # noqa: BLE001
+                pass
         if i.get("ret") is not None and i["ret"] < 0:
             try:
                 sym_ = i["tk"] if str(i["tk"]).endswith((".KS", ".KQ")) else str(i["tk"]).replace(".", "-")
@@ -313,13 +384,15 @@ def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_t
         "market_stress": {k: {"level": v.get("level"), "points": v.get("points"), "why": [t for _, t in v.get("parts", [])]} for k, v in (stress or {}).items()},
         "us_goal": {"target_net_invested_krw": cfg.get("goal"), "current_estimate_krw": cfg.get("invested")},
         "ai_exposure_comfort_band_pct": cfg.get("band"),
-        "kr_new_buying_frozen": cfg.get("freeze"),
         "core_names": cfg.get("core"),
         "waiting_cash_krw": {"kr": cash_map.get("KR_KRW", 0), "us": cash_map.get("US_KRW", 0)},
         "new_deposit": {"amount_krw": int(deposit), "memo": memo},
         "user_policy_text": policy_text,
         "previous_strategy": prev_strategy,
         "look_through": look_through(items, fx),
+        "my_trade_journal": st.session_state.get("_journal") or "아직 기록된 매매 없음",
+        "data_access": {"provided": ["보유·평단·평가손익", "종목별 technicals(이동평균·RSI·ATR·거래량·고저)", "앱 규칙 점수·달걀 국면·기업 상태 기록", "코스톨라니 심리·가치 괴리", "뉴스 헤드라인(제목·매체·날짜만)", "예수금·환율", "과거 제안 성과·내 매매 일지"],
+                        "not_provided": ["외국인·기관 수급(이번 자료에 미포함)", "공매도·대차잔고", "배우자 연금 계좌", "실시간 호가·틱", "기사 본문"], "rule": "not_provided 항목은 추정하지 말고 unknowns에 적는다"},
         "past_lessons": st.session_state.get("_lessons") or "아직 복기된 교훈 없음(기록이 쌓이는 중)",
     }
     try:  # 코스톨라니 심리·가치 괴리·환전/예수금 자료
@@ -352,10 +425,11 @@ def _prompt(packet, task, extra=""):
         "앱 규칙 판단(rule_final)과 다르게 결론 내리면 이유를 쓰고, 매수 후보로 검토한 모든 종목에 대해 '왜 이 금액인가/왜 0원인가'를 비교해서 쓰세요. 점수(score_total)가 낮은 종목에 큰 금액을 주면 reason에 이유를 쓰세요. "
         "좋은 매수 가격이 보이지 않으면 현금(cash_krw)을 남기는 것도 하나의 결정입니다. 각 판단에 근거의 기준일·출처·실제 데이터인지 추정인지·판단이 바뀌는 조건을 포함하세요. "
         "좋은 매수 가격이 보이지 않으면 현금(cash_krw)을 남기는 것도 하나의 결정입니다. 각 판단에 근거의 기준일·출처·실제 데이터인지 추정인지·판단이 바뀌는 조건을 포함하세요. "
-        "(7-6) 권한 구조: user_policy_text에는 정해진 비율이 없습니다. 종목별·코어·기술주 비중과 현금 비율은 AI가 매번 정하고, 정책의 기본 상황·국내 보유 방침·돈 규칙만 지키세요. 국내 종목 추가 매수·정리는 유리한 시점이라고 데이터로 판단될 때에만 근거와 함께 제안하세요. "
+        "(7-6) 권한 구조: user_policy_text(정책 v4)는 정해진 비율이 없으므로 종목별·코어·기술주 비중과 현금 비율은 AI가 매번 정하세요. 단 정책 전문(특히 5장 국내 지정가 규율, 8장 매도·재배분, 9장 계획과 실제의 구분, 11장 돈 규칙)을 지키세요. 국내 종목 매수는 반드시 priorities.limit_plan(1차·2차·최대 허용가·유효기간·근거·무효화 조건)을 채우고, 각 종목의 technicals(이동평균·RSI·ATR·거래량·52주 고저·20/60일 고저)에서 가격을 정하세요. technicals가 없으면 가격을 만들지 말고 0원과 이유를 쓰세요. "
         "특정 종목을 먼저 정하고 남은 돈을 나누지 말고, 모든 투자 후보와 현금을 동시에 비교해 우선순위와 금액을 정하세요(후보별 기업 품질·가격 매력·심리·3~5년 시나리오·하방 위험·VOO 포함 중복 노출·우선순위). 모든 후보가 매력적이지 않다면 전액 대기도 자신 있게 결론 내리세요. "
         "look_through(VOO 안의 종목 + 직접 보유 합산 노출)를 반드시 반영하고, VOO 매수를 단순히 기술주 위험을 줄이는 선택으로 보지 마세요. 매수하지 않은 종목도 vs_others에 왜 0원인지 쓰세요. "
         "(7-7) past_lessons는 과거 제안의 성과를 복기해 얻은 교훈입니다. 표본이 적으면 참고만 하고, 교훈을 반영했다면 reason에 적으세요. "
+        "(7-9) my_trade_journal은 사용자가 실제로 한 매매와 그때 적은 이유, 이후 성과, 계획 준수 여부입니다. 반복되는 습관(예: 계획보다 비싸게 산 경우, 급락 때 판 경우)을 찾아 판단에 반영하되 표본이 30건 미만이면 관찰일 뿐 결론으로 쓰지 마세요. 앱에 없는 새 후보는 new_candidates에만 쓰세요. "
         "(7-8) morning_briefing은 오늘 먼저 정리해 둔 시장·기업 브리핑입니다. 배분은 이 브리핑의 시장 판단·종목 상태·후보 순위를 근거로 하고, 브리핑과 다르게 결론 내리면 이유를 쓰세요. "
         "(7-4) 환전과 매수는 별개: cash_accounts_and_fx에 달러 예수금이 있으면 환전 없이 그 달러로 매수할 수 있다는 점을 고려하고, 환율 조사 의견은 참고로만 쓰세요. "
         "(9) 한국 주식은 정수 주 단위, 미국 주식은 소수점 가능. 자동 주문은 없고 사람이 직접 실행한다.\n\n"
@@ -671,6 +745,9 @@ def verify_plan(strat, items, fx, pl, freeze=True):
     if int(al.get("kr_krw", 0) or 0) > 0:
         kr_ev = [p for p in pri if p.get("action") == "매수" and int(p.get("amount_krw") or 0) > 0 and (next((i for i in items if i["tk"] == p.get("_item")), {}) or {}).get("cur") == "KRW" and str(p.get("evidence", "")).strip()]
         add("soft", "국내 추가 매수는 근거 필요", bool(kr_ev), "국내 매수 {:,}원 — 유리한 시점이라는 근거·출처가 있어야 함".format(int(al.get("kr_krw", 0))))
+    kr_nolim = [p.get("name") for p in pri if p.get("action") == "매수" and int(p.get("amount_krw") or 0) > 0 and (next((i for i in items if i["tk"] == p.get("_item")), {}) or {}).get("cur") == "KRW"
+                and not ((p.get("limit_plan") or {}).get("first_price") and (p.get("limit_plan") or {}).get("max_price"))]
+    add("soft", "국내 매수는 지정가 계획(1차·최대 허용가) 포함", not kr_nolim, ", ".join(map(str, kr_nolim)) if kr_nolim else "해당 없음 또는 전부 포함")
     add("soft", "뉴스 자료 반영", bool(strat.get("_research_ok")), "헤드라인 {}건".format(strat.get("_headlines_total") or 0))
     return out
 
@@ -720,7 +797,8 @@ def execution_rows(strategy, items, fx, us_scale=1.0):
             amt = int(amt * us_scale)  # 환전 비용 때문에 줄어든 미국 매수 가능액 반영
         row = {"순위": p.get("rank") if p.get("rank") != 99 else None, "종목": p.get("name"), "행동": p.get("action"), "금액(원)": amt if amt else None,
                "금액(USD)": None, "수량": None, "현재가": None, "체결 후 평단": None, "규칙 점수": None, "비중 방향": p.get("weight_hint"),
-               "앱 규칙 판단(심리)": ((st.session_state.get("_kost_compact") or {}).get(p.get("_item")) or {}).get("rule_final"), "근거": (str(p.get("reason") or "") + ("  [앱 보정: {}]".format(p["_adj"]) if p.get("_adj") else "")), "다른 후보 대비": p.get("vs_others"), "3~5년 시나리오": p.get("scenario"), "오늘의 증거(출처)": p.get("evidence"), "반대 근거": p.get("counter"), "판단이 바뀌는 조건": p.get("change_if")}
+               "앱 규칙 판단(심리)": ((st.session_state.get("_kost_compact") or {}).get(p.get("_item")) or {}).get("rule_final"), "근거": (str(p.get("reason") or "") + ("  [앱 보정: {}]".format(p["_adj"]) if p.get("_adj") else "")), "다른 후보 대비": p.get("vs_others"), "3~5년 시나리오": p.get("scenario"), "오늘의 증거(출처)": p.get("evidence"), "반대 근거": p.get("counter"), "판단이 바뀌는 조건": p.get("change_if"),
+               "지정가 계획(국내)": (lambda lp: None if not isinstance(lp, dict) or not (lp.get("first_price") or lp.get("note")) else "1차 {} / 2차 {} / 최대 {} / {}일 · 무효화: {} {}".format(lp.get("first_price"), lp.get("second_price"), lp.get("max_price"), lp.get("valid_days"), lp.get("invalid_if"), lp.get("note") or ""))(p.get("limit_plan"))}
         if it:
             row["규칙 점수"] = None if not it.get("score") else round(it["score"]["total"], 1)
             px = it.get("price")
@@ -759,6 +837,10 @@ def plan_for_banner(strategy, items, fx):
 # ------------------------------------------------------------------ 화면
 def _log_chat(get_conn, role, text):
     ai_agent._run(get_conn, "INSERT INTO chat_log (created_at,role,text) VALUES (%s,%s,%s)", (_now(), role, text[:4000]))
+
+
+def clear_chat(get_conn):
+    ai_agent._run(get_conn, "DELETE FROM chat_log")
 
 
 def _load_chat(get_conn, n=30):

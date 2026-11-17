@@ -14,10 +14,63 @@ import streamlit as st
 
 import ai_agent
 import fx as fxmod
+import journal
 import ledger
 import strategist as S
 
-_CLEAN_TABLES = ["fx_events", "cash_events", "strategy_log", "chat_log", "rec_log", "adjust_log", "cash_balance"]
+DEFAULT_WATCH = [{"tk": "069500.KS", "name": "KODEX 200", "mkt": "한국", "cur": "KRW"}]
+
+
+def _watch_list(cfg):
+    try:
+        w = json.loads(cfg.get("watchlist") or "null")
+        return w if isinstance(w, list) else DEFAULT_WATCH
+    except Exception:  # noqa: BLE001
+        return DEFAULT_WATCH
+
+
+def watch_items(get_prices, items, cfg):
+    """보유하지 않은 관심 후보(기본: KODEX 200)를 보유 수량 0인 종목으로 만든다. 에이전트가 신규 매수 후보로 비교하고, 매매 기록에서도 고를 수 있다."""
+    held = {i["tk"] for i in items}
+    out = []
+    for w in _watch_list(cfg):
+        tk = str(w.get("tk", "")).strip()
+        if not tk or tk in held:
+            continue
+        px = None
+        try:
+            df, _ = get_prices(tk, "5d")
+            px = float(df["Close"].dropna().iloc[-1])
+        except Exception:  # noqa: BLE001
+            px = None
+        out.append(dict(mkt=w.get("mkt", "한국"), tk=tk, dbtk=tk, name=w.get("name", tk), mode="신규 후보", qty=0.0, avg=0.0, cur=w.get("cur", "KRW"), price=px, value=0.0,
+                        ret=None, score=None, plabel="-", sv_txt="미확인", sv_val="미확인", outlook="미확인", target=None, weight=None, kind="watch", label="관심 후보", is_candidate=True))
+    return out
+
+
+def _my_notes(get_conn):
+    """기업 상태 기록·최근 판단 기록을 에이전트에 전달한다(앱 안에 쌓인 내 기록)."""
+    out = {}
+    try:
+        st_ = ai_agent._run(get_conn, "SELECT ticker, stance, as_of, memo, invalidation FROM stance_log ORDER BY id DESC LIMIT 40", fetch=True)
+        seen, rows = set(), []
+        for _, r in st_.iterrows():
+            if r["ticker"] in seen:
+                continue
+            seen.add(r["ticker"])
+            rows.append({"ticker": r["ticker"], "stance": r["stance"], "as_of": str(r["as_of"])[:10], "memo": str(r["memo"] or "")[:200], "invalidation": str(r["invalidation"] or "")[:120]})
+        out["company_stance_records"] = rows
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        dc = ai_agent._run(get_conn, "SELECT created_at, ticker, decision, thesis FROM decisions ORDER BY created_at DESC LIMIT 15", fetch=True)
+        out["recent_decisions"] = [{"date": str(r["created_at"])[:10], "ticker": r["ticker"], "decision": r["decision"], "thesis": str(r["thesis"] or "")[:150]} for _, r in dc.iterrows()]
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+_CLEAN_TABLES = ["fx_events", "cash_events", "strategy_log", "chat_log", "rec_log", "adjust_log", "cash_balance", "brief_log"]
 
 
 def _now():
@@ -118,7 +171,7 @@ def _section_money(get_conn, fx, c, save_cfg):
     if usd < -0.005 or cma < -0.5:
         st.error("잔액이 마이너스입니다. 기록이 꼬인 상태이니 아래 '설정·정리'에서 '잔액 맞추기'로 실제 잔액에 맞춰 주세요.")
     with st.expander("설정 · 잔액 맞추기 · 테스트 기록 정리"):
-        t1, t2, t3 = st.tabs(["잔액 맞추기", "고급 설정", "기록 정리"])
+        t1, t2, t4, t3 = st.tabs(["잔액 맞추기", "고급 설정", "관심 후보", "기록 정리"])
         with t1:
             st.caption("증권사 앱에 보이는 실제 잔액을 그대로 넣으세요. 지금 기록과의 차이만큼 한 줄이 추가됩니다. 처음 시작할 때와 잔액이 어긋났을 때만 쓰면 됩니다.")
             with st.form("money_adjust"):
@@ -139,8 +192,27 @@ def _section_money(get_conn, fx, c, save_cfg):
                     save_cfg(get_conn, "fx_spread", str(float(sp)))
                     st.rerun()
             st.checkbox("계획 받을 때 뉴스를 새로 모으기 (끄면 30분 안에 모은 헤드라인 재사용)", value=False, key="ag_force")
+        with t4:
+            st.caption("보유하지 않았지만 에이전트가 매번 함께 비교할 종목입니다(기본: KODEX 200). 야후 파이낸스 코드로 추가하세요. 예: 069500.KS, 005930.KS, QQQ")
+            wl = _watch_list(c)
+            for w_ in wl:
+                st.write("- {} ({})".format(w_.get("name"), w_.get("tk")))
+            n1, n2, n3 = st.columns([1.2, 1.5, 1])
+            ntk = n1.text_input("티커", key="wl_tk")
+            nnm = n2.text_input("이름", key="wl_nm")
+            if n3.button("추가", key="wl_add") and ntk.strip():
+                tk_ = ntk.strip()
+                kr_ = tk_.endswith((".KS", ".KQ"))
+                wl = [w for w in wl if w.get("tk") != tk_] + [{"tk": tk_, "name": nnm.strip() or tk_, "mkt": "한국" if kr_ else "미국", "cur": "KRW" if kr_ else "USD"}]
+                save_cfg(get_conn, "watchlist", json.dumps(wl, ensure_ascii=False))
+                st.rerun()
+            if wl:
+                rm = st.selectbox("목록에서 뺄 종목", ["(선택 안 함)"] + [w.get("name") for w in wl], key="wl_rm")
+                if rm != "(선택 안 함)" and st.button("뺀다", key="wl_rm_btn"):
+                    save_cfg(get_conn, "watchlist", json.dumps([w for w in wl if w.get("name") != rm], ensure_ascii=False))
+                    st.rerun()
         with t3:
-            st.caption("테스트로 넣은 입금·환전·AI 계획·채팅 기록을 모두 지우고 처음부터 시작합니다. 지워지는 것: 예수금 기록, 입금 기록, AI 계획 기록, 채팅, 제안 성과 기록, 조절 기록. "
+            st.caption("테스트로 넣은 입금·환전·AI 계획·채팅 기록을 모두 지우고 처음부터 시작합니다. 지워지는 것: 예수금 기록, 입금 기록, AI 계획·브리핑 기록, 채팅, 제안 성과 기록, 조절 기록. **매매 일지는 지우지 않습니다.** "
                        "**지워지지 않는 것: 보유 종목(국장·미국) 수량·평단, 거래·판단 기록, 기업 상태 메모.**")
             sure = st.checkbox("위 내용을 이해했고 지우겠습니다", key="ag_clean_ok")
             if st.button("테스트 기록 정리하기", key="ag_clean", disabled=not sure):
@@ -169,7 +241,12 @@ def _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, policy, strat
         st.session_state["_lessons"] = json.dumps({"track_record": tr, "previous_review": prev_review}, ensure_ascii=False)[:4000]
     except Exception:  # noqa: BLE001
         st.session_state["_lessons"] = None
+    try:
+        st.session_state["_journal"] = json.dumps(journal.summarize(get_conn, get_prices), ensure_ascii=False)[:4000]
+    except Exception:  # noqa: BLE001
+        st.session_state["_journal"] = None
     packet = S.build_packet(items, risk, stress, fx, cfg_pk, pool, memo, cash_map, c.get("policy_text") or S.DEFAULT_POLICY, strat, get_prices)
+    packet["my_notes"] = _my_notes(get_conn)
     packet["cash_pool"] = pool_info
     _bt, _bf = S.load_brief(get_conn)
     if _bf:
@@ -241,12 +318,15 @@ def _section_plan(get_conn, items, fx, cfg_pk, hub, sid, status, strat, created,
     ex = S.execution_rows(strat, items, fx, (pl_ or {}).get("us_scale", 1.0))
     if ex:
         df = pd.DataFrame(ex)
-        main = [k for k in ("순위", "종목", "행동", "금액(원)", "금액(USD)", "수량", "현재가", "앱 규칙 판단(심리)", "근거") if k in df.columns]
+        main = [k for k in ("순위", "종목", "행동", "금액(원)", "금액(USD)", "수량", "현재가", "지정가 계획(국내)", "앱 규칙 판단(심리)", "근거") if k in df.columns]
         st.dataframe(df[main], use_container_width=True, hide_index=True,
                      column_config={"금액(원)": st.column_config.NumberColumn("금액(원)", format="%d"), "금액(USD)": st.column_config.NumberColumn("금액(USD)", format="$%.2f"),
                                     "근거": st.column_config.TextColumn("근거", width="large")})
         with st.expander("상세 근거표 (다른 후보와의 비교 · 3~5년 시나리오 · 증거 · 반대 근거 · 판단이 바뀌는 조건)"):
             st.dataframe(df, use_container_width=True, hide_index=True)
+    for nc in strat.get("new_candidates") or []:
+        if isinstance(nc, dict) and nc.get("name"):
+            st.info("새 후보 제안(앱에 없음, 배분에는 넣지 않음): **{}** {} — {} / 위험: {}  → 마음에 들면 위 '설정 → 관심 후보'에서 티커로 추가하세요.".format(nc.get("name"), nc.get("ticker_hint") or "", nc.get("why", ""), nc.get("risk", "")))
     with st.expander("AI 전략 설명 · 정책과 다른 점 · 물타기 검토 · 위험"):
         for d_ in strat.get("policy_deviations") or []:
             st.warning("정책과 다른 제안: " + str(d_))
@@ -298,70 +378,84 @@ def _section_plan(get_conn, items, fx, cfg_pk, hub, sid, status, strat, created,
 
 
 # ------------------------------------------------------------------ ④ 체결 반영
-def _section_fill(get_conn, items, fx, sid, strat, pl_, apply_fill):
+def _section_fill(get_conn, items, fx, sid, strat, pl_, apply_trade):
     by_tk = {i["tk"]: i for i in items}
     scale = (pl_ or {}).get("us_scale", 1.0)
-    buys = []
+    buys = []  # (item, 계획 수량, 계획 단가, 이유)
     for p in strat.get("priorities") or []:
         it = by_tk.get(p.get("_item"))
         amt = int(p.get("amount_krw") or 0)
-        if it and p.get("action") == "매수" and amt > 0 and it["cur"] == "USD" and it.get("price"):
-            usd = amt * scale / fx if fx else 0.0
-            buys.append((it, usd / it["price"], it["price"]))
-    kr_buys = [p.get("name") for p in strat.get("priorities") or [] if p.get("action") == "매수" and int(p.get("amount_krw") or 0) > 0 and (by_tk.get(p.get("_item")) or {}).get("cur") == "KRW"]
+        if not (it and p.get("action") == "매수" and amt > 0):
+            continue
+        why = str(p.get("reason") or "")[:70]
+        if it["cur"] == "USD" and it.get("price"):
+            buys.append((it, (amt * scale / fx if fx else 0.0) / it["price"], it["price"], why))
+        elif it["cur"] == "KRW":
+            lp = p.get("limit_plan") or {}
+            try:
+                px = float(str(lp.get("first_price")).replace(",", "")) if lp.get("first_price") else float(it.get("price") or 0)
+            except Exception:  # noqa: BLE001
+                px = float(it.get("price") or 0)
+            if px > 0:
+                buys.append((it, float(int(amt // px)), px, why))
     st.markdown("#### 4. 체결 반영 (주문이 체결된 뒤)")
-    st.caption("보통 미국 주식은 예약주문 → 다음날 체결됩니다. 체결 내용을 아래에 입력하면 **보유 수량·평단, 달러·원화 예수금, 성과 기록이 한 번에 저장**됩니다. 미리 채워진 값은 계획 기준이니 실제 체결 값으로 고치세요. 체결이 안 된 종목은 수량을 0으로 두세요.")
+    st.caption("체결 내용을 아래에 입력하면 **보유 수량·평단, 달러·원화 예수금, 매매 일지, 성과 기록이 한 번에 저장**됩니다. 미리 채워진 값은 계획 기준(국내는 1차 지정가)이니 실제 체결 값으로 고치세요. "
+               "**체결이 안 된 종목은 수량을 0으로 두세요.** 미체결은 실패가 아닙니다. 당일 가격을 올려 다시 사지 말고 다음 거래일에 새 계획을 받으세요.")
     with st.form("fill_form_%s" % sid):
         e1, e2 = st.columns(2)
         ex_krw = e1.number_input("실제 환전한 원화 (환전 안 했으면 0)", min_value=0.0, value=float(round((pl_ or {}).get("exchange_total_krw", 0))), step=10000.0)
         ex_usd = e2.number_input("환전으로 받은 달러 ($)", min_value=0.0, value=float(round((pl_ or {}).get("usd_from_exchange", 0), 2)), step=1.0)
         rows = []
-        for it, q, px in buys:
-            f1, f2, f3 = st.columns([2, 1, 1])
-            f1.markdown("**{}**  (계획 {:.4f}주)".format(it["name"], q))
-            fq = f2.number_input("체결 수량", min_value=0.0, value=float(round(q, 4)), step=0.0001, format="%.4f", key="fq_%s_%s" % (sid, it["tk"]))
-            fp = f3.number_input("체결 단가 ($)", min_value=0.0, value=float(round(px, 2)), step=0.01, key="fp_%s_%s" % (sid, it["tk"]))
-            rows.append((it, fq, fp))
+        for it, q, px, why in buys:
+            us_ = it["cur"] == "USD"
+            f1, f2, f3, f4 = st.columns([2, 1, 1, 2])
+            f1.markdown("**{}**  (계획 {})".format(it["name"], "{:.4f}주".format(q) if us_ else "{:g}주".format(q)))
+            fq = f2.number_input("체결 수량", min_value=0.0, value=float(round(q, 4)), step=0.0001 if us_ else 1.0, format="%.4f" if us_ else "%.0f", key="fq_%s_%s" % (sid, it["tk"]))
+            fp = f3.number_input("체결 단가 ($)" if us_ else "체결 단가 (원)", min_value=0.0, value=float(round(px, 2)), step=0.01 if us_ else 10.0, key="fp_%s_%s" % (sid, it["tk"]))
+            fr = f4.text_input("이유 (고치면 일지에 저장)", value=why, key="fr_%s_%s" % (sid, it["tk"]))
+            rows.append((it, fq, fp, fr))
         c1, c2 = st.columns(2)
         ok = c1.form_submit_button("체결 내용 저장", type="primary")
         cancel = c2.form_submit_button("이번 계획은 주문하지 않음")
-    if kr_buys:
-        st.caption("국장 매수({})는 '보유·거래 입력' 탭에서 수량·평단을 직접 고쳐 주세요.".format(", ".join(map(str, kr_buys))))
+    if not buys:
+        st.caption("이번 계획에는 매수 주문이 없습니다. 환전만 했다면 위 칸에 환전액을 넣고 저장하세요. 매도는 '내 포트폴리오' 탭의 매매 기록에서 남깁니다.")
     if cancel:
         _set_status(get_conn, sid, "cancelled")
         st.rerun()
     if not ok:
         return
-    done = [(it, q, p) for it, q, p in rows if q > 0 and p > 0]
-    cost = sum(q * p for _, q, p in done)
+    done = [(it, q, p, r) for it, q, p, r in rows if q > 0 and p > 0]
     cma, usd = fxmod.balances(get_conn)[:2]
+    cost_usd = sum(q * p for it, q, p, _ in done if it["cur"] == "USD")
+    cost_krw = sum(q * p for it, q, p, _ in done if it["cur"] == "KRW")
     if ex_krw > cma + 0.5:
         st.error("환전한 원화({:,.0f}원)가 CMA 잔액({:,.0f}원)보다 큽니다. 잔액을 먼저 맞춰 주세요.".format(ex_krw, cma))
         return
-    if cost > usd + ex_usd + 0.01:
-        st.error("매수 금액(${:,.2f})이 사용 가능한 달러(${:,.2f})를 넘습니다. 환전 내용이나 체결 값을 확인하세요. (보유 달러를 넘는 매수는 기록할 수 없습니다)".format(cost, usd + ex_usd))
+    if cost_usd > usd + ex_usd + 0.01:
+        st.error("미국 매수 금액(${:,.2f})이 사용 가능한 달러(${:,.2f})를 넘습니다. 환전 내용이나 체결 값을 확인하세요. (보유 달러를 넘는 매수는 기록할 수 없습니다)".format(cost_usd, usd + ex_usd))
+        return
+    if cost_krw > cma - ex_krw + 0.5:
+        st.error("국내 매수 금액({:,.0f}원)이 원화 예수금({:,.0f}원)을 넘습니다.".format(cost_krw, cma - ex_krw))
         return
     try:
         if ex_krw > 0 or ex_usd > 0:
             _ev(get_conn, "fx_done", -ex_krw, ex_usd, (ex_krw / ex_usd) if ex_usd else None, "AI 계획 환전")
         msgs = []
         spent_so_far = 0.0
-        for it, q, p in done:
-            okk, msg = apply_fill(get_conn, it["tk"], q, p)
-            if not okk:
+        for it, q, p, r in done:
+            good, msg = journal.record_trade(get_conn, apply_trade, it, "매수", q, p, date.today(), r or "AI 계획 체결", journal.FOLLOW[0], True, False, sid, "에이전트 계획 체결")
+            if not good:
                 st.error(msg)
                 return
-            spend = min(q * p, max(0.0, usd + ex_usd - spent_so_far))  # 반올림 때문에 생기는 1~2센트 차이는 잔액이 마이너스가 되지 않게 맞춤
-            spent_so_far += spend
-            _ev(get_conn, "usd_buy", 0, -spend, None, "{} 매수".format(it["name"]))
-            ledger.record_fill(get_conn, sid, it["tk"], q, p)
-            try:
-                ai_agent._run(get_conn, "INSERT INTO adjust_log (created_at,trade_date,ticker,name,side,qty,price,currency,bucket,valuation,sentiment,weight_before,cash_change,reason) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                              (_now(), date.today().isoformat(), it["tk"], it["name"], "매수", q, p, "USD", "미분류", None, None, None, -(q * p * fx), "AI 계획 체결 반영"))
-            except Exception:  # noqa: BLE001
-                pass
+            if it["cur"] == "USD":
+                spend = min(q * p, max(0.0, usd + ex_usd - spent_so_far))  # 반올림 때문에 생기는 1~2센트 차이는 잔액이 마이너스가 되지 않게 맞춤
+                spent_so_far += spend
+                _ev(get_conn, "usd_buy", 0, -spend, None, "{} 매수".format(it["name"]))
+            else:
+                _ev(get_conn, "kr_buy", -(q * p), 0, None, "{} 매수".format(it["name"]))
             msgs.append(msg)
         _set_status(get_conn, sid, "filled")
+        st.session_state["_ctx_dirty"] = True
         st.session_state["_fill_flash"] = "체결을 반영했습니다 — " + " / ".join(msgs) if msgs else "환전만 반영했습니다."
         st.rerun()
     except Exception as e:  # noqa: BLE001
@@ -375,6 +469,20 @@ def _section_chat(get_conn, items, risk, stress, fx, cfg_pk, dep, cash_map, c, s
     for h in hist[-10:]:
         with st.chat_message("user" if h["role"] == "user" else "assistant"):
             st.write(h["text"])
+    if hist:
+        dc1, dc2 = st.columns([1, 4])
+        if dc1.button("대화 모두 지우기", key="chat_clear"):
+            st.session_state["_chat_clear_ask"] = True
+        if st.session_state.get("_chat_clear_ask"):
+            st.warning("지난 대화를 모두 지웁니다(AI 계획과 매매 기록은 그대로). 계속할까요?")
+            y1, y2 = st.columns(2)
+            if y1.button("네, 지웁니다", key="chat_clear_yes", type="primary"):
+                S.clear_chat(get_conn)
+                st.session_state["_chat_clear_ask"] = False
+                st.rerun()
+            if y2.button("취소", key="chat_clear_no"):
+                st.session_state["_chat_clear_ask"] = False
+                st.rerun()
     msg = st.chat_input("의견을 적어 주세요 (예: 오늘 엔비디아가 빠진 이유가 일시적인지 찾아보고 비중을 다시 짜줘)", key="mgr_chat")
     if msg:
         packet = S.build_packet(items, risk, stress, fx, cfg_pk, dep, "", cash_map, c.get("policy_text") or S.DEFAULT_POLICY, None, get_prices)
@@ -391,12 +499,14 @@ def _section_chat(get_conn, items, risk, stress, fx, cfg_pk, dep, cash_map, c, s
 
 
 # ------------------------------------------------------------------ 진입점
-def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg, hub, get_prices=None, apply_fill=None):
+def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg, hub, get_prices=None, apply_trade=None):
     S.ensure_tables(get_conn)
     fxmod.ensure_tables(get_conn)
     ledger.ensure_tables(get_conn)
     S.ensure_brief_table(get_conn)
     c = load_cfg(get_conn)
+    if get_prices is not None:
+        items = list(items) + watch_items(get_prices, items, c)  # 관심 후보(예: KODEX 200)도 에이전트가 함께 비교한다
     if c.get("policy_ver") != S.POLICY_VER:  # 예전 정책(고정 비율 포함)을 새 정책으로 교체
         save_cfg(get_conn, "policy_text", S.DEFAULT_POLICY)
         save_cfg(get_conn, "policy_ver", S.POLICY_VER)
@@ -438,8 +548,8 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
         st.info("아직 계획이 없습니다. 위에서 '계획 받기'를 누르세요(입금이 없으면 0원으로 두고 누르면 됩니다).")
         return None
     pl_ = _section_plan(get_conn, items, fx, cfg_pk, hub, sid, status, strat, created, c)
-    if status == "confirmed" and apply_fill is not None:
-        _section_fill(get_conn, items, fx, sid, strat, pl_, apply_fill)
+    if status == "confirmed" and apply_trade is not None:
+        _section_fill(get_conn, items, fx, sid, strat, pl_, apply_trade)
     elif status == "filled":
         st.success("이 계획의 체결이 반영되었습니다. 성과는 며칠~몇 주 뒤 아래 '기록·성적표'에서 시장과 비교해 볼 수 있고, 다음 계획 때 AI가 그 결과를 읽습니다.")
     _section_chat(get_conn, items, risk, stress, fx, cfg_pk, int(strat.get("_deposit", 0) or 0), cash_map, c, strat, get_prices)

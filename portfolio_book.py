@@ -8,6 +8,7 @@
 """
 import json
 import re
+import time
 from datetime import date, datetime, timezone
 
 import pandas as pd
@@ -18,6 +19,7 @@ import planner
 import signals
 import accounts
 import agent
+import journal
 import ai_agent
 import fx as fxmod
 import kostolany
@@ -1287,21 +1289,72 @@ def _apply_us_fill(get_conn, item_tk, qty, price):
     return True, "{} 총 {:.6f}주 · 평단 ${:.3f}".format(item_tk, tq, ta)
 
 
-def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamentals, load_decisions):
+def _apply_trade(get_conn, ch, side, qty, price):
+    """체결된 매수·매도를 보유 수량·평단에 반영한다. ch = {tk, dbtk, name, mkt, cur}. -> (성공, 메시지)
+    매도는 평단을 바꾸지 않고 수량만 줄인다(평균단가법). 미국주는 소수점 칸부터 줄이고, 두 칸의 평단은 전체 평단으로 맞춘다."""
+    st.session_state["_ctx_dirty"] = True
+    qty, price = float(qty), float(price)
+    if ch["cur"] == "USD":
+        us = _run(get_conn, "SELECT * FROM us_positions", fetch=True)
+        row = None
+        for _, r in us.iterrows():
+            if r["ticker"] == ch["tk"] or _yf_symbol(r["ticker"]) == ch["tk"] or _norm(r["ticker"]) == ch["tk"]:
+                row = r
+                break
+        if side == "매수":
+            if row is None:
+                _run(get_conn, "INSERT INTO us_positions (ticker,name,quantity,avg_cost,mode,note,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s)", (ch.get("dbtk") or ch["tk"], ch["name"], 0, 0, "적립형", "", _now()))
+            return _apply_us_fill(get_conn, ch["tk"], qty, price)
+        if row is None:
+            return False, "{} 보유가 없어 매도를 반영할 수 없습니다.".format(ch["name"])
+        wq, wa, fq, fa = _lots(row)
+        tot = wq + fq
+        if qty > tot + 1e-9:
+            return False, "{} 보유({:.4f}주)보다 많이 팔 수 없습니다.".format(ch["name"], tot)
+        _tq0, ta0 = _totals(wq, wa, fq, fa)
+        take_f = min(fq, qty)
+        fq -= take_f
+        wq = max(wq - (qty - take_f), 0.0)
+        wa = fa = ta0  # 매도는 전체 평단을 바꾸지 않는다(평균단가법)
+        _run(get_conn, "INSERT INTO us_buys (created_at,ticker,quantity,price,kind,note) VALUES (%s,%s,%s,%s,%s,%s)", (_now(), row["ticker"], -qty, price, "매도", "매매 기록"))
+        tq, ta = _save_lots(get_conn, row["ticker"], wq, wa, fq, fa)
+        return True, "{} 남은 {:.4f}주 · 평단 ${:.3f}".format(ch["name"], tq, ta)
+    df = _run(get_conn, "SELECT ticker, name, quantity, avg_cost FROM holdings", fetch=True)
+    row = None
+    for _, r in df.iterrows():
+        if str(r["ticker"]) == ch.get("dbtk") or _norm(r["ticker"]) == ch["tk"]:
+            row = r
+            break
+    if side == "매수":
+        if row is None:
+            nq, na, nm, tkr = qty, price, ch["name"], ch.get("dbtk") or ch["tk"]
+        else:
+            q0, a0 = float(row["quantity"] or 0), float(row["avg_cost"] or 0)
+            nq = q0 + qty
+            na = (q0 * a0 + qty * price) / nq
+            nm, tkr = str(row["name"]), str(row["ticker"])
+    else:
+        if row is None:
+            return False, "{} 보유가 없어 매도를 반영할 수 없습니다.".format(ch["name"])
+        q0, a0 = float(row["quantity"] or 0), float(row["avg_cost"] or 0)
+        if qty > q0 + 1e-9:
+            return False, "{} 보유({:g}주)보다 많이 팔 수 없습니다.".format(ch["name"], q0)
+        nq, na, nm, tkr = q0 - qty, a0, str(row["name"]), str(row["ticker"])
+    _run(get_conn, """INSERT INTO holdings (ticker,name,quantity,avg_cost,currency,account,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s)
+                      ON CONFLICT (ticker) DO UPDATE SET quantity=EXCLUDED.quantity, avg_cost=EXCLUDED.avg_cost, updated_at=EXCLUDED.updated_at""",
+         (tkr, nm, nq, na, "KRW", "삼성증권 ISA", _now()))
+    return True, "{} 총 {:g}주 · 평단 {:,.0f}원".format(nm, nq, na)
+
+
+def _prepare_uncached(get_conn, holdings, get_prices, load_flows):
     import supervision as sv
-    st.markdown("##### EGGFOLIO · 내 투자")
-    hub_box = st.container()
-    acct_box = st.container()
-    st.subheader("종목별 판단")
-    st.caption("보유 전체(한국·미국)를 한 표로 보고, 종목을 골라 행동 지침을 확인합니다. 행동 후보는 '가격 국면 × 내가 기록한 기업 상태 × 운용 방식'을 "
-               "규칙으로 조합한 검증 전 후보이며 승률·확률이 아닙니다. 주문 기능은 없습니다.")
     if not _ensure_once(get_conn):
-        return
+        return None
     try:
         data = _load_all(get_conn)
     except Exception as e:  # noqa: BLE001
         st.error("기록을 읽지 못했습니다: " + str(e)[:150])
-        return
+        return None
     us, modes, stlog = data["us"], data["modes"], data["stance"]
     ai_views = data.get("ai", {}) or {}
     kr_modes = {_norm(r["ticker"]): r["mode"] for _, r in modes.iterrows()}
@@ -1323,6 +1376,8 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
     if holdings is not None and len(holdings) > 0:
         for _, h in holdings.iterrows():
             tk = _norm(h.get("ticker", ""))
+            if float(h.get("quantity") or 0) <= 0:
+                continue
             base.append(dict(mkt="한국", tk=tk, dbtk=str(h.get("ticker", "")), name=str(h.get("name", tk)), mode=kr_modes.get(tk, "핵심 장기"),
                              qty=float(h.get("quantity") or 0), avg=float(h.get("avg_cost") or 0), cur=str(h.get("currency", "KRW"))))
     for _, u in us.iterrows():
@@ -1331,7 +1386,7 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
                              qty=float(u["quantity"]), avg=float(u["avg_cost"] or 0), cur="USD"))
     if not base:
         st.info("보유 종목이 없습니다. '내 포트폴리오' 탭에서 종목을 등록하세요. 미국주는 같은 탭의 '미국주 현재 보유 처음 한 번 넣기'를 누르면 됩니다.")
-        return
+        return None
 
     items = []
     with st.spinner("국면을 계산하는 중... (처음 한 번만 오래 걸리고 이후엔 저장된 결과를 씁니다)"):
@@ -1407,19 +1462,33 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
                 i["zone"] = _zone(i.get("lad")) if i.get("lad") else None
                 i["score"] = signals.score_item(i, i["sig"], moods.get(i["mkt"]), avg_w, i.get("ctx"), (stress_d.get(i["mkt"]) or {}).get("level"))
     items.sort(key=lambda i: (KIND_VIEW[i["kind"]][0], -(i["value"] or 0)))
-
-    with acct_box:
-        try:
-            accounts.render(items, fx_use)
-        except Exception as e:  # noqa: BLE001
-            st.caption("계좌별 현황을 표시하지 못했습니다: " + str(e)[:100])
-    # ---- 시장 상황과 내 위험 (맨 위) ----
-    try:
-        market.render_overview(items, risk, stress_d.get("한국"), stress_d.get("미국"), fx_, get_conn, cfg_, _save_cfg, get_prices)
-    except Exception as e:  # noqa: BLE001
-        st.caption("시장·위험 요약을 표시하지 못했습니다: " + str(e)[:100])
-
     ledger.save_snapshot(get_conn, items, fx_use)
+    return dict(items=items, fx_=fx_, fx_use=fx_use, cfg_=cfg_, cash_df=cash_df, cash_map=cash_map, risk=risk, stress_d=stress_d, moods=moods, stances=stances, ai_views=ai_views)
+
+
+def _holdings_sig(holdings):
+    try:
+        return tuple((str(r.get("ticker")), round(float(r.get("quantity") or 0), 6), round(float(r.get("avg_cost") or 0), 4)) for _, r in holdings.iterrows())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _prepare(get_conn, holdings, get_prices, load_flows):
+    """화면 4개가 같은 계산(보유·가격·점수·위험)을 공유한다. 2분 안에는 다시 계산하지 않고, 보유가 바뀌면(매매 저장·편집) 즉시 다시 계산한다."""
+    c = st.session_state.get("_ctx")
+    sig = _holdings_sig(holdings)
+    if c and not st.session_state.get("_ctx_dirty") and (time.time() - c.get("_t", 0)) < 120 and c.get("_sig") == sig:
+        return c
+    ctx = _prepare_uncached(get_conn, holdings, get_prices, load_flows)
+    if ctx:
+        ctx["_t"], ctx["_sig"] = time.time(), sig
+        st.session_state["_ctx"] = ctx
+        st.session_state["_ctx_dirty"] = False
+    return ctx
+
+
+def _hub_from(ctx):
+    items, fx_use, cfg_ = ctx["items"], ctx["fx_use"], ctx["cfg_"]
     try:
         core_ = json.loads(cfg_.get("core_names", "[]"))
     except Exception:  # noqa: BLE001
@@ -1428,15 +1497,33 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
     hub_ = dict(core=core_, freeze=(str(cfg_.get("kr_freeze", "1")) == "1"), goal=float(cfg_.get("us_goal", target.DEFAULT_GOAL)),
                 invested=(float(iv_) if str(iv_).strip() not in ("", "0", "0.0") else target.us_invested_krw(items, fx_use)))
     st.session_state["_ai_band"] = float(cfg_.get("ai_band", target.DEFAULT_BAND))
-    tab_ag, tab_rule = st.tabs(["AI 투자 에이전트", "규칙 기반 계산 (참고·수동)"])
+    return hub_
+
+
+# ============================================================ 화면 1: 에이전트
+def render_agent_page(get_conn, holdings, get_prices, load_flows, get_fundamentals, load_decisions):
+    st.markdown("##### EGGFOLIO · 에이전트")
+    hub_box = st.container()
+    ctx = _prepare(get_conn, holdings, get_prices, load_flows)
+    if not ctx:
+        return
+    items, fx_, fx_use, cfg_, cash_df, cash_map, risk, stress_d, moods = (ctx[k] for k in ("items", "fx_", "fx_use", "cfg_", "cash_df", "cash_map", "risk", "stress_d", "moods"))
+    hub_ = _hub_from(ctx)
     conf_ = None
-    with tab_ag:
+    try:
+        conf_ = agent.render(get_conn, items, risk, stress_d, fx_use, cfg_, cash_map, _save_cfg, _load_cfg, hub_, get_prices, _apply_trade)
+    except Exception as e:  # noqa: BLE001
+        st.error("AI 투자 에이전트를 표시하지 못했습니다: " + str(e)[:150])
+    st.divider()
+    with st.expander("시장·집중 위험 수치 (앱이 계산한 자료 — 에이전트도 같은 자료를 읽습니다)"):
+        # ---- 시장 상황과 내 위험 (맨 위) ----
         try:
-            conf_ = agent.render(get_conn, items, risk, stress_d, fx_use, cfg_, cash_map, _save_cfg, _load_cfg, hub_, get_prices, _apply_us_fill)
+            market.render_overview(items, risk, stress_d.get("한국"), stress_d.get("미국"), fx_, get_conn, cfg_, _save_cfg, get_prices)
         except Exception as e:  # noqa: BLE001
-            st.error("AI 투자 에이전트를 표시하지 못했습니다: " + str(e)[:150])
-    with tab_rule:
-        st.caption("앱의 점수 규칙만으로 계산한 배분입니다. AI 에이전트의 제안과 비교하는 참고용이며, AI 전략을 확정하면 그 국내·미국 금액이 여기에 자동 입력됩니다.")
+            st.caption("시장·위험 요약을 표시하지 못했습니다: " + str(e)[:100])
+    P_ = {}
+    with st.expander("규칙 기반 계산 (참고·수동 — 에이전트 제안과 비교용)"):
+        st.caption("앱의 점수 규칙만으로 계산한 배분입니다. AI 전략을 확정하면 그 국내·미국 금액이 여기에 자동 입력됩니다.")
         P_ = _render_planner(get_conn, items, cash_df, get_prices, moods, stress_d, risk)
     if conf_:
         P_ = strategist.plan_for_banner(conf_, items, fx_use)
@@ -1447,6 +1534,47 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
                              risk, inv_, h_.get("goal", target.DEFAULT_GOAL), h_.get("freeze", True), stress_d)
     except Exception as e:  # noqa: BLE001
         st.caption("오늘 투입 안내를 표시하지 못했습니다: " + str(e)[:100])
+
+
+# ============================================================ 화면 2: 내 포트폴리오 (맨 위)
+def render_portfolio_top(get_conn, holdings, get_prices, load_flows):
+    ctx = _prepare(get_conn, holdings, get_prices, load_flows)
+    if not ctx:
+        return
+    items, fx_use, cfg_ = ctx["items"], ctx["fx_use"], ctx["cfg_"]
+    try:
+        accounts.render(items, fx_use)
+    except Exception as e:  # noqa: BLE001
+        st.caption("계좌별 현황을 표시하지 못했습니다: " + str(e)[:100])
+    try:
+        choices = [dict(i) for i in items] + agent.watch_items(get_prices, items, cfg_)
+        journal.render_entry(get_conn, choices, _apply_trade)
+    except Exception as e:  # noqa: BLE001
+        st.error("매매 기록 화면을 표시하지 못했습니다: " + str(e)[:150])
+    st.divider()
+    with st.expander("미국주 보유 수량·평단 직접 고치기 (증권사 앱 숫자 그대로 덮어쓰기)", expanded=False):
+        try:
+            render_us_editor(get_conn)
+        except Exception as e:  # noqa: BLE001
+            st.error("미국주 입력 화면을 표시하지 못했습니다: " + str(e)[:150])
+
+
+# ============================================================ 화면 3: 종목 분석 (내 보유 종목 판단)
+def render_analysis_page(get_conn, holdings, get_prices, load_flows, get_fundamentals, load_decisions):
+    import supervision as sv
+    ctx = _prepare(get_conn, holdings, get_prices, load_flows)
+    if not ctx:
+        return
+    items, fx_, fx_use, risk, stances, ai_views = (ctx[k] for k in ("items", "fx_", "fx_use", "risk", "stances", "ai_views"))
+    st.subheader("종목별 판단")
+    st.caption("보유 전체(한국·미국)를 한 표로 보고, 종목을 골라 행동 지침을 확인합니다. 행동 후보는 '가격 국면 × 내가 기록한 기업 상태 × 운용 방식'을 규칙으로 조합한 검증 전 후보이며 승률·확률이 아닙니다. 주문 기능은 없습니다.")
+    P_ = {}
+    try:
+        _l = strategist.load_latest(get_conn)
+        if _l[2] and _l[1] == "confirmed":
+            P_ = strategist.plan_for_banner(_l[2], items, fx_use)
+    except Exception:  # noqa: BLE001
+        P_ = {}
     try:
         rk = sorted([(0, i) for i in items if i.get("score") and i["mode"] != "베팅"], key=lambda x: -x[1]["score"]["total"])
         _render_exit_plan(items, [(n + 1, i) for n, (_, i) in enumerate(rk)], fx_)
@@ -1678,15 +1806,23 @@ def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamental
             except Exception as e:  # noqa: BLE001
                 st.error("핵심/조절 물량 화면을 표시하지 못했습니다: " + str(e)[:150])
 
-    # ---- 기록과 성적표 ----
+
+# ============================================================ 화면 4: 기록·복기
+def render_record_page(get_conn, holdings, get_prices, load_flows):
+    ctx = _prepare(get_conn, holdings, get_prices, load_flows)
+    if not ctx:
+        return
     try:
-        ledger.render_ledger(get_conn, items, fx_use, get_prices)
+        journal.render_review(get_conn, get_prices)
+    except Exception as e:  # noqa: BLE001
+        st.error("매매 복기를 표시하지 못했습니다: " + str(e)[:150])
+    st.divider()
+    try:
+        ledger.render_ledger(get_conn, ctx["items"], ctx["fx_use"], get_prices)
     except Exception as e:  # noqa: BLE001
         st.error("기록과 성적표를 표시하지 못했습니다: " + str(e)[:150])
-    # ---- E. 보유 수량·평단 직접 고치기 (미국주) ----
-    st.divider()
-    with st.expander("미국주 보유 수량·평단 직접 고치기 (증권사 앱 숫자 그대로 덮어쓰기)", expanded=False):
-        try:
-            render_us_editor(get_conn)
-        except Exception as e:  # noqa: BLE001
-            st.error("미국주 입력 화면을 표시하지 못했습니다: " + str(e)[:150])
+
+
+def render_dashboard(get_conn, holdings, get_prices, load_flows, get_fundamentals, load_decisions):
+    """(이전 이름 호환) 에이전트 화면."""
+    render_agent_page(get_conn, holdings, get_prices, load_flows, get_fundamentals, load_decisions)
