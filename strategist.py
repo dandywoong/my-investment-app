@@ -5,6 +5,7 @@
 - 승률·확률·수익 보장 표현은 쓰지 않게 하고, 반대 근거를 반드시 함께 받는다.
 """
 import json
+import re
 from datetime import date, datetime, timezone
 
 import pandas as pd
@@ -390,6 +391,7 @@ def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_t
         "user_policy_text": policy_text,
         "previous_strategy": prev_strategy,
         "look_through": look_through(items, fx),
+        "market_index_facts": market_facts(),
         "my_trade_journal": st.session_state.get("_journal") or "아직 기록된 매매 없음",
         "data_access": {"provided": ["보유·평단·평가손익", "종목별 technicals(이동평균·RSI·ATR·거래량·고저)", "앱 규칙 점수·달걀 국면·기업 상태 기록", "코스톨라니 심리·가치 괴리", "뉴스 헤드라인(제목·매체·날짜만)", "예수금·환율", "과거 제안 성과·내 매매 일지"],
                         "not_provided": ["외국인·기관 수급(이번 자료에 미포함)", "공매도·대차잔고", "배우자 연금 계좌", "실시간 호가·틱", "기사 본문"], "rule": "not_provided 항목은 추정하지 말고 unknowns에 적는다"},
@@ -681,32 +683,105 @@ def load_latest(get_conn):
     return None, None, None, None
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def market_facts():
+    """주요 지수·환율·금리의 현재값과 52주·역대 고점(날짜 포함)을 야후에서 직접 가져온다. AI의 낡은 기억이 아니라 이 숫자가 기준이다."""
+    from concurrent.futures import ThreadPoolExecutor
+    syms = {"코스피": "^KS11", "코스닥": "^KQ11", "S&P500": "^GSPC", "나스닥종합": "^IXIC", "필라델피아반도체": "^SOX", "원달러환율": "KRW=X", "미국10년금리(%)": "^TNX", "VIX(공포지수)": "^VIX"}
+
+    def one(item):
+        nm, sym = item
+        try:
+            import yfinance as yf
+            c = yf.Ticker(sym).history(period="max", auto_adjust=False)["Close"].dropna()
+            if len(c) < 30:
+                return nm, None
+            last, d = float(c.iloc[-1]), str(c.index[-1])[:10]
+
+            def chg(n):
+                return round((last / float(c.iloc[-1 - n]) - 1) * 100, 1) if len(c) > n else None
+            y = c[c.index >= c.index[-1] - __import__("pandas").Timedelta(days=365)]
+            ath_d = c.idxmax()
+            ytd = c[c.index.year == c.index[-1].year]
+            return nm, {"last": round(last, 2), "asof": d, "chg_1d_pct": chg(1), "chg_5d_pct": chg(5), "chg_1m_pct": chg(21), "chg_3m_pct": chg(63),
+                        "ytd_pct": round((last / float(ytd.iloc[0]) - 1) * 100, 1) if len(ytd) else None,
+                        "high_52w": round(float(y.max()), 2), "high_52w_date": str(y.idxmax())[:10], "low_52w": round(float(y.min()), 2),
+                        "all_time_high_close": round(float(c.max()), 2), "all_time_high_date": str(ath_d)[:10], "from_all_time_high_pct": round((last / float(c.max()) - 1) * 100, 1)}
+        except Exception:  # noqa: BLE001
+            return nm, None
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        res = dict(ex.map(one, syms.items()))
+    return {"asof_note": "야후 파이낸스 종가 기준(장중 값과 다를 수 있음). 역대 고점은 조회 가능한 전체 기간의 종가 최고치.", "data": {k: v for k, v in res.items() if v}, "missing": [k for k, v in res.items() if not v]}
+
+
+CHAT_RULES = (
+    "당신은 이 사용자의 전속 펀드매니저입니다. 투자·시장·경제·산업·기업·거시·환율·금리·세금·계좌·투자 심리·사용자의 포트폴리오 등 투자와 관련된 어떤 대화도 가능합니다. 주제를 이유로 답을 거절하지 말고, 모를 때는 모른다고, 불확실할 때는 얼마나 불확실한지 말하세요.\n"
+    "[사실 규율 — 가장 중요] (1) 당신의 기억은 낡았을 수 있습니다(대략 2025년경까지). 아래 market_facts(앱이 방금 가져온 지수·환율 숫자)와 news_headlines(앱이 방금 모은 뉴스 제목·매체·날짜), 웹 검색 결과가 당신의 기억과 다르면 언제나 자료가 옳습니다. "
+    "(2) 사용자가 사실을 말했는데 당신의 기억과 다르면 반박하거나 '오인이다'라고 정정하기 전에 먼저 자료로 확인하세요. 확인되면 사용자 말이 맞다고 인정하고, 확인하지 못하면 '확인하지 못했다. 내 기억과 다르지만 최신 자료가 없어 단정하지 않겠다'고 말하세요. 사용자를 정정하려면 근거 자료의 이름과 날짜를 제시해야 합니다. "
+    "(3) 수치·날짜·사건은 자료에서 인용하고 출처 이름과 기준일을 쓰세요. 자료에 없는 것은 추측으로 채우지 말고 '자료 없음'이라고 쓰세요. 앱이 이미 계산한 값(평단·손익·비중 등)은 새로 계산하지 말고 인용하되, 단순한 비교 계산은 계산 과정을 보여 주며 해도 됩니다.\n"
+    "[균형 규율] (4) 사용자 의견에 동조하지도 반대하지도 마세요. 같은 질문에 낙관 쪽과 비관 쪽의 가장 강한 근거를 각각 공정하게 제시하고, 어느 쪽이 더 설득력 있는지는 근거의 질로 판단하세요. "
+    "(5) 질문 자체에 낙관·비관의 전제가 담겨 있으면(예: '이제 회복되겠지', '망했지') 그 전제부터 점검하세요. (6) 사용자가 보유한 종목이라고 호의적으로 보지 말고, 사용자의 평단·손실에 맞춰 결론을 기울이지 마세요(평단은 근거가 아닙니다). "
+    "(7) 이전 대화에서 당신이 한 말이 틀렸거나 자료와 어긋나면 바로 정정하세요. 이전 답을 옹호하려고 하지 마세요. (8) 특정 산업·종목·정치·언론의 입장에 치우친 표현을 쓰지 말고, 의견이 갈리는 사안은 갈린다고 말하세요.\n"
+    "[예측과 전망] (9) 시장 회복 시점·수익 시나리오 같은 전망 질문에도 답합니다. 대신 낙관/기본/비관 시나리오별로 가능한 시기의 범위, 그럴 가능성(높음·중간·낮음 같은 주관적 판단임을 밝힘), 근거(과거 비슷한 하락 후 회복 사례, 검색에서 확인된 기관 전망과 그 기준일·가정), 틀릴 조건을 쓰세요. "
+    "특정 월·지수를 확정처럼 단정하거나 수익을 보장하는 표현만 피합니다. 사용자가 제시한 가정(예: 코스피 몇 포인트가 평단 회복 지점)은 자료로 먼저 검증한 뒤 그 가정을 쓰세요.\n"
+    "[형식] 질문에 맞는 길이로, 핵심부터 쓰세요. 필요할 때만 목록을 쓰세요. 한국어. 전략(배분 계획)을 바꾸는 것은 사용자가 계획을 다시 짜 달라거나 배분·비중을 바꾸자고 분명히 요청할 때만 wants_plan_revision=true로 하세요. 단순 질문·토론이면 false입니다."
+)
+
+
+def _chat_headlines(msg):
+    """사용자 질문에 맞는 최근 뉴스 헤드라인을 앱이 직접 모은다(구글 뉴스 RSS, AI 한도와 무관). -> [{"title","source","date"}]"""
+    import newsfeed
+    q = re.sub(r"[^0-9A-Za-z가-힣\s&.%-]", " ", msg)
+    q = re.sub(r"\s+", " ", q).strip()[:70]
+    qs = [(q, "ko", 8)]
+    low = msg.lower()
+    if any(k in msg for k in ("코스피", "삼성", "하이닉스", "국장", "외국인")):
+        qs.append(("코스피 지수 증시 전망 증권사", "ko", 6))
+    if any(k in low for k in ("나스닥", "s&p", "미국", "엔비디아", "nvidia", "연준", "fomc", "ai")) or any(k in msg for k in ("미장", "미국")):
+        qs.append(("Wall Street stocks outlook Nasdaq S&P 500", "en", 6))
+    if any(k in msg for k in ("환율", "달러")):
+        qs.append(("원달러 환율 전망", "ko", 5))
+    out, seen = [], set()
+    for qq, lang, n in qs:
+        for x in newsfeed.fetch(qq, lang, n, 180):
+            k = x["title"][:40]
+            if k not in seen:
+                seen.add(k)
+                out.append({"title": x["title"], "source": x["source"], "date": x["date"]})
+    out.sort(key=lambda x: x["date"], reverse=True)
+    return out[:18]
+
+
 def chat_reply(get_conn, packet, strategy, history, msg, items, fx=None):
-    hist = "\n".join("{}: {}".format("나" if h["role"] == "user" else "펀드매니저", h["text"]) for h in history[-8:])
-    extra = ("지금 확정 전 전략(JSON):\n" + json.dumps(strategy, ensure_ascii=False)[:20000] + "\n\n지금까지 대화:\n" + hist + "\n\n사용자 의견: " + msg +
-             "\n\n사용자의 의견이 타당하면 반영하고, 근거가 약하면 이유를 들어 정중히 반대하세요. 정책과 충돌하면 그 점을 말하세요. 아래 JSON으로만 답하세요.\n"
-             '{"reply": "사용자에게 하는 답(간결하게)", "revised_strategy": null 또는 위 전략 스키마 전체(전략을 바꿔야 할 때만)}\n전략 스키마:\n' + SCHEMA)
-    pr = _prompt(packet, "사용자와 전략에 대해 대화하세요. 사용자가 최신 이슈를 묻거나 판단에 새 사실이 필요하면 웹 검색으로 확인하고 출처 이름과 날짜를 답에 적으세요.", extra)
+    """자유 대화. -> ({"reply","wants_revision","headlines"}, 오류, 경고)
+    전략 JSON 규칙(승률 금지·배분 합계 등)과 분리했고, 검색이 막혀도 앱이 모은 지수 숫자·뉴스 제목을 근거로 답한다."""
+    from datetime import date as _d
+    hist = "\n".join("{}: {}".format("나" if h["role"] == "user" else "펀드매니저", str(h["text"])[:700]) for h in history[-12:])
+    try:
+        facts = market_facts()
+    except Exception:  # noqa: BLE001
+        facts = {"data": {}, "missing": ["전체"]}
+    try:
+        heads = _chat_headlines(msg)
+    except Exception:  # noqa: BLE001
+        heads = []
+    strat_txt = json.dumps({k: strategy.get(k) for k in ("headline", "allocation", "priorities", "master", "policy_deviations")}, ensure_ascii=False)[:12000] if strategy else "(아직 전략 없음)"
+    pr = (CHAT_RULES + "\n\n오늘 날짜: {} (사용자 시간대 한국)\n".format(_d.today().isoformat()) +
+          "\nmarket_facts(앱이 방금 가져온 값):\n" + json.dumps(facts, ensure_ascii=False) +
+          "\n\nnews_headlines(앱이 방금 수집, 제목·매체·날짜만 읽음 / 기사 본문은 못 읽음 / 없으면 빈 목록):\n" + json.dumps(heads, ensure_ascii=False) +
+          "\n\n앱 자료(사용자의 포트폴리오·돈·정책·브리핑·매매 일지·기술 지표 등, JSON):\n" + json.dumps(packet, ensure_ascii=False)[:45000] +
+          "\n\n현재 전략 초안·확정안:\n" + strat_txt + "\n\n지금까지 대화:\n" + hist + "\n\n사용자 말: " + msg +
+          '\n\n웹 검색을 쓸 수 있으면 최신 사실 확인에 쓰고 출처 이름과 날짜를 답에 적으세요. 아래 JSON으로만 답하세요.\n{"reply": "사용자에게 하는 답", "wants_plan_revision": true 또는 false}')
     res, srcs, err, _q = _grounded(pr)
-    note = ""
+    used = "웹 검색 + 앱이 수집한 자료"
     if err or not res:
         res, err = _gemini(pr)
-        note = "\n\n(실시간 검색을 하지 못해 기존 자료로만 답했습니다.)"
+        used = "앱이 수집한 지수 숫자·뉴스 제목({}건)만 (AI 웹 검색은 한도 등으로 못 씀)".format(len(heads))
     if err:
         return None, err, []
-    warns = []
-    rs = res.get("revised_strategy")
-    if isinstance(rs, dict) and rs.get("master"):
-        rs, warns = validate(rs, int(strategy.get("_deposit", 0) or 0), items)
-        rs, w2_ = postprocess(rs, items, fx)
-        warns += w2_
-        rs["_deposit"] = strategy.get("_deposit", 0)
-        rs["_coverage"], rs["_research_ok"] = strategy.get("_coverage", []), strategy.get("_research_ok", False)
-        ai_agent._run(get_conn, "INSERT INTO strategy_log (created_at,status,deposit,content) VALUES (%s,%s,%s,%s)",
-                      (_now(), "draft", int(rs["_deposit"] or 0), json.dumps(rs, ensure_ascii=False)))
-    else:
-        rs = None
-    return {"reply": str(res.get("reply", "")) + note, "revised": rs}, None, warns
+    reply = str(res.get("reply", "")).strip()
+    reply += "\n\n(근거: {} · 지수 숫자 {})".format(used, "확인됨" if facts.get("data") else "가져오지 못함")
+    return {"reply": reply, "wants_revision": bool(res.get("wants_plan_revision")), "revised": None, "headlines": heads}, None, []
 
 
 # ------------------------------------------------------------------ 실행 계획

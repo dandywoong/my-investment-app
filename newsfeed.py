@@ -29,11 +29,11 @@ def _url(q, lang):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch(q, lang="en", n=6):
-    """-> [{"title","source","date","link"}] 최신순. 실패하면 빈 목록."""
+def fetch(q, lang="en", n=6, days=MAX_AGE_DAYS):
+    """-> [{"title","source","date","link"}] 최신순. 실패하면 빈 목록. days = 며칠 전 기사까지 볼지(채팅에서 과거 사건을 물을 때는 길게)."""
     try:
         import requests
-        r = requests.get(_url(q + " when:14d", lang), headers=UA, timeout=8)
+        r = requests.get(_url(q + " when:{}d".format(int(days)), lang), headers=UA, timeout=8)
         if r.status_code != 200:
             return []
         root = ET.fromstring(r.content)
@@ -49,7 +49,7 @@ def fetch(q, lang="en", n=6):
             dt = parsedate_to_datetime(it.findtext("pubDate"))
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-            if (now - dt).days > MAX_AGE_DAYS:
+            if (now - dt).days > int(days):
                 continue
             out.append({"title": re.sub(r"\s+", " ", title)[:160], "source": src, "date": dt.astimezone(timezone.utc).strftime("%Y-%m-%d"), "link": it.findtext("link") or "", "_dt": dt})
         except Exception:  # noqa: BLE001

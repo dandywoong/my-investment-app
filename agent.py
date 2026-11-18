@@ -111,7 +111,7 @@ def _section_brief(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, get_p
     if manual or (stale and not tried):
         st.session_state["_brief_tried"] = True
         try:
-            packet = S.build_packet(items, risk, stress, fx, cfg_pk, 0, "", cash_map, c.get("policy_text") or S.DEFAULT_POLICY, None, get_prices)
+            packet, _pool = _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, None, get_prices)
             with st.spinner("접속했으니 시장·뉴스·내 보유 종목을 먼저 조사하는 중... (30초~1분)"):
                 nb, err, warns = S.make_brief(get_conn, packet, force=manual)
             if err:
@@ -227,7 +227,8 @@ def _section_money(get_conn, fx, c, save_cfg):
 
 
 # ------------------------------------------------------------------ ② 계획 받기
-def _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, policy, strat, get_prices, c, new_dep, memo):
+def _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, get_prices, new_dep=0, memo=""):
+    """계획·브리핑·대화가 모두 같은 자료를 읽도록 한 곳에서 만든다(포트폴리오·돈·정책·브리핑·내 기록·매매 일지·성적표·기술 지표·지수 숫자). -> (packet, pool)"""
     cma, usd = fxmod.balances(get_conn)[:2]
     reserve = int(float(c.get("fx_reserve", 0) or 0))
     spread = float(c.get("fx_spread", 0.25) or 0.25)
@@ -252,6 +253,11 @@ def _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, policy, strat
     if _bf:
         packet["morning_briefing"] = {"written_at_utc": _bt, "content": {k: _bf.get(k) for k in ("headline", "market", "fx", "companies", "kr_hold_check", "us_ranking", "risks", "unknowns")}}
     packet["new_deposit"]["note"] = "amount_krw는 이번에 배분할 전체 가용 자금(CMA 사용 가능 원화 + 보유 달러의 원화 환산)이며, 오늘 새로 들어온 돈은 new_deposit_today_krw입니다."
+    return packet, pool
+
+
+def _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, policy, strat, get_prices, c, new_dep, memo):
+    packet, pool = _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, get_prices, new_dep, memo)
     with st.spinner("뉴스를 모으고 전략을 짜는 중... (30초~1분)"):
         res, err, warns = S.make_strategy(get_conn, packet, items, pool, fx, force_research=bool(st.session_state.get("ag_force")))
     return err, warns
@@ -464,7 +470,8 @@ def _section_fill(get_conn, items, fx, sid, strat, pl_, apply_trade):
 
 # ------------------------------------------------------------------ 채팅
 def _section_chat(get_conn, items, risk, stress, fx, cfg_pk, dep, cash_map, c, strat, get_prices):
-    st.markdown("#### 펀드매니저와 의견 나누기")
+    st.markdown("#### 펀드매니저와 대화")
+    st.caption("투자·시장에 관한 어떤 이야기든 가능합니다. 답을 쓸 때 앱이 방금 가져온 지수 숫자와 뉴스 제목, 내 포트폴리오·돈·정책·매매 일지·브리핑을 모두 읽고, 낙관과 비관 근거를 함께 제시하도록 설정되어 있습니다. 계획을 바꾸려면 '계획 다시 짜줘'라고 분명히 말해 주세요.")
     hist = S._load_chat(get_conn)
     for h in hist[-10:]:
         with st.chat_message("user" if h["role"] == "user" else "assistant"):
@@ -483,19 +490,25 @@ def _section_chat(get_conn, items, risk, stress, fx, cfg_pk, dep, cash_map, c, s
             if y2.button("취소", key="chat_clear_no"):
                 st.session_state["_chat_clear_ask"] = False
                 st.rerun()
-    msg = st.chat_input("의견을 적어 주세요 (예: 오늘 엔비디아가 빠진 이유가 일시적인지 찾아보고 비중을 다시 짜줘)", key="mgr_chat")
+    msg = st.chat_input("투자·시장에 관한 무엇이든 물어보세요 (예: 지금 코스피 상황과 내 계좌 위험을 균형 있게 설명해줘)", key="mgr_chat")
     if msg:
-        packet = S.build_packet(items, risk, stress, fx, cfg_pk, dep, "", cash_map, c.get("policy_text") or S.DEFAULT_POLICY, None, get_prices)
+        packet, _pool = _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, get_prices, 0, "")
         S._log_chat(get_conn, "user", msg)
-        with st.spinner("펀드매니저가 확인하고 답을 정리하는 중..."):
+        with st.spinner("지수·뉴스를 확인하고 답을 정리하는 중..."):
             out, err, warns = S.chat_reply(get_conn, packet, strat, hist, msg, items, fx)
         if err:
             st.error("답을 받지 못했습니다: " + err)
-        else:
-            text = out["reply"] + ("\n\n(전략이 수정되어 새 초안으로 저장했습니다. 위에서 확인 후 주문하세요.)" if out["revised"] else "")
-            S._log_chat(get_conn, "assistant", text)
-            st.session_state["_strat_warn"] = warns
-            st.rerun()
+            return
+        text = out["reply"]
+        if out.get("headlines"):
+            text += "\n\n참고한 헤드라인(제목·매체·날짜만): " + " / ".join("{} ({} {})".format(h["title"][:50], h["source"], h["date"]) for h in out["headlines"][:5])
+        if out.get("wants_revision"):
+            err2, w2 = _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, None, strat, get_prices, c, 0, "사용자 요청에 따른 재작성: " + msg[:300])
+            text += "\n\n" + ("(계획을 다시 짜지 못했습니다: {})".format(err2) if err2 else "(요청에 따라 계획을 새 초안으로 다시 만들었습니다. 위에서 확인 후 주문하세요.)")
+            warns = (warns or []) + (w2 or [])
+        S._log_chat(get_conn, "assistant", text)
+        st.session_state["_strat_warn"] = warns
+        st.rerun()
 
 
 # ------------------------------------------------------------------ 진입점
