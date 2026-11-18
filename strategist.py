@@ -170,6 +170,20 @@ def _research_prompt(scope, rows):
                    '"sources": [{"name": "...", "date": "..."}]}], "not_found": ["..."]}')
 
 
+def refresh_caches():
+    """계획·브리핑을 만들 때마다 뉴스·지수 캐시를 비워 최신 자료를 받게 한다."""
+    for fn in (market_facts,):
+        try:
+            fn.clear()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        import newsfeed
+        newsfeed.fetch.clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def research(get_conn, packet, force=False):
     """뉴스 헤드라인은 앱이 직접 수집한다(AI 한도와 무관). secrets에 GEMINI_SEARCH=1 이 있으면 구글 검색 근거 조사를 먼저 시도하고, 실패하면 헤드라인으로 대신한다.
     -> (결과 dict, 출처목록, 경고목록)"""
@@ -337,6 +351,17 @@ def technicals(get_prices, tk):
         return None
 
 
+def _slim_prev(p):
+    """이전 계획의 사실 주장(낡은 뉴스·지수 설명)은 넘기지 않고, 종목별 판단 요약만 참고용으로 준다."""
+    if not isinstance(p, dict):
+        return None
+    try:
+        return {"note": "참고용 요약입니다. 여기 적힌 시장·뉴스·지수 사실은 낡았을 수 있으니 재사용하지 말고 research·market_index_facts로 새로 판단하세요.",
+                "written_at": p.get("_created"), "priorities": [{"ticker": x.get("ticker"), "action": x.get("action")} for x in (p.get("priorities") or []) if isinstance(x, dict)][:30]}
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_text, prev_strategy, get_prices=None):
     total = sum((i.get("value") or 0) * (fx if i["cur"] == "USD" else 1.0) for i in items) or 1.0
     rows = []
@@ -389,7 +414,7 @@ def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_t
         "waiting_cash_krw": {"kr": cash_map.get("KR_KRW", 0), "us": cash_map.get("US_KRW", 0)},
         "new_deposit": {"amount_krw": int(deposit), "memo": memo},
         "user_policy_text": policy_text,
-        "previous_strategy": prev_strategy,
+        "previous_strategy": _slim_prev(prev_strategy),
         "look_through": look_through(items, fx),
         "market_index_facts": market_facts(),
         "my_trade_journal": st.session_state.get("_journal") or "아직 기록된 매매 없음",
@@ -598,7 +623,10 @@ def make_strategy(get_conn, packet, items, deposit, fx, force_research=False):
         st.session_state["_limits"] = None  # 비율을 강제하지 않는다(AI가 판단). 집중도는 경고로만 알린다.
     except Exception:  # noqa: BLE001
         st.session_state["_limits"] = None
-    res_r, srcs, rwarns = research(get_conn, packet, force_research)
+    refresh_caches()
+    packet["generated_at_utc"] = _now()
+    packet["generation_note"] = "이 계획은 지금(generated_at_utc) 새로 조사한 자료로 처음부터 다시 쓰는 것입니다. 이미 발표된 실적·사건을 '앞으로 있을 일'로 쓰지 마세요."
+    res_r, srcs, rwarns = research(get_conn, packet, True)
     packet["research"] = res_r
     packet["research_status"] = ("정상: 뉴스 헤드라인 {}건 반영(앱이 직접 수집, 본문은 못 읽음)".format(res_r.get("total", "")) if res_r.get("total") else "정상") if (res_r.get("market") or res_r.get("tickers")) else "실패: 뉴스 자료 없음"
     task = ("이번에 배분할 가용 자금 {:,}원(= CMA에서 쓸 수 있는 원화 + 이미 보유한 달러의 원화 환산, packet.cash_pool 참고)을 포함해 현재 포트폴리오의 큰 전략·세부 전략·배분·우선순위를 새로 짜세요. "
@@ -613,6 +641,7 @@ def make_strategy(get_conn, packet, items, deposit, fx, force_research=False):
     res, w2 = postprocess(res, items, fx)
     w2 += _fill_missing(packet, res, items)
     res["_deposit"] = int(deposit)
+    res["_created"] = _now()
     res["_pool"] = packet.get("cash_pool")
     res["_coverage"] = coverage(srcs)
     res["_research_ok"] = bool(res_r.get("market") or res_r.get("tickers"))
@@ -656,7 +685,9 @@ def load_brief(get_conn):
 
 def make_brief(get_conn, packet, force=False):
     """접속 시 자동 실행: 뉴스를 모으고 시장·기업 브리핑을 만든다(돈 배분과 별개). -> (brief, err, warns)"""
-    res_r, srcs, rwarns = research(get_conn, packet, force)
+    refresh_caches()
+    packet["generated_at_utc"] = _now()
+    res_r, srcs, rwarns = research(get_conn, packet, True)
     packet["research"] = res_r
     ok = bool(res_r.get("market") or res_r.get("tickers"))
     task = ("오늘의 시장·기업 브리핑을 만드세요. 자금 배분은 하지 마세요. research의 뉴스 헤드라인(앱이 수집, 제목·매체·날짜만 읽음)과 종목별 등락·점수·심리 단계(sentiment_and_value_gap)를 근거로 "

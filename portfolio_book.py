@@ -1531,7 +1531,7 @@ def render_agent_page(get_conn, holdings, get_prices, load_flows, get_fundamenta
         h_ = st.session_state.get("_hub") or {}
         inv_ = h_.get("inv_ov") or target.us_invested_krw(items, fx_use)
         target.render_banner(hub_box, P_, h_.get("kr", 0.0), h_.get("us", 0.0), fx_, h_.get("core", []), h_.get("share", 0.5), h_.get("why", ""),
-                             risk, inv_, h_.get("goal", target.DEFAULT_GOAL), h_.get("freeze", True), stress_d)
+                             risk, inv_, h_.get("goal", target.DEFAULT_GOAL), h_.get("freeze", True), stress_d, items=items)
     except Exception as e:  # noqa: BLE001
         st.caption("오늘 투입 안내를 표시하지 못했습니다: " + str(e)[:100])
 

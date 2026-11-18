@@ -88,7 +88,7 @@ def _set_status(get_conn, sid, status):
 
 
 # ------------------------------------------------------------------ 시장·기업 브리핑 (맨 위, 접속하면 자동 갱신)
-BRIEF_HOURS = 6
+BRIEF_HOURS = 3
 
 
 def _age_hours(ts):
@@ -257,10 +257,21 @@ def _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, 
 
 
 def _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, policy, strat, get_prices, c, new_dep, memo):
+    warns0 = []
+    with st.spinner("최신 뉴스·지수를 새로 모아 브리핑부터 다시 쓰는 중... (30초~1분)"):
+        try:  # 1) 브리핑을 먼저 새로 만든다(실패해도 계획은 계속 진행)
+            bp, _p = _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, None, get_prices)
+            _nb, berr, _bw = S.make_brief(get_conn, bp, force=True)
+            if berr:
+                warns0.append("브리핑 새로 쓰기 실패(이전 브리핑은 계획 근거에서 제외): " + str(berr)[:100])
+        except Exception as e:  # noqa: BLE001
+            warns0.append("브리핑 새로 쓰기 중 문제: " + str(e)[:100])
     packet, pool = _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, get_prices, new_dep, memo)
-    with st.spinner("뉴스를 모으고 전략을 짜는 중... (30초~1분)"):
-        res, err, warns = S.make_strategy(get_conn, packet, items, pool, fx, force_research=bool(st.session_state.get("ag_force")))
-    return err, warns
+    if warns0:
+        packet.pop("morning_briefing", None)
+    with st.spinner("새 전략을 짜는 중... (30초~1분)"):
+        res, err, warns = S.make_strategy(get_conn, packet, items, pool, fx, force_research=True)
+    return err, warns0 + list(warns or [])
 
 
 def _section_plan_form(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, get_prices):
@@ -284,9 +295,11 @@ def _section_plan_form(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, s
             return
     err, warns = _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, None, strat, get_prices, c, new_dep, "")
     if err:
-        st.error("전략을 만들지 못했습니다: " + err)
+        st.error("새 계획을 만들지 못했습니다: {} — 아래 계획은 이전에 만든 것(작성 시각 확인)이며 오늘 자료가 아닙니다. 잠시 뒤 다시 눌러 주세요.".format(err))
     else:
         st.session_state["_strat_warn"] = warns
+        st.session_state["_plan_flash"] = "새 계획을 방금 만들었습니다(최신 뉴스·지수 기준, 브리핑도 함께 갱신)."
+        st.session_state["_brief_tried"] = True
         st.rerun()
 
 
@@ -548,6 +561,9 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
     with st.expander("검색 조사 대상으로 지정한 기관·매체·인물"):
         for k_, v_ in S.SOURCES.items():
             st.markdown("**{}** — {}".format(k_, ", ".join(v_)))
+    pf_ = st.session_state.pop("_plan_flash", None)
+    if pf_:
+        st.success(pf_)
     flash = st.session_state.pop("_fill_flash", None)
     if flash:
         st.success(flash)

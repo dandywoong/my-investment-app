@@ -31,7 +31,7 @@ def us_invested_krw(items, fx):
     return sum((i.get("qty") or 0) * (i.get("avg") or 0) * (fx or 0) for i in items if i["cur"] == "USD")
 
 
-def render_banner(box, P, kr_amt, us_amt, fx, core_names, share, share_why, risk, invested, goal, kr_freeze, stress):
+def render_banner(box, P, kr_amt, us_amt, fx, core_names, share, share_why, risk, invested, goal, kr_freeze, stress, items=None):
     """메인 화면 맨 위: 오늘 투입 안내 + 미국 목표 진행률 + 비중 파이."""
     with box:
         st.markdown("### 오늘 투입 안내")
@@ -48,6 +48,15 @@ def render_banner(box, P, kr_amt, us_amt, fx, core_names, share, share_why, risk
                 st.warning("오늘은 사기에 적합한 종목이 없거나 금액이 부족합니다. 현금 {:,.0f}원을 유지합니다.".format(kr_amt + us_amt))
             if kr_freeze:
                 st.caption("국장은 신규 매수 중지 상태입니다(보유는 유지). 아래 설정에서 바꿀 수 있습니다.")
+        if items:
+            kr_cost = sum((i.get("qty") or 0) * (i.get("avg") or 0) for i in items if i["cur"] == "KRW")
+            kr_val = sum((i.get("value") or 0) for i in items if i["cur"] == "KRW")
+            us_cost = sum((i.get("qty") or 0) * (i.get("avg") or 0) * (fx or 0) for i in items if i["cur"] == "USD")
+            us_val = sum((i.get("value") or 0) * (fx or 0) for i in items if i["cur"] == "USD")
+            a1, a2, a3 = st.columns(3)
+            a1.metric("ISA(국내) 투자금", "{:,.0f}원".format(kr_cost), delta="평가 {:,.0f}원".format(kr_val), delta_color="off")
+            a2.metric("일반(미국) 투자금", "{:,.0f}원".format(us_cost), delta="평가 {:,.0f}원".format(us_val), delta_color="off")
+            a3.metric("두 계좌 합계 투자금", "{:,.0f}원".format(kr_cost + us_cost), delta="평가 {:,.0f}원".format(kr_val + us_val), delta_color="off")
         c1, c2, c3 = st.columns(3)
         c1.metric("코어 몫 (VOO·버크셔 등)", "{:.0%}".format(share), delta="AI 비중에 따라 자동 조정", delta_color="off")
         c2.metric("AI 연동 노출", "-" if not risk else "{:.0%}".format(risk["ai_total"]), delta="내 가정값 기준", delta_color="off")
