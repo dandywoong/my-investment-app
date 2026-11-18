@@ -248,6 +248,7 @@ def _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, 
         st.session_state["_journal"] = None
     packet = S.build_packet(items, risk, stress, fx, cfg_pk, pool, memo, cash_map, c.get("policy_text") or S.DEFAULT_POLICY, strat, get_prices)
     packet["my_notes"] = _my_notes(get_conn)
+    packet["archive"] = {"note": "앱이 접속할 때마다 쌓은 과거 기록(날짜별 지수 숫자 시작/마지막, 브리핑·계획 요약). 오늘 자료와 비교해 흐름을 보되 과거 문장의 사실을 현재 사실로 쓰지 마세요.", "days": S.load_archive(get_conn)}
     packet["cash_pool"] = pool_info
     _bt, _bf = S.load_brief(get_conn)
     if _bf:
@@ -530,6 +531,7 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
     fxmod.ensure_tables(get_conn)
     ledger.ensure_tables(get_conn)
     S.ensure_brief_table(get_conn)
+    S.archive_numbers(get_conn)
     c = load_cfg(get_conn)
     if get_prices is not None:
         items = list(items) + watch_items(get_prices, items, c)  # 관심 후보(예: KODEX 200)도 에이전트가 함께 비교한다
@@ -568,6 +570,17 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
     if flash:
         st.success(flash)
     _section_brief(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, get_prices)
+    with st.expander("에이전트 아카이브 (날마다 쌓이는 장기 기억)"):
+        _arc = S.load_archive(get_conn)
+        st.caption("접속할 때마다 지수·환율·금리 숫자와 브리핑·계획의 핵심을 저장합니다. AI가 바빠도 숫자 기록은 계속 쌓이고, 계획·브리핑·대화 때 에이전트가 이 기록을 읽습니다. 지금 {}일치.".format(len(_arc)))
+        _rows = []
+        for d_ in reversed(_arc):
+            n_ = d_.get("numbers_last") or {}
+            v_ = d_.get("view") or {}
+            _rows.append({"날짜": d_["date"], "코스피": (n_.get("코스피") or {}).get("last"), "S&P500": (n_.get("S&P500") or {}).get("last"), "환율": (n_.get("원달러환율") or {}).get("last"),
+                          "VIX": (n_.get("VIX(공포지수)") or {}).get("last"), "그날의 요약": v_.get("headline"), "분위기": v_.get("mood")})
+        if _rows:
+            st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
     st.divider()
     st.caption("↑ 위는 시장·기업 자료(접속하면 자동 갱신), ↓ 아래는 내 돈을 넣고 배분하는 곳입니다. 배분은 위 브리핑을 근거로 합니다.")
     _section_money(get_conn, fx, c, save_cfg)

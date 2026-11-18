@@ -465,6 +465,8 @@ def _prompt(packet, task, extra=""):
 
 
 def _gemini(prompt, want_json=True):
+    """모델을 차례로 시도하고, 일시적 과부하(503·429·500)면 잠시 쉬었다가 최대 3바퀴까지 다시 시도한다."""
+    import time
     key = ai_agent.get_api_key()
     if not key:
         return None, "GEMINI_API_KEY 가 설정되지 않았습니다."
@@ -473,22 +475,96 @@ def _gemini(prompt, want_json=True):
     except Exception as e:  # noqa: BLE001
         return None, "모델 목록 조회 실패: " + str(e)[:120]
     last = "사용 가능한 모델 없음"
-    for m in models:
+    t0 = time.time()
+    for rnd in range(3):
+        transient = False
+        for m in models:
+            try:
+                r = ai_agent._call(key, m, prompt, False)
+            except Exception as e:  # noqa: BLE001
+                last = "연결 오류: " + str(e)[:100]
+                transient = True
+                continue
+            if r.status_code >= 400:
+                last = "{} {} [모델 {}]".format(r.status_code, ai_agent._err_text(r), m)
+                if r.status_code in (429, 500, 502, 503, 504):
+                    transient = True
+                continue
+            try:
+                cand = r.json()["candidates"][0]
+                text = "".join(p.get("text", "") for p in cand["content"]["parts"])
+                return (ai_agent._extract_json(text) if want_json else text), None
+            except Exception as e:  # noqa: BLE001
+                last = "응답 해석 실패: " + str(e)[:100]
+        if not transient or rnd == 2 or time.time() - t0 > 100:
+            break
+        time.sleep(8 if rnd == 0 else 20)
+    return None, last + " (모델 {}개를 {}바퀴 시도)".format(len(models), rnd + 1)
+
+
+# ------------------------------------------------------------------ 아카이브(에이전트의 장기 기억)
+def ensure_archive(get_conn):
+    try:
+        ai_agent._run(get_conn, "CREATE TABLE IF NOT EXISTS market_archive (id SERIAL PRIMARY KEY, day TEXT, created_at TEXT, kind TEXT, content TEXT)")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _arch_add(get_conn, kind, obj):
+    ai_agent._run(get_conn, "INSERT INTO market_archive (day,created_at,kind,content) VALUES (%s,%s,%s,%s)", (_now()[:10], _now(), kind, json.dumps(obj, ensure_ascii=False)))
+
+
+def archive_numbers(get_conn, every_hours=3.0):
+    """AI 없이 지수·환율·금리 숫자를 하루 몇 번 저장한다(AI가 한도에 걸려도 기록은 계속 쌓인다)."""
+    try:
+        ensure_archive(get_conn)
+        df = ai_agent._run(get_conn, "SELECT created_at FROM market_archive WHERE kind='numbers' ORDER BY id DESC LIMIT 1", fetch=True)
+        if df is not None and len(df):
+            if (datetime.now(timezone.utc) - datetime.fromisoformat(str(df.iloc[0]["created_at"]))).total_seconds() / 3600 < every_hours:
+                return
+        mf = market_facts().get("data") or {}
+        if mf:
+            _arch_add(get_conn, "numbers", {k: {"last": v.get("last"), "asof": v.get("asof"), "chg_1d_pct": v.get("chg_1d_pct"), "chg_5d_pct": v.get("chg_5d_pct"), "from_ath_pct": v.get("from_all_time_high_pct")} for k, v in mf.items()})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def archive_brief(get_conn, brief, plan=False):
+    """브리핑·계획에서 핵심(한 줄 요약, 분위기, 주요 사건, 국내 판단)만 골라 저장한다."""
+    try:
+        ensure_archive(get_conn)
+        m = brief.get("market") or {}
+        ev = [{"what": e.get("what"), "date": e.get("date")} for e in (m.get("key_events") or []) if isinstance(e, dict)][:5]
+        _arch_add(get_conn, "plan" if plan else "brief", {"headline": brief.get("headline"), "mood": m.get("mood"), "summary": (m.get("summary") or "")[:400], "events": ev,
+                                                         "kr_verdict": (brief.get("kr_hold_check") or {}).get("verdict"), "fx": (brief.get("fx") or {}).get("summary")})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_archive(get_conn, days=45):
+    """날짜별로 묶은 과거 기록(최근 days일). 최신이 아래."""
+    try:
+        ensure_archive(get_conn)
+        df = ai_agent._run(get_conn, "SELECT day, created_at, kind, content FROM market_archive ORDER BY id DESC LIMIT 400", fetch=True)
+    except Exception:  # noqa: BLE001
+        return []
+    out = {}
+    if df is None:
+        return []
+    for _, r in df.iterrows():
+        d = out.setdefault(str(r["day"]), {"date": str(r["day"])})
         try:
-            r = ai_agent._call(key, m, prompt, False)
-        except Exception as e:  # noqa: BLE001
-            last = "연결 오류: " + str(e)[:100]
+            c = json.loads(r["content"])
+        except Exception:  # noqa: BLE001
             continue
-        if r.status_code >= 400:
-            last = "{} {} [모델 {}]".format(r.status_code, ai_agent._err_text(r), m)
-            continue
-        try:
-            cand = r.json()["candidates"][0]
-            text = "".join(p.get("text", "") for p in cand["content"]["parts"])
-            return (ai_agent._extract_json(text) if want_json else text), None
-        except Exception as e:  # noqa: BLE001
-            last = "응답 해석 실패: " + str(e)[:100]
-    return None, last
+        if r["kind"] == "numbers" and "numbers_last" not in d:
+            d["numbers_last"] = c
+            d.setdefault("numbers_first", c)
+        elif r["kind"] == "numbers":
+            d["numbers_first"] = c
+        elif r["kind"] in ("brief", "plan") and "view" not in d:
+            d["view"] = c
+    return sorted(out.values(), key=lambda x: x["date"])[-days:]
 
 
 # ------------------------------------------------------------------ 검증(AI 숫자를 앱이 다시 확인)
@@ -632,7 +708,7 @@ def make_strategy(get_conn, packet, items, deposit, fx, force_research=False):
     task = ("이번에 배분할 가용 자금 {:,}원(= CMA에서 쓸 수 있는 원화 + 이미 보유한 달러의 원화 환산, packet.cash_pool 참고)을 포함해 현재 포트폴리오의 큰 전략·세부 전략·배분·우선순위를 새로 짜세요. "
             "국장 매수(kr_krw)는 CMA 원화(cash_pool.cma_available_krw) 범위 안에서만, 미국 매수(us_krw)는 보유 달러를 먼저 쓰고 부족분만 환전합니다. 환율 등급(cash_accounts_and_fx.fx_rule_level)이 낮음·매우 낮음이면 환전이 필요한 미국 매수는 줄이거나 미루고, 이미 가진 달러 범위에서 먼저 매수를 검토하세요. "
             "research의 뉴스 헤드라인(앱이 수집, 본문은 못 읽음)과 종목별 등락·점수·회복 점검·심리 단계를 근거로 '보유 종목 전부'를 priorities에 넣어 종목마다 판단하세요(하나라도 빠뜨리지 마세요. 사지 않는 종목도 보류·홀드와 이유를 쓰세요). "
-            "헤드라인에 없는 사실은 추측하지 말고 unknowns에 적으세요. 환율은 fx_view에 헤드라인에서 확인된 범위로만 판단하고 정확한 예측은 불가함을 전제하세요. "
+            "packet.archive(앱이 날마다 쌓은 과거 지수 숫자·브리핑 요약)와 오늘을 비교해 흐름(추세·전환)을 판단에 반영하세요. 헤드라인에 없는 사실은 추측하지 말고 unknowns에 적으세요. 환율은 fx_view에 헤드라인에서 확인된 범위로만 판단하고 정확한 예측은 불가함을 전제하세요. "
             "손실 종목마다 물타기가 유리한지 불리한지도 avg_down_review에 검토하세요.").format(deposit)
     res, err = _gemini(_prompt(packet, task, "반드시 아래 JSON 스키마만 출력하세요.\n" + SCHEMA))
     if err:
@@ -653,6 +729,7 @@ def make_strategy(get_conn, packet, items, deposit, fx, force_research=False):
     res["_research_src"] = [{"title": x.get("title", ""), "uri": x.get("uri", "")} for x in srcs][:30]
     ai_agent._run(get_conn, "INSERT INTO strategy_log (created_at,status,deposit,content) VALUES (%s,%s,%s,%s)",
                   (_now(), "draft", int(deposit), json.dumps(res, ensure_ascii=False)))
+    archive_brief(get_conn, {"headline": res.get("headline"), "market": {"summary": res.get("research_summary"), "mood": (res.get("allocation") or {}).get("market_view")}}, plan=True)
     return res, None, rwarns + warns + w2
 
 
@@ -692,7 +769,7 @@ def make_brief(get_conn, packet, force=False):
     ok = bool(res_r.get("market") or res_r.get("tickers"))
     task = ("오늘의 시장·기업 브리핑을 만드세요. 자금 배분은 하지 마세요. research의 뉴스 헤드라인(앱이 수집, 제목·매체·날짜만 읽음)과 종목별 등락·점수·심리 단계(sentiment_and_value_gap)를 근거로 "
             "①시장 흐름과 분위기 ②환율 ③보유 종목 전부의 상태(하나도 빠뜨리지 말 것) ④국내(ISA) 보유를 계속 홀드해도 되는지, 추가 매수나 정리가 유리해지는 신호가 있는지 ⑤미국 투자 후보의 매력 순위를 정리하세요. "
-            "헤드라인에 없는 사실은 추측하지 말고 unknowns에 적으세요. 급락을 바닥이라고 단정하지 말고, 반대 근거를 함께 쓰세요.")
+            "packet.archive(앱이 날마다 쌓은 과거 지수 숫자·브리핑 요약)와 오늘을 비교해 흐름(추세·전환)을 판단에 반영하세요. 헤드라인에 없는 사실은 추측하지 말고 unknowns에 적으세요. 급락을 바닥이라고 단정하지 말고, 반대 근거를 함께 쓰세요.")
     res, err = _gemini(_prompt(packet, task, "반드시 아래 JSON 스키마만 출력하세요.\n" + BRIEF_SCHEMA))
     if err:
         return None, err, rwarns
@@ -700,6 +777,7 @@ def make_brief(get_conn, packet, force=False):
     res["_headlines_total"] = res_r.get("total")
     res["_coverage"] = coverage(srcs)
     ai_agent._run(get_conn, "INSERT INTO brief_log (created_at,content) VALUES (%s,%s)", (_now(), json.dumps(res, ensure_ascii=False)))
+    archive_brief(get_conn, res)
     return res, None, rwarns
 
 
