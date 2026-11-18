@@ -91,6 +91,18 @@ def _set_status(get_conn, sid, status):
 BRIEF_HOURS = 3
 
 
+def _kst(ts):
+    """UTC 문자열 -> 'MM-DD HH:MM KST'"""
+    try:
+        from datetime import timedelta
+        d = datetime.fromisoformat(str(ts))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return d.astimezone(timezone(timedelta(hours=9))).strftime("%m-%d %H:%M") + " 한국시간"
+    except Exception:  # noqa: BLE001
+        return str(ts)[:16]
+
+
 def _age_hours(ts):
     try:
         t = datetime.fromisoformat(str(ts))
@@ -102,7 +114,7 @@ def _age_hours(ts):
 
 
 def _section_brief(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, get_prices):
-    st.markdown("#### 오늘의 시장·기업 브리핑")
+    st.markdown("#### 시장·기업 브리핑 (누를 때마다 그 시점의 최신 뉴스로 새로 작성)")
     ts, brief = S.load_brief(get_conn)
     stale = brief is None or _age_hours(ts) > BRIEF_HOURS
     c1, c2 = st.columns([1, 4])
@@ -126,8 +138,8 @@ def _section_brief(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, get_p
         st.info("아직 브리핑이 없습니다. '지금 새로 조사'를 눌러 주세요.")
         return
     age = _age_hours(ts)
-    c2.caption("작성 {} UTC ({}) · 뉴스 헤드라인 {}건 · 참조 매체: {} · 제목·매체·날짜만 읽음(본문 못 읽음). 접속할 때 {}시간이 지났으면 자동으로 새로 조사합니다.".format(
-        str(ts)[:16].replace("T", " "), "방금" if age < 0.1 else "{:.0f}시간 전".format(age), brief.get("_headlines_total") or 0, ", ".join(brief.get("_coverage") or []) or "없음", BRIEF_HOURS))
+    c2.caption("작성 {} ({}) · 뉴스 헤드라인 {}건 · 참조 매체: {} · 제목·매체·날짜만 읽음(본문 못 읽음). 접속할 때 {}시간이 지났으면 자동으로 새로 조사합니다.".format(
+        _kst(ts), "방금" if age < 0.1 else "{:.0f}시간 전".format(age), brief.get("_headlines_total") or 0, ", ".join(brief.get("_coverage") or []) or "없음", BRIEF_HOURS))
     if not brief.get("_research_ok"):
         st.error("뉴스를 가져오지 못해 앱 자료(시세·점수)만으로 만든 브리핑입니다. 참고만 하세요.")
     st.markdown("**{}**".format(brief.get("headline", "")))
@@ -259,10 +271,14 @@ def _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, 
 
 def _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, policy, strat, get_prices, c, new_dep, memo):
     warns0 = []
-    with st.spinner("최신 뉴스·지수를 새로 모아 브리핑부터 다시 쓰는 중... (30초~1분)"):
+    _bts, _bold = S.load_brief(get_conn)
+    _need = (_bold is None) or _age_hours(_bts) > 0.25
+    with st.spinner("최신 뉴스·지수를 새로 모으는 중... (1~2분)" if _need else "방금 만든 브리핑 자료를 이어 쓰는 중..."):
         try:  # 1) 브리핑을 먼저 새로 만든다(실패해도 계획은 계속 진행)
-            bp, _p = _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, None, get_prices)
-            _nb, berr, _bw = S.make_brief(get_conn, bp, force=True)
+            berr = None
+            if _need:
+                bp, _p = _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, None, get_prices)
+                _nb, berr, _bw = S.make_brief(get_conn, bp, force=True)
             if berr:
                 warns0.append("브리핑 새로 쓰기 실패(이전 브리핑은 계획 근거에서 제외): " + str(berr)[:100])
         except Exception as e:  # noqa: BLE001
@@ -314,7 +330,7 @@ def _section_plan(get_conn, items, fx, cfg_pk, hub, sid, status, strat, created,
     badge = {"confirmed": "주문 대기(확정됨)", "filled": "체결 반영 완료", "cancelled": "취소됨"}.get(status, "초안(아직 확정 전)")
     st.markdown("#### 3. 오늘의 계획")
     st.markdown("**{}**".format(strat.get("headline", "")))
-    st.caption("상태: {} · 작성 {} UTC · 신뢰도 {}".format(badge, created[:16].replace("T", " "), strat.get("confidence", "-")))
+    st.caption("상태: {} · 작성 {} · 신뢰도 {}".format(badge, _kst(created), strat.get("confidence", "-")))
     if strat.get("_research_ok"):
         cov = strat.get("_coverage") or []
         st.caption("뉴스 반영: 헤드라인 {}건 · 참조된 지정 기관·매체: {} (제목·매체·날짜만 읽음, 기사 본문은 읽지 못함)".format(strat.get("_headlines_total") or 0, ", ".join(cov) if cov else "없음"))
@@ -560,7 +576,16 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
             if c_b.form_submit_button("기본 문구로 되돌리기"):
                 save_cfg(get_conn, "policy_text", S.DEFAULT_POLICY)
                 st.rerun()
-    with st.expander("검색 조사 대상으로 지정한 기관·매체·인물"):
+    _bt0, _b0 = S.load_brief(get_conn)
+    with st.expander("오늘 AI가 고른 주목 인물·기관 (뉴스를 보고 매번 새로 선정)"):
+        _f0 = (_b0 or {}).get("_focus") or []
+        if _f0:
+            for f_ in _f0:
+                st.markdown("**{}** — {}".format(f_.get("name", ""), f_.get("why", "")))
+            st.caption("선정 시각: " + _kst(_bt0) + ". 이 선정에 따라 후속 검색어도 자동으로 만들어 추가 조사합니다.")
+        else:
+            st.caption("아직 없습니다(브리핑을 새로 만들면 채워집니다).")
+    with st.expander("기본 조사 대상 목록 (고정 출발점 — 위 자동 선정이 매번 보완)"):
         for k_, v_ in S.SOURCES.items():
             st.markdown("**{}** — {}".format(k_, ", ".join(v_)))
     pf_ = st.session_state.pop("_plan_flash", None)

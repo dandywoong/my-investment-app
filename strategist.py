@@ -6,7 +6,7 @@
 """
 import json
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
@@ -170,6 +170,15 @@ def _research_prompt(scope, rows):
                    '"sources": [{"name": "...", "date": "..."}]}], "not_found": ["..."]}')
 
 
+def _planner_prompt(res):
+    kst = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M KST")
+    rows = ["{} | {} | {}".format(x.get("when"), x.get("source"), x.get("title")) for x in (res.get("latest_30_by_time") or [])]
+    return ("지금은 {}입니다. 아래는 앱이 방금 모은 최신 뉴스 제목 목록입니다(시각 UTC).\n{}\n\n"
+            "임무: ①지금 시장을 실제로 움직이고 있는 영향력 있는 인물·기관·매체를 중요도 순으로 최대 8개 골라 이유를 쓰세요(고정 목록이 아니라 오늘 자료 기준, 예: 방금 실적을 발표한 기업의 CEO·CFO, 시장을 흔든 연준 인사, 전망을 바꾼 투자은행). "
+            "②아직 제목만으로 부족해 더 확인해야 할 사건(예: 이미 발표된 실적의 결과·가이던스·어닝콜 발언, 주가 급변 이유)에 대한 후속 검색어를 최대 8개 만드세요(구체적으로, lang은 ko 또는 en). 이미 발표된 일을 '앞두고'로 검색하지 마세요.\n"
+            '출력 JSON만: {{"focus":[{{"name":"","why":""}}],"queries":[{{"q":"","lang":"en"}}]}}').format(kst, "\n".join(rows))
+
+
 def refresh_caches():
     """계획·브리핑을 만들 때마다 뉴스·지수 캐시를 비워 최신 자료를 받게 한다."""
     for fn in (market_facts,):
@@ -207,6 +216,19 @@ def research(get_conn, packet, force=False):
         import newsfeed
         hold = [{"ticker": h["ticker"], "name": h["name"], "market": h["market"]} for h in packet["holdings"]]
         res, srcs = newsfeed.collect(hold)
+        try:  # 2단계: 최신 헤드라인을 보고 AI가 '오늘 주목할 인물·기관'과 '더 찾아볼 검색어'를 정한다(실패해도 1단계 결과로 진행)
+            plan_, perr = _gemini(_planner_prompt(res), rounds=1)
+            if plan_ and isinstance(plan_, dict):
+                qs = [(str(q.get("q"))[:120], "ko" if q.get("lang") == "ko" else "en") for q in (plan_.get("queries") or []) if isinstance(q, dict) and q.get("q")][:8]
+                if qs:
+                    res, srcs = newsfeed.collect(hold, qs)
+                res["focus"] = [f for f in (plan_.get("focus") or []) if isinstance(f, dict)][:10]
+                res["followup_queries"] = [q for q, _l in qs]
+            else:
+                warns.append("2단계 조사(주목 인물·후속 검색) 건너뜀: " + str(perr)[:80])
+        except Exception as e:  # noqa: BLE001
+            warns.append("2단계 조사 중 문제: " + str(e)[:80])
+        st.session_state["_last_research"] = (datetime.now(timezone.utc), res, srcs)
     except Exception as e:  # noqa: BLE001
         return {"market": None, "fx": None, "tickers": [], "not_found": []}, [], warns + ["뉴스 헤드라인 수집 실패: " + str(e)[:100]]
     if res["total"] == 0:
@@ -437,6 +459,7 @@ def build_packet(items, risk, stress, fx, cfg, deposit, memo, cash_map, policy_t
 
 def _prompt(packet, task, extra=""):
     return (
+        "현재 시각: {} (한국). 자료에서 이 시각 이전에 이미 발표·종료된 일(실적 발표, 어닝콜, 장 마감 등)은 '앞두고' '예정'이라 쓰지 말고 결과로 쓰세요. research.latest_30_by_time과 followup이 가장 최신 사건입니다. 시장 전체 요약은 최신 시각의 사건부터 쓰세요.\n".format(datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")) +
         "당신은 장기 투자자를 돕는 펀드매니저 보조입니다. 아래 JSON 자료는 앱이 계산한 사실이며, 모든 수치 계산(평단·손익률·합계)은 이미 끝나 있으니 새로 계산하지 말고 주어진 값만 인용하세요.\n"
         "원칙: (1) 승률·확률·수익 보장 표현 금지. (2) 모든 판단에 반대 근거를 함께 적는다. (3) 평단가는 참고일 뿐 매수·매도 근거가 아니다. 가격이 내렸다는 것만으로 싸다고 하지 않는다. "
         "(4) 산업 성장성, 기업의 이익 포착 능력, 주가 매력을 구분한다. (5) 시장 스트레스가 높다는 것은 기업이 나빠졌다는 뜻이 아니다. 급락을 바닥이라고 단정하지 않고 나눠 투입한다. "
@@ -464,7 +487,7 @@ def _prompt(packet, task, extra=""):
     )
 
 
-def _gemini(prompt, want_json=True):
+def _gemini(prompt, want_json=True, rounds=3):
     """모델을 차례로 시도하고, 일시적 과부하(503·429·500)면 잠시 쉬었다가 최대 3바퀴까지 다시 시도한다."""
     import time
     key = ai_agent.get_api_key()
@@ -476,7 +499,7 @@ def _gemini(prompt, want_json=True):
         return None, "모델 목록 조회 실패: " + str(e)[:120]
     last = "사용 가능한 모델 없음"
     t0 = time.time()
-    for rnd in range(3):
+    for rnd in range(rounds):
         transient = False
         for m in models:
             try:
@@ -496,7 +519,7 @@ def _gemini(prompt, want_json=True):
                 return (ai_agent._extract_json(text) if want_json else text), None
             except Exception as e:  # noqa: BLE001
                 last = "응답 해석 실패: " + str(e)[:100]
-        if not transient or rnd == 2 or time.time() - t0 > 100:
+        if not transient or rnd == rounds - 1 or time.time() - t0 > 100:
             break
         time.sleep(8 if rnd == 0 else 20)
     return None, last + " (모델 {}개를 {}바퀴 시도)".format(len(models), rnd + 1)
@@ -699,10 +722,14 @@ def make_strategy(get_conn, packet, items, deposit, fx, force_research=False):
         st.session_state["_limits"] = None  # 비율을 강제하지 않는다(AI가 판단). 집중도는 경고로만 알린다.
     except Exception:  # noqa: BLE001
         st.session_state["_limits"] = None
-    refresh_caches()
+    lr_ = st.session_state.get("_last_research")
     packet["generated_at_utc"] = _now()
     packet["generation_note"] = "이 계획은 지금(generated_at_utc) 새로 조사한 자료로 처음부터 다시 쓰는 것입니다. 이미 발표된 실적·사건을 '앞으로 있을 일'로 쓰지 마세요."
-    res_r, srcs, rwarns = research(get_conn, packet, True)
+    if lr_ and (datetime.now(timezone.utc) - lr_[0]).total_seconds() < 600:
+        res_r, srcs, rwarns = lr_[1], lr_[2], []  # 방금(10분 안) 브리핑을 만들며 모은 최신 자료를 그대로 쓴다(속도)
+    else:
+        refresh_caches()
+        res_r, srcs, rwarns = research(get_conn, packet, True)
     packet["research"] = res_r
     packet["research_status"] = ("정상: 뉴스 헤드라인 {}건 반영(앱이 직접 수집, 본문은 못 읽음)".format(res_r.get("total", "")) if res_r.get("total") else "정상") if (res_r.get("market") or res_r.get("tickers")) else "실패: 뉴스 자료 없음"
     task = ("이번에 배분할 가용 자금 {:,}원(= CMA에서 쓸 수 있는 원화 + 이미 보유한 달러의 원화 환산, packet.cash_pool 참고)을 포함해 현재 포트폴리오의 큰 전략·세부 전략·배분·우선순위를 새로 짜세요. "
@@ -726,6 +753,7 @@ def make_strategy(get_conn, packet, items, deposit, fx, force_research=False):
         afx = res_r.get("fx") if isinstance(res_r.get("fx"), dict) and res_r["fx"].get("lean") else None
     res["_ai_fx"] = afx
     res["_headlines_total"] = res_r.get("total")
+    res["_focus"] = res_r.get("focus")
     res["_research_src"] = [{"title": x.get("title", ""), "uri": x.get("uri", "")} for x in srcs][:30]
     ai_agent._run(get_conn, "INSERT INTO strategy_log (created_at,status,deposit,content) VALUES (%s,%s,%s,%s)",
                   (_now(), "draft", int(deposit), json.dumps(res, ensure_ascii=False)))
@@ -775,6 +803,7 @@ def make_brief(get_conn, packet, force=False):
         return None, err, rwarns
     res["_research_ok"] = ok
     res["_headlines_total"] = res_r.get("total")
+    res["_focus"] = res_r.get("focus")
     res["_coverage"] = coverage(srcs)
     ai_agent._run(get_conn, "INSERT INTO brief_log (created_at,content) VALUES (%s,%s)", (_now(), json.dumps(res, ensure_ascii=False)))
     archive_brief(get_conn, res)
