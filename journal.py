@@ -102,7 +102,7 @@ def record_trade(get_conn, apply_trade, ch, side, qty, price, trade_date, reason
     return True, " · ".join(x for x in msgs if x)
 
 
-def render_entry(get_conn, choices, apply_trade):
+def render_entry(get_conn, choices, apply_trade, kp="te_"):
     """내 포트폴리오 탭 맨 위의 '매매 기록' 양식. choices = [{tk,name,mkt,cur,price,qty,...}]"""
     st.markdown("#### 매매 기록 (체결된 것만)")
     st.caption("증권사에서 체결된 매매를 한 번에 저장합니다. 보유 수량·평단, 예수금, 일지가 같이 바뀌고, 적어 둔 이유는 에이전트가 읽고 복기합니다. 계획 단계(주문 전)는 기록하지 마세요.")
@@ -110,19 +110,19 @@ def render_entry(get_conn, choices, apply_trade):
     if flash:
         st.success(flash)
     labels = ["{} ({})".format(c["name"], "미국" if c["cur"] == "USD" else "국내") + (" · 보유 중 {:g}주".format(round(c["qty"], 4)) if c.get("qty") else " · 신규") for c in choices]
-    with st.form("trade_entry_form", clear_on_submit=True):
+    with st.form("trade_entry_form" + kp, clear_on_submit=True):
         r1 = st.columns([3, 1.3, 1.5])
-        pick = r1[0].selectbox("종목", range(len(choices)), format_func=lambda i: labels[i], key="te_pick")
-        side = r1[1].radio("구분", ["매수", "매도"], horizontal=True, key="te_side")
-        tdate = r1[2].date_input("체결 날짜", value=date.today(), key="te_date")
+        pick = r1[0].selectbox("종목", range(len(choices)), format_func=lambda i: labels[i], key=kp + "pick")
+        side = r1[1].radio("구분", ["매수", "매도"], horizontal=True, key=kp + "side")
+        tdate = r1[2].date_input("체결 날짜", value=date.today(), key=kp + "date")
         r2 = st.columns(3)
-        qty = r2[0].number_input("체결 수량", min_value=0.0, value=0.0, step=0.0001, format="%.4f", key="te_qty")
-        price = r2[1].number_input("체결 단가 (국내 원 / 미국 $)", min_value=0.0, value=0.0, step=0.01, key="te_price")
-        followed = r2[2].selectbox("계획 대비", FOLLOW, key="te_follow")
-        reason = st.text_input("이유 (한 줄이면 충분합니다. 예: 급락으로 분할 1차 / 과열이라 일부 정리 / 계획된 적립)", key="te_reason")
+        qty = r2[0].number_input("체결 수량", min_value=0.0, value=0.0, step=0.0001, format="%.4f", key=kp + "qty")
+        price = r2[1].number_input("체결 단가 (국내 원 / 미국 $)", min_value=0.0, value=0.0, step=0.01, key=kp + "price")
+        followed = r2[2].selectbox("계획 대비", FOLLOW, key=kp + "follow")
+        reason = st.text_input("이유 (한 줄이면 충분합니다. 예: 급락으로 분할 1차 / 과열이라 일부 정리 / 계획된 적립)", key=kp + "reason")
         c1, c2 = st.columns(2)
-        to_h = c1.checkbox("보유 수량·평단에 반영", value=True, key="te_h")
-        to_c = c2.checkbox("예수금에도 반영", value=True, key="te_c")
+        to_h = c1.checkbox("보유 수량·평단에 반영", value=True, key=kp + "h")
+        to_c = c2.checkbox("예수금에도 반영", value=True, key=kp + "c")
         ok = st.form_submit_button("매매 기록 저장", type="primary")
     if ok:
         ch = choices[int(pick)]

@@ -1544,7 +1544,7 @@ def render_portfolio_top(get_conn, holdings, get_prices, load_flows):
     items, fx_use, cfg_ = ctx["items"], ctx["fx_use"], ctx["cfg_"]
     try:
         import assets
-        assets.render(get_conn, items, fx_use)
+        assets.render(get_conn, items, fx_use, cfg_)
     except Exception as e:  # noqa: BLE001
         st.error("내 자산 화면을 표시하지 못했습니다: " + str(e)[:150])
     try:

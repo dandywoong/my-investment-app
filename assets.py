@@ -51,72 +51,150 @@ def account_summary(items, fx):
     return out
 
 
-def render(get_conn, items, fx):
-    fxmod.ensure_tables(get_conn)
-    cma, usd = fxmod.balances(get_conn)[:2]
-    st.markdown("### 내 자산 한눈에")
-    st.caption("돈(현금)과 보유 종목이 계좌별로 한곳에 모여 있습니다. 입금·환전·매매를 기록하면 이 숫자가 바로 바뀌고, 에이전트(펀드매니저)도 같은 숫자를 읽습니다.")
-    flash = st.session_state.pop("_asset_flash", None)
-    if flash:
-        st.success(flash)
-    if usd < -0.005 or cma < -0.5:
-        st.error("잔액이 마이너스입니다. 기록이 어긋난 상태입니다. 아래 '잔액 맞추기'로 증권사 앱 숫자에 맞춰 주세요.")
+def _hold_tables(items, fx):
     a, b = st.columns(2)
     isa = [i for i in items if i["cur"] == "KRW"]
     us = [i for i in items if i["cur"] == "USD"]
     with a:
-        st.markdown("**ISA (국내 · 원화)**")
-        st.metric("원화 예수금 (CMA)", "{:,.0f}원".format(cma))
+        st.markdown("**ISA (국내 · 원화) 보유**")
         v = sum((i.get("value") or 0) for i in isa)
         c = sum((i.get("qty") or 0) * (i.get("avg") or 0) for i in isa)
-        st.caption("보유 평가 {:,.0f}원 · 투자원금 {:,.0f}원 · 현금 포함 합계 {:,.0f}원".format(v, c, v + max(cma, 0)))
+        st.caption("평가 {:,.0f}원 · 투자원금 {:,.0f}원".format(v, c))
         if isa:
             st.dataframe(pd.DataFrame([{"종목": i["name"], "수량": round(i["qty"], 4), "평단(원)": round(i["avg"]), "현재가(원)": None if i["price"] is None else round(i["price"]),
                                         "평가(원)": round(i.get("value") or 0)} for i in isa]), use_container_width=True, hide_index=True)
     with b:
-        st.markdown("**일반 (미국 · 달러)**")
-        st.metric("달러 예수금", "${:,.2f}".format(usd), "{:,.0f}원 상당(오늘 환율)".format(usd * fx) if fx else None, delta_color="off")
+        st.markdown("**일반 (미국 · 달러) 보유**")
         v = sum((i.get("value") or 0) for i in us)
         c = sum((i.get("qty") or 0) * (i.get("avg") or 0) for i in us)
-        st.caption("보유 평가 ${:,.2f} · 투자원금 ${:,.2f} · 현금 포함 합계 ${:,.2f}".format(v, c, v + max(usd, 0)))
+        st.caption("평가 ${:,.2f} · 투자원금 ${:,.2f}".format(v, c))
         if us:
             st.dataframe(pd.DataFrame([{"종목": i["name"], "수량": round(i["qty"], 4), "평단($)": round(i["avg"], 2), "현재가($)": None if i["price"] is None else round(i["price"], 2),
                                         "평가($)": round(i.get("value") or 0, 2)} for i in us]), use_container_width=True, hide_index=True)
-    with st.expander("돈 넣기 · 환전하기 · 잔액 맞추기 (여기서 기록)"):
-        t1, t2, t3 = st.tabs(["입금 (원화 → CMA)", "환전 (원 → 달러)", "잔액 맞추기"])
-        with t1:
-            with st.form("as_dep", clear_on_submit=True):
-                d1, d2 = st.columns(2)
-                dd = d1.date_input("입금 날짜", value=date.today(), key="as_dep_d")
-                da = d2.number_input("입금액 (원)", min_value=0, value=0, step=100000, key="as_dep_a")
-                if st.form_submit_button("입금 기록") and da > 0:
-                    _ins(get_conn, dd, "deposit", da, 0, None, "입금")
-                    try:
-                        ai_agent._run(get_conn, "INSERT INTO cash_events (event_date,amount_krw,memo,created_at) VALUES (%s,%s,%s,%s)", (dd.isoformat(), int(da), "", _now()))
-                    except Exception:  # noqa: BLE001
-                        pass
-                    st.session_state["_asset_flash"] = "입금 {:,.0f}원을 CMA에 기록했습니다.".format(da)
-                    st.rerun()
-        with t2:
-            st.caption("증권사에서 실제로 환전한 결과를 넣으세요: 쓴 원화와 받은 달러. 환율은 자동 계산됩니다. 원화는 CMA에서 빠지고 달러는 일반계좌 달러 예수금으로 들어갑니다.")
-            with st.form("as_fx", clear_on_submit=True):
-                f1, f2, f3 = st.columns(3)
-                fd = f1.date_input("환전 날짜", value=date.today(), key="as_fx_d")
-                fk = f2.number_input("쓴 원화 (원)", min_value=0, value=0, step=10000, key="as_fx_k")
-                fu = f3.number_input("받은 달러 ($)", min_value=0.0, value=0.0, step=1.0, key="as_fx_u")
-                if st.form_submit_button("환전 기록") and fk > 0 and fu > 0:
-                    if fk > cma + 0.5:
-                        st.error("CMA 원화 잔액({:,.0f}원)보다 많이 환전할 수 없습니다. 먼저 입금을 기록하거나 잔액을 맞추세요.".format(cma))
-                    else:
-                        _ins(get_conn, fd, "fx_done", -fk, fu, fk / fu, "환전(직접 기록)")
-                        st.session_state["_asset_flash"] = "환전 기록: {:,.0f}원 → ${:,.2f} (환율 {:,.1f}원).".format(fk, fu, fk / fu)
-                        st.rerun()
-        with t3:
-            st.caption("증권사 앱에 보이는 실제 잔액을 그대로 넣으세요. 지금 기록과의 차이만큼 한 줄이 추가됩니다.")
-            with st.form("as_adj"):
+
+
+def render_holdings(items, fx):
+    _hold_tables(items, fx)
+
+
+# ------------------------------------------------------------------ 환전 판단(AI가 환율·환전 매력도를 조사해 오늘 환전할 금액을 제안)
+def fx_advice(get_conn, fx, cma_avail, spread):
+    """-> (dict | None, 오류문구 | None)"""
+    import json
+    import strategist as S
+    import newsfeed
+    S.refresh_caches()
+    view = fxmod.fx_view()
+    mf = (S.market_facts().get("data") or {})
+    heads = {"ko": newsfeed.fetch("원달러 환율 전망 외국인 달러", "ko", 10, 3), "en": newsfeed.fetch("USD KRW won dollar outlook Fed", "en", 8, 3),
+             "dxy": newsfeed.fetch("dollar index DXY Treasury yield Fed", "en", 8, 2)}
+    hist = [r for r in ledger_for_agent(get_conn, 60) if r["what"].startswith("환전")][:8]
+    kst = datetime.now(timezone.utc).astimezone(timezone(__import__("datetime").timedelta(hours=9))).strftime("%Y-%m-%d %H:%M KST")
+    pk = {"now": kst, "cma_krw_available_to_exchange": int(cma_avail), "app_rate": fx, "fx_spread_pct": spread, "fx_rule_view": view,
+          "usdkrw_and_rates": {k: mf.get(k) for k in ("원달러환율", "미국10년금리(%)", "VIX(공포지수)") if mf.get(k)}, "headlines": heads, "my_past_exchanges": hist,
+          "recent_archive": S.load_archive(get_conn, 10)}
+    prompt = ("당신은 장기 투자자의 환전 담당 보조입니다. 오늘 원화→달러 환전 타이밍을 판단합니다. 환율은 정확히 예측할 수 없으므로 맞히려 하지 말고, 지금 위치·추세·금리/달러 흐름·수급 뉴스·환전 비용(스프레드)을 근거로 "
+              "'오늘 CMA 원화 중 얼마를 환전하면 합리적인가'를 정하세요. 한 번에 몰아서 하지 않고 분할을 기본으로 하며, 위치가 불리하거나 근거가 약하면 0원(보류)도 정답입니다. "
+              "금액은 cma_krw_available_to_exchange 이하의 1만원 단위 정수. 승률·확률·수익 보장 표현 금지, 반대 근거를 반드시 쓰고, 헤드라인에 없는 사실은 추측하지 마세요. 이미 발표된 일은 결과로 쓰세요.\n"
+              "자료(JSON):\n" + json.dumps(pk, ensure_ascii=False, default=str)[:14000] +
+              '\n출력 JSON만: {"lean":"환전 유리|분할 환전|보류|판단 불가","recommend_krw":0,"split":[{"when":"오늘/며칠 뒤/조건 충족 시","krw":0}],"reason":"","counter":"","watch":"판단이 바뀌는 조건","confidence":"낮음|보통|높음","evidence":[{"name":"","date":""}]}')
+    res, err = S._gemini(prompt)
+    if err or not isinstance(res, dict):
+        return None, err or "응답 해석 실패"
+    try:
+        rec = int(float(res.get("recommend_krw") or 0))
+    except Exception:  # noqa: BLE001
+        rec = 0
+    rec = max(0, min(int(cma_avail), (rec // 10000) * 10000))
+    res["recommend_krw"] = rec
+    res["_at"] = _now()
+    try:
+        S.ensure_archive(get_conn)
+        S._arch_add(get_conn, "fx", {k: res.get(k) for k in ("lean", "recommend_krw", "reason", "confidence")} | {"rate": fx})
+    except Exception:  # noqa: BLE001
+        pass
+    return res, None
+
+
+def render_money(get_conn, fx, c, kp="as_", adjust=True):
+    """내 돈: CMA 원화 · 일반계좌 달러 · 입금 기록 · 환전 판단 · 환전 기록."""
+    fxmod.ensure_tables(get_conn)
+    cma, usd = fxmod.balances(get_conn)[:2]
+    reserve = int(float((c or {}).get("fx_reserve", 0) or 0))
+    spread = float((c or {}).get("fx_spread", 0.25) or 0.25)
+    avail = max(0.0, cma - reserve)
+    flash = st.session_state.pop("_asset_flash", None)
+    if flash:
+        st.success(flash)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("CMA 원화 (국장·미장 모두 쓸 수 있는 돈)", "{:,.0f}원".format(cma), "비상금 {:,.0f}원 제외 시 {:,.0f}원".format(reserve, avail) if reserve else None, delta_color="off")
+    m2.metric("일반계좌 달러 예수금 (미장 투자금)", "${:,.2f}".format(usd), "{:,.0f}원 상당 (오늘 환율 {:,.0f})".format(usd * (fx or 0), fx or 0) if fx else None, delta_color="off")
+    m3.metric("투자 가능 합계 (원화 환산)", "{:,.0f}원".format(avail + max(usd, 0) * (fx or 0)))
+    if usd < -0.005 or cma < -0.5:
+        st.error("잔액이 마이너스입니다. 기록이 어긋난 상태입니다. '잔액 맞추기'로 증권사 앱 숫자에 맞춰 주세요.")
+    st.markdown("**① 돈이 생기면 — 입금 기록 (CMA로 들어감)**")
+    with st.form(kp + "dep", clear_on_submit=True):
+        d1, d2, d3 = st.columns([1, 1, 1])
+        dd = d1.date_input("입금 날짜", value=date.today(), key=kp + "dep_d")
+        da = d2.number_input("입금액 (원)", min_value=0, value=0, step=100000, key=kp + "dep_a")
+        d3.write("")
+        if d3.form_submit_button("입금 기록") and da > 0:
+            _ins(get_conn, dd, "deposit", da, 0, None, "입금")
+            try:
+                ai_agent._run(get_conn, "INSERT INTO cash_events (event_date,amount_krw,memo,created_at) VALUES (%s,%s,%s,%s)", (dd.isoformat(), int(da), "", _now()))
+            except Exception:  # noqa: BLE001
+                pass
+            st.session_state["_asset_flash"] = "입금 {:,.0f}원을 CMA에 기록했습니다.".format(da)
+            st.rerun()
+    st.markdown("**② 환전 — 에이전트에게 오늘 환전해도 되는지, 얼마나 할지 묻기**")
+    cA, cB = st.columns([1, 3])
+    ask = cA.button("환전 판단 받기", key=kp + "fx_ask", disabled=avail < 10000)
+    if avail < 10000:
+        cB.caption("환전에 쓸 수 있는 CMA 원화가 없습니다. 먼저 ①에서 입금을 기록하세요.")
+    else:
+        cB.caption("오늘 환율 위치, 달러·금리 흐름, 환율 뉴스, 환전 비용을 조사해 CMA 중 얼마를 지금 환전하면 좋은지 제안합니다(분할 기본, 보류도 가능).")
+    if ask:
+        with st.spinner("환율·달러 흐름·뉴스를 조사하는 중... (30초~1분)"):
+            adv, err = fx_advice(get_conn, fx, avail, spread)
+        if err:
+            st.error("환전 판단을 받지 못했습니다: " + str(err) + " — 잠시 뒤 다시 눌러 주세요.")
+        else:
+            st.session_state["_fx_advice_ui"] = adv
+    adv = st.session_state.get("_fx_advice_ui")
+    if adv:
+        st.info("**환전 판단: {}** — 오늘 권장 {:,.0f}원 (신뢰도 {}) · 판단 시각 {}".format(adv.get("lean", "-"), adv.get("recommend_krw", 0), adv.get("confidence", "-"), str(adv.get("_at", ""))[:16].replace("T", " ") + " UTC"))
+        st.write("**근거** — " + str(adv.get("reason", "")))
+        st.write("**반대 근거** — " + str(adv.get("counter", "")))
+        for s_ in adv.get("split") or []:
+            if isinstance(s_, dict):
+                st.caption("분할안: {} — {:,.0f}원".format(s_.get("when", ""), float(s_.get("krw") or 0)))
+        if adv.get("watch"):
+            st.caption("판단이 바뀌는 조건: " + str(adv["watch"]))
+        if adv.get("recommend_krw", 0) > 0:
+            def _fill(v=int(adv["recommend_krw"])):
+                st.session_state[kp + "fx_k"] = v
+            st.button("권장 금액 {:,.0f}원을 아래 환전 칸에 채우기".format(adv["recommend_krw"]), key=kp + "fx_fill", on_click=_fill)
+    st.markdown("**③ 환전했다면 — 실제 환전 결과 기록 (CMA에서 빠지고 일반계좌 달러로 들어감)**")
+    with st.form(kp + "fx", clear_on_submit=True):
+        f1, f2, f3 = st.columns(3)
+        fd = f1.date_input("환전 날짜", value=date.today(), key=kp + "fx_d")
+        fk = f2.number_input("환전한 원화 (원)", min_value=0, value=int(st.session_state.get(kp + "fx_k", 0) or 0), step=10000, key=kp + "fx_k")
+        fr = f3.number_input("실제 적용 환율 (원/달러)", min_value=0.0, value=float(round(fx, 1)) if fx else 0.0, step=0.1, key=kp + "fx_r")
+        st.caption("받은 달러 = 환전한 원화 ÷ 적용 환율 로 자동 계산됩니다(예: 300,000원 ÷ 1,335 = $224.72).")
+        if st.form_submit_button("환전 기록") and fk > 0 and fr > 0:
+            if fk > cma + 0.5:
+                st.error("CMA 원화 잔액({:,.0f}원)보다 많이 환전할 수 없습니다.".format(cma))
+            else:
+                got = round(fk / fr, 2)
+                _ins(get_conn, fd, "fx_done", -fk, got, fr, "환전(직접 기록)")
+                st.session_state["_asset_flash"] = "환전 기록: {:,.0f}원 → ${:,.2f} (환율 {:,.1f}원). CMA {:,.0f}원, 달러 예수금 ${:,.2f}.".format(fk, got, fr, cma - fk, usd + got)
+                st.rerun()
+    if adjust:
+        with st.expander("잔액 맞추기 (증권사 앱 실제 잔액과 어긋났을 때)"):
+            with st.form(kp + "adj"):
                 j1, j2 = st.columns(2)
-                wk = j1.number_input("CMA 원화 잔액", min_value=0.0, value=float(max(0, round(cma))), step=10000.0, key="as_adj_k")
-                wu = j2.number_input("달러 예수금 ($)", min_value=0.0, value=float(max(0.0, round(usd, 2))), step=1.0, key="as_adj_u")
+                wk = j1.number_input("CMA 원화 잔액", min_value=0.0, value=float(max(0, round(cma))), step=10000.0, key=kp + "adj_k")
+                wu = j2.number_input("달러 예수금 ($)", min_value=0.0, value=float(max(0.0, round(usd, 2))), step=1.0, key=kp + "adj_u")
                 if st.form_submit_button("이 값으로 맞추기"):
                     _ins(get_conn, date.today(), "adjust", wk - cma, wu - usd, None, "잔액 맞추기")
                     st.session_state["_asset_flash"] = "잔액을 CMA {:,.0f}원 · ${:,.2f}로 맞췄습니다.".format(wk, wu)
@@ -126,7 +204,15 @@ def render(get_conn, items, fx):
         if df is None or df.empty:
             st.caption("아직 기록이 없습니다.")
         else:
-            show = pd.DataFrame({"날짜": df["event_date"].astype(str).str[:10], "내용": df["kind"].map(lambda k: fxmod.KINDS.get(k, k)), "원화 증감": df["krw_delta"].round(0),
-                                 "달러 증감($)": df["usd_delta"].round(2), "환율": df["rate"].round(1), "메모": df["memo"]})
+            show = pd.DataFrame({"날짜": df["event_date"].astype(str).str[:10], "내용": df["kind"].map(lambda k: fxmod.KINDS.get(k, k)), "원화 증감": pd.to_numeric(df["krw_delta"], errors="coerce").round(0),
+                                 "달러 증감($)": pd.to_numeric(df["usd_delta"], errors="coerce").round(2), "환율": pd.to_numeric(df["rate"], errors="coerce").round(1), "메모": df["memo"]})
             st.dataframe(show, use_container_width=True, hide_index=True)
-            st.caption("입금은 CMA 원화에, 환전은 원화 감소+달러 증가로, 매매는 해당 통화 예수금 증감으로 쌓입니다. 잔액 = 이 줄들의 합계입니다.")
+            st.caption("잔액 = 이 줄들의 합계입니다. 입금은 CMA 원화, 환전은 원화 감소+달러 증가, 매매는 해당 통화 증감으로 쌓입니다.")
+
+
+def render(get_conn, items, fx, c=None):
+    """내 포트폴리오 탭용: 돈 + 계좌별 보유."""
+    st.markdown("### 내 자산 한눈에")
+    st.caption("현금과 보유 종목이 계좌별로 모여 있습니다. 에이전트도 같은 장부를 읽습니다.")
+    render_money(get_conn, fx, c or {}, "pf_")
+    _hold_tables(items, fx)

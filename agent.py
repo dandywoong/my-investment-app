@@ -175,13 +175,9 @@ def _section_brief(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, get_p
 def _section_money(get_conn, fx, c, save_cfg):
     cma, usd = fxmod.balances(get_conn)[:2]
     reserve = int(float(c.get("fx_reserve", 0) or 0))
-    st.markdown("#### 1. 내 돈")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("CMA 원화", "{:,.0f}원".format(cma))
-    m2.metric("달러 예수금", "${:,.2f}".format(usd), "{:,.0f}원 상당".format(usd * fx) if fx else None)
-    m3.metric("투자에 쓸 수 있는 합계", "{:,.0f}원".format(max(0.0, cma - reserve) + max(0.0, usd) * (fx or 0)), "비상금 {:,.0f}원 제외".format(reserve) if reserve else None)
-    if usd < -0.005 or cma < -0.5:
-        st.error("잔액이 마이너스입니다. 기록이 꼬인 상태이니 아래 '설정·정리'에서 '잔액 맞추기'로 실제 잔액에 맞춰 주세요.")
+    st.markdown("#### 1. 내 돈 (입금 → 환전 → 계획 → 매매 기록 순서로 진행)")
+    import assets
+    assets.render_money(get_conn, fx, c, "ag_", adjust=False)
     with st.expander("설정 · 잔액 맞추기 · 테스트 기록 정리"):
         t1, t2, t4, t3 = st.tabs(["잔액 맞추기", "고급 설정", "관심 후보", "기록 정리"])
         with t1:
@@ -307,24 +303,11 @@ def _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, policy, strat
 
 def _section_plan_form(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, get_prices):
     st.markdown("#### 2. 오늘 계획 받기")
-    with st.form("plan_form"):
-        d1, d2 = st.columns([1, 2])
-        ev_date = d1.date_input("입금 날짜", value=date.today(), key="ag_dep_date")
-        amt = d2.number_input("새로 입금한 돈 (원) — 입금이 없으면 0으로 두세요", min_value=0, value=0, step=100000, key="ag_dep_amt")
-        go = st.form_submit_button("계획 받기", type="primary")
-    st.caption("입금액만 넣으면 됩니다. 환전할지, 얼마를 어디에 투자할지, 얼마를 남길지는 AI가 정책 안에서 정합니다.")
+    st.caption("위 '내 돈'에 기록된 잔액 전체가 재원입니다. 일반계좌 달러는 미장 투자금으로, CMA 원화는 국장(ISA)과 미장(필요하면 환전) 어디에든 쓸 수 있는 돈으로 보고 배분합니다. 입금·환전은 위에서 먼저 기록하세요.")
+    go = st.button("계획 받기", type="primary", key="ag_plan_go")
     if not go:
         return
-    new_dep = int(amt)
-    if new_dep > 0:
-        try:
-            ai_agent._run(get_conn, "INSERT INTO fx_events (created_at,event_date,kind,krw_delta,usd_delta,rate,memo) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                          (_now(), ev_date.isoformat(), "deposit", new_dep, 0, None, "입금"))
-            ai_agent._run(get_conn, "INSERT INTO cash_events (event_date,amount_krw,memo,created_at) VALUES (%s,%s,%s,%s)", (ev_date.isoformat(), new_dep, "", _now()))
-        except Exception as e:  # noqa: BLE001
-            st.error("입금 기록 실패: " + str(e)[:100])
-            return
-    err, warns = _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, None, strat, get_prices, c, new_dep, "")
+    err, warns = _run_plan(get_conn, items, risk, stress, fx, cfg_pk, cash_map, None, strat, get_prices, c, 0, "")
     if err:
         st.error("새 계획을 만들지 못했습니다: {} — 아래 계획은 이전에 만든 것(작성 시각 확인)이며 오늘 자료가 아닙니다. 잠시 뒤 다시 눌러 주세요.".format(err))
     else:
@@ -556,6 +539,18 @@ def _section_chat(get_conn, items, risk, stress, fx, cfg_pk, dep, cash_map, c, s
 
 
 # ------------------------------------------------------------------ 진입점
+def _section_record(get_conn, items, fx, apply_trade):
+    import assets
+    st.markdown("#### 4. 매매 기록 · 내 보유")
+    st.caption("플랜대로(또는 다르게) 매매했다면 체결 결과를 기록하세요. 저장하면 아래 보유 수량·평단, 계좌별 예수금(미국=달러, 국내=원화)이 바로 바뀌고, 이유는 에이전트가 읽고 복기합니다.")
+    if apply_trade is not None:
+        try:
+            journal.render_entry(get_conn, [dict(i) for i in items], apply_trade, "ag_te_")
+        except Exception as e:  # noqa: BLE001
+            st.error("매매 기록 화면을 표시하지 못했습니다: " + str(e)[:120])
+    assets.render_holdings(items, fx)
+
+
 def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg, hub, get_prices=None, apply_trade=None):
     S.ensure_tables(get_conn)
     fxmod.ensure_tables(get_conn)
@@ -626,12 +621,14 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
     sid, status, strat, created = S.load_latest(get_conn)
     _section_plan_form(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, get_prices)
     if not strat:
-        st.info("아직 계획이 없습니다. 위에서 '계획 받기'를 누르세요(입금이 없으면 0원으로 두고 누르면 됩니다).")
+        st.info("아직 계획이 없습니다. 위에서 '계획 받기'를 누르세요.")
+        _section_record(get_conn, items, fx, apply_trade)
         return None
     pl_ = _section_plan(get_conn, items, fx, cfg_pk, hub, sid, status, strat, created, c)
     if status == "confirmed" and apply_trade is not None:
         _section_fill(get_conn, items, fx, sid, strat, pl_, apply_trade)
     elif status == "filled":
         st.success("이 계획의 체결이 반영되었습니다. 성과는 며칠~몇 주 뒤 아래 '기록·성적표'에서 시장과 비교해 볼 수 있고, 다음 계획 때 AI가 그 결과를 읽습니다.")
+    _section_record(get_conn, items, fx, apply_trade)
     _section_chat(get_conn, items, risk, stress, fx, cfg_pk, int(strat.get("_deposit", 0) or 0), cash_map, c, strat, get_prices)
     return strat if status == "confirmed" else None
