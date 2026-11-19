@@ -151,7 +151,7 @@ def summarize(get_conn, get_prices, min_days=10):
             age = (date.today() - datetime.fromisoformat(str(r["trade_date"])[:10]).date()).days
         except Exception:  # noqa: BLE001
             continue
-        res = {"date": str(r["trade_date"])[:10], "name": r["name"], "side": r["side"], "price": round(float(r["price"]), 2), "reason": str(r["reason"] or "")[:80], "followed": r["followed"], "days": age}
+        res = {"date": str(r["trade_date"])[:10], "name": r["name"], "side": r["side"], "price": round(float(r["price"]), 2), "reason": str(r["reason"] or "")[:200], "followed": r["followed"], "days": age}
         if get_prices is not None and age >= 1:
             tk, mk = r["ticker"], r["market"]
             bm = ledger.BENCH.get(mk, ledger.BENCH["미국"])[0]

@@ -203,7 +203,7 @@ def _section_money(get_conn, fx, c, save_cfg):
                     save_cfg(get_conn, "fx_reserve", str(int(r1)))
                     save_cfg(get_conn, "fx_spread", str(float(sp)))
                     st.rerun()
-            st.checkbox("계획 받을 때 뉴스를 새로 모으기 (끄면 30분 안에 모은 헤드라인 재사용)", value=False, key="ag_force")
+            st.caption("계획·브리핑은 누를 때마다 최신 뉴스를 새로 모읍니다(별도 설정 없음).")
         with t4:
             st.caption("보유하지 않았지만 에이전트가 매번 함께 비교할 종목입니다(기본: KODEX 200). 야후 파이낸스 코드로 추가하세요. 예: 069500.KS, 005930.KS, QQQ")
             wl = _watch_list(c)
@@ -260,6 +260,20 @@ def _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, 
         st.session_state["_journal"] = None
     packet = S.build_packet(items, risk, stress, fx, cfg_pk, pool, memo, cash_map, c.get("policy_text") or S.DEFAULT_POLICY, strat, get_prices)
     packet["my_notes"] = _my_notes(get_conn)
+    try:
+        import assets
+        packet["cash_ledger_recent"] = assets.ledger_for_agent(get_conn, 25)
+        packet["accounts_summary"] = assets.account_summary(items, fx)
+        jdf = journal.load(get_conn, 400)
+        _bt0, _ = S.load_brief(get_conn)
+        _ar = S.load_archive(get_conn)
+        packet["app_manifest"] = {
+            "note": "이 목록이 당신(펀드매니저 AI)이 실제로 읽는 앱 자료의 전부입니다. 여기에 없는 것은 볼 수 없습니다. 당신은 앱의 숫자를 직접 바꾸거나 주문할 수 없고, 기록은 사용자가 입력합니다. 모델 자체가 학습하는 것이 아니라 매 호출마다 아래 기록의 요약을 읽습니다.",
+            "pages_and_data": {"에이전트 탭": "브리핑·계획·이 대화", "내 포트폴리오 탭": "계좌별 보유·예수금·입금/환전·매매 기록(이유 포함)", "종목 분석 탭": "앱 점수·달걀 국면·코스톨라니 심리(packet의 holdings/sentiment로 전달)", "기록·복기 탭": "매매 일지·제안 성과(my_trade_journal/past_lessons로 전달)"},
+            "counts": {"trade_journal_rows": 0 if jdf is None else int(len(jdf)), "archive_days": len(_ar), "last_brief_utc": _bt0, "cash_ledger_rows_shown": len(packet["cash_ledger_recent"])},
+            "learning_status": "통계적 복기는 평가 가능한 매매(10일 경과) 30건 이상부터 의미가 있습니다. 그 전에는 기록을 읽고 참고만 합니다."}
+    except Exception:  # noqa: BLE001
+        pass
     packet["archive"] = {"note": "앱이 접속할 때마다 쌓은 과거 기록(날짜별 지수 숫자 시작/마지막, 브리핑·계획 요약). 오늘 자료와 비교해 흐름을 보되 과거 문장의 사실을 현재 사실로 쓰지 마세요.", "days": S.load_archive(get_conn)}
     packet["cash_pool"] = pool_info
     _bt, _bf = S.load_brief(get_conn)
