@@ -141,17 +141,31 @@ def render_entry(get_conn, choices, apply_trade, kp="te_"):
 
 
 def render_delete(get_conn, kp="te_"):
-    """잘못 기록한 매매 일지 줄 삭제(일지·복기에서만 빠진다)."""
+    """잘못 기록한 매매 일지 줄 수정·삭제(일지·복기 자료에서만 바뀐다)."""
     df = load(get_conn, 30)
     if df is None or not len(df):
         return
-    with st.expander("매매 기록 삭제 (잘못 입력했거나 테스트로 넣은 줄)"):
-        ed = pd.DataFrame({"삭제": False, "번호": df["id"].astype(int), "날짜": df["trade_date"].astype(str).str[:10], "종목": df["name"], "구분": df["side"], "수량": df["qty"], "단가": df["price"], "이유": df["reason"]})
-        out = st.data_editor(ed, hide_index=True, use_container_width=True, key=kp + "jd_ed", disabled=[c for c in ed.columns if c != "삭제"],
-                             column_config={"삭제": st.column_config.CheckboxColumn("삭제", default=False)})
+    with st.expander("매매 기록 수정 · 삭제 (잘못 입력했거나 테스트로 넣은 줄)"):
+        st.caption("날짜·수량·단가·이유·계획 대비를 직접 고치고 '수정 저장', 지울 줄은 '삭제'에 체크하세요. 일지(복기 자료)만 바뀝니다. 이미 반영된 보유 수량·평단·예수금은 자동으로 되돌아가지 않으므로, 보유는 '내 포트폴리오 탭 → 미국주/국내 보유 수정'에서, 돈은 위 '돈 기록 내역'에서 같이 고쳐 주세요.")
+        base = pd.DataFrame({"삭제": False, "번호": df["id"].astype(int), "종목": df["name"], "구분": df["side"], "날짜": df["trade_date"].astype(str).str[:10], "수량": df["qty"].astype(float),
+                             "단가": df["price"].astype(float), "계획 대비": df["followed"].fillna(FOLLOW[2]), "이유": df["reason"].fillna("")})
+        out = st.data_editor(base, hide_index=True, use_container_width=True, key=kp + "jd_ed", disabled=["번호", "종목", "구분"],
+                             column_config={"삭제": st.column_config.CheckboxColumn("삭제", default=False), "계획 대비": st.column_config.SelectboxColumn("계획 대비", options=FOLLOW)})
+        edits = []
+        for k_ in range(len(base)):
+            a, b = base.iloc[k_], out.iloc[k_]
+            if bool(b["삭제"]):
+                continue
+            if any(str(a[c]) != str(b[c]) for c in ("날짜", "수량", "단가", "계획 대비", "이유")):
+                edits.append((str(b["날짜"])[:10], float(b["수량"]), float(b["단가"]), str(b["계획 대비"]), str(b["이유"] or ""), int(b["번호"])))
+        if edits and st.button("수정 저장 ({}줄)".format(len(edits)), key=kp + "jd_save", type="primary"):
+            for e_ in edits:
+                ai_agent._run(get_conn, "UPDATE trade_journal SET trade_date=%s, qty=%s, price=%s, followed=%s, reason=%s WHERE id=%s", e_)
+            st.session_state["_trade_flash"] = "{}줄을 수정했습니다(일지만).".format(len(edits))
+            st.rerun()
         pick = out[out["삭제"] == True]  # noqa: E712
         if len(pick):
-            st.warning("일지(복기 자료)에서만 지워집니다. 이미 반영된 보유 수량·평단·예수금은 자동으로 되돌아가지 않으니, 필요하면 '미국주 직접 고치기'나 '잔액 맞추기', 돈 기록 삭제로 바로잡으세요.")
+            st.warning("일지(복기 자료)에서만 지워집니다. 보유 수량·평단·예수금은 그대로입니다.")
             ok = st.checkbox("{}줄을 삭제합니다".format(len(pick)), key=kp + "jd_ok")
             if st.button("선택한 매매 기록 삭제", key=kp + "jd_del", disabled=not ok):
                 for i_ in pick["번호"].tolist():

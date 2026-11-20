@@ -1,4 +1,5 @@
 import psycopg
+import threading
 import time
 import json
 import os
@@ -332,8 +333,7 @@ def render_investor_flow_check(ticker):
     )
 
 
-def get_db_connection():
-    """Streamlit Secrets에 설정한 Supabase PostgreSQL 연결."""
+def _open_connection():
     cfg = st.secrets["postgres"]
     return psycopg.connect(
         host=cfg["host"],
@@ -343,7 +343,57 @@ def get_db_connection():
         password=cfg["password"],
         sslmode="require",
         connect_timeout=10,
+        prepare_threshold=None,  # Supabase 연결 풀러와 충돌하지 않도록 서버 쪽 준비문 사용 안 함
     )
+
+
+_TL = threading.local()
+
+
+class _Borrowed:
+    """`with get_db_connection() as con:` 형태 그대로 쓰되, 매번 새로 연결하지 않고 같은 연결을 재사용한다(속도).
+    블록이 끝나면 확정(commit)만 하고 연결은 닫지 않는다. 연결이 끊겼으면 자동으로 다시 연결한다."""
+
+    def __enter__(self):
+        con = getattr(_TL, "con", None)
+        try:
+            if con is not None and (con.closed or con.broken):
+                con = None
+            elif con is not None and time.time() - getattr(_TL, "used", 0) > 45:
+                with con.cursor() as cur:  # 오래 쉬었다면 살아 있는지 확인
+                    cur.execute("SELECT 1")
+                con.commit()
+        except Exception:  # noqa: BLE001
+            try:
+                con.close()
+            except Exception:  # noqa: BLE001
+                pass
+            con = None
+        if con is None:
+            con = _open_connection()
+        _TL.con = con
+        self.con = con
+        return con
+
+    def __exit__(self, et, ev, tb):
+        try:
+            if et:
+                self.con.rollback()
+            else:
+                self.con.commit()
+        except Exception:  # noqa: BLE001
+            try:
+                self.con.close()
+            except Exception:  # noqa: BLE001
+                pass
+            _TL.con = None
+        _TL.used = time.time()
+        return False
+
+
+def get_db_connection():
+    """Streamlit Secrets에 설정한 Supabase PostgreSQL 연결(재사용)."""
+    return _Borrowed()
 
 
 def rows_to_df(cur):

@@ -88,7 +88,7 @@ def _set_status(get_conn, sid, status):
 
 
 # ------------------------------------------------------------------ 시장·기업 브리핑 (맨 위, 접속하면 자동 갱신)
-BRIEF_HOURS = 3
+BRIEF_HOURS = 8
 
 
 def _kst(ts):

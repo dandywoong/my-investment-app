@@ -526,7 +526,13 @@ def _gemini(prompt, want_json=True, rounds=3):
 
 
 # ------------------------------------------------------------------ 아카이브(에이전트의 장기 기억)
+_ARCH_ONCE = {"done": False}
+
+
 def ensure_archive(get_conn):
+    if _ARCH_ONCE["done"]:
+        return
+    _ARCH_ONCE["done"] = True
     try:
         ai_agent._run(get_conn, "CREATE TABLE IF NOT EXISTS market_archive (id SERIAL PRIMARY KEY, day TEXT, created_at TEXT, kind TEXT, content TEXT)")
     except Exception:  # noqa: BLE001

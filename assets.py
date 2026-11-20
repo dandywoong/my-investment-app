@@ -118,18 +118,36 @@ def fx_advice(get_conn, fx, cma_avail, spread):
 
 
 def _render_ledger_delete(get_conn, df, kp):
-    """잘못 입력했거나 테스트로 넣은 줄을 골라 지운다. 잔액은 남은 줄의 합계로 자동 다시 계산된다."""
-    st.markdown("**지울 줄 고르기** (왼쪽 '삭제' 칸에 체크 → 아래 확인 → 삭제 버튼)")
-    ed = pd.DataFrame({"삭제": False, "번호": df["id"].astype(int), "날짜": df["event_date"].astype(str).str[:10], "내용": df["kind"].map(lambda k: fxmod.KINDS.get(k, k)),
-                       "원화 증감": pd.to_numeric(df["krw_delta"], errors="coerce").round(0), "달러 증감($)": pd.to_numeric(df["usd_delta"], errors="coerce").round(2),
-                       "환율": pd.to_numeric(df["rate"], errors="coerce").round(1), "메모": df["memo"]})
-    out = st.data_editor(ed, hide_index=True, use_container_width=True, key=kp + "led_ed", disabled=[c for c in ed.columns if c != "삭제"],
-                         column_config={"삭제": st.column_config.CheckboxColumn("삭제", default=False)})
+    """줄마다 수정·삭제. 잔액은 남은 줄의 합계로 자동 다시 계산된다."""
+    st.markdown("**고치거나 지울 줄** — 날짜·금액·환율·메모 칸을 직접 고치고 '수정 저장', 지울 줄은 '삭제'에 체크")
+    st.caption("부호 규칙: 입금은 원화 +, 환전은 원화 −(쓴 돈)와 달러 +(받은 돈), 미국 매수 체결은 달러 −, 국내 매수 체결은 원화 −. 환전 줄은 원화나 환율만 고쳐도 달러가 자동으로 다시 계산됩니다.")
+    base = pd.DataFrame({"삭제": False, "번호": df["id"].astype(int), "날짜": df["event_date"].astype(str).str[:10], "내용": df["kind"].map(lambda k: fxmod.KINDS.get(k, k)),
+                         "원화 증감": pd.to_numeric(df["krw_delta"], errors="coerce").round(0), "달러 증감($)": pd.to_numeric(df["usd_delta"], errors="coerce").round(2),
+                         "환율": pd.to_numeric(df["rate"], errors="coerce").round(2), "메모": df["memo"].fillna("")})
+    kinds = dict(zip(df["id"].astype(int), df["kind"]))
+    out = st.data_editor(base, hide_index=True, use_container_width=True, key=kp + "led_ed", disabled=["번호", "내용"],
+                         column_config={"삭제": st.column_config.CheckboxColumn("삭제", default=False), "원화 증감": st.column_config.NumberColumn(format="%.0f"),
+                                        "달러 증감($)": st.column_config.NumberColumn(format="%.2f"), "환율": st.column_config.NumberColumn(format="%.2f")})
+    edits = []
+    for k in range(len(base)):
+        a, b = base.iloc[k], out.iloc[k]
+        if bool(b["삭제"]):
+            continue
+        if any((str(a[c]) != str(b[c])) and not (pd.isna(a[c]) and pd.isna(b[c])) for c in ("날짜", "원화 증감", "달러 증감($)", "환율", "메모")):
+            krw, usd, rate = float(b["원화 증감"] or 0), float(b["달러 증감($)"] or 0), (None if pd.isna(b["환율"]) else float(b["환율"]))
+            if kinds.get(int(b["번호"])) == "fx_done" and rate and rate > 0 and (krw != a["원화 증감"] or rate != a["환율"]) and usd == a["달러 증감($)"]:
+                usd = round(abs(krw) / rate, 2)  # 환전 줄: 원화나 환율을 고치면 달러를 다시 계산
+            edits.append((int(b["번호"]), str(b["날짜"])[:10], krw, usd, rate, str(b["메모"] or "")))
+    if edits and st.button("수정 저장 ({}줄)".format(len(edits)), key=kp + "led_save", type="primary"):
+        for e_ in edits:
+            ai_agent._run(get_conn, "UPDATE fx_events SET event_date=%s, krw_delta=%s, usd_delta=%s, rate=%s, memo=%s WHERE id=%s", (e_[1], e_[2], e_[3], e_[4], e_[5], e_[0]))
+        st.session_state["_asset_flash"] = "{}줄을 수정했습니다. 잔액이 다시 계산되었습니다.".format(len(edits))
+        st.rerun()
     pick = out[out["삭제"] == True]  # noqa: E712
     n = len(pick)
     if n:
         d_k, d_u = float(pick["원화 증감"].sum()), float(pick["달러 증감($)"].sum())
-        st.warning("{}줄을 지우면 CMA 원화가 {:+,.0f}원, 달러 예수금이 {:+.2f}$ 만큼 바뀝니다(지운 줄의 반대). 매매와 연결된 줄(매수·매도 체결)을 지워도 보유 수량·평단은 자동으로 되돌아가지 않습니다.".format(n, -d_k, -d_u))
+        st.warning("{}줄을 지우면 CMA 원화가 {:+,.0f}원, 달러 예수금이 {:+.2f}$ 만큼 바뀝니다(지운 줄의 반대). 매매와 연결된 줄(매수·매도 체결)을 고치거나 지워도 보유 수량·평단은 자동으로 되돌아가지 않습니다(보유는 내 포트폴리오 탭에서 따로 수정).".format(n, -d_k, -d_u))
         ok = st.checkbox("위 내용을 확인했고 {}줄을 삭제합니다".format(n), key=kp + "led_ok")
         if st.button("선택한 줄 삭제", key=kp + "led_del", disabled=not ok):
             for i_ in pick["번호"].tolist():
@@ -236,7 +254,7 @@ def render_money(get_conn, fx, c, kp="as_", adjust=True):
                     _ins(get_conn, date.today(), "adjust", wk - cma, wu - usd, None, "잔액 맞추기")
                     st.session_state["_asset_flash"] = "잔액을 CMA {:,.0f}원 · ${:,.2f}로 맞췄습니다.".format(wk, wu)
                     st.rerun()
-    with st.expander("돈 기록 내역 · 삭제 (원장 — 최근 60건)"):
+    with st.expander("돈 기록 내역 · 수정 · 삭제 (원장 — 최근 60건)"):
         df = ledger_df(get_conn, 60)
         if df is None or df.empty:
             st.caption("아직 기록이 없습니다.")
