@@ -339,10 +339,15 @@ def _section_plan(get_conn, items, fx, cfg_pk, hub, sid, status, strat, created,
         st.write("**시장 판단** — " + str(mstr.get("market_view") or al.get("market_view")))
     pl_ = None
     try:
+        _p0 = strat.get("_pool") or {}
+        _cma_now, _usd_now = fxmod.balances(get_conn)[:2]
+        if _p0 and (abs(_cma_now - float(_p0.get("cma_krw", _cma_now))) > 1 or abs(_usd_now - float(_p0.get("usd_cash_usd", _usd_now))) > 0.01):
+            st.warning("이 계획은 잔액이 바뀌기 전에 만든 것입니다(계획 당시 CMA {:,.0f}원·${:,.2f} → 지금 CMA {:,.0f}원·${:,.2f}). 숫자가 어긋나 보이면 '계획 받기'를 다시 눌러 새로 받으세요.".format(
+                float(_p0.get("cma_krw", 0)), float(_p0.get("usd_cash_usd", 0)), _cma_now, _usd_now))
         if dep > 0 and fx:
             pool_ = strat.get("_pool") or {}
             gap_ = max(0.0, float(cfg_pk.get("goal") or 0) - float(cfg_pk.get("invested") or 0))
-            pl_ = fxmod.plan(al, fx, float(pool_.get("cma_available_krw", 0)), float(pool_.get("usd_cash_usd", 0)), float(pool_.get("fx_spread_pct", 0.25)), fxmod.fx_view(), strat.get("_ai_fx"), gap_)
+            pl_ = fxmod.plan(al, fx, float(pool_.get("cma_available_krw", 0)), float(pool_.get("usd_cash_usd", 0)), float(pool_.get("fx_spread_pct", 0.25)), fxmod.fx_view(), strat.get("_ai_fx"), 0)
             fxmod.render_plan(get_conn, pl_, dep, "p%s" % sid, with_form=False)
         elif dep <= 0:
             st.info("배분할 수 있는 돈이 없습니다(CMA·달러 예수금 0원). 위 '내 돈'에서 잔액을 맞추거나 입금액을 넣고 다시 계획을 받으세요.")

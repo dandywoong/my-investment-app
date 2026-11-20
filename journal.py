@@ -137,6 +137,27 @@ def render_entry(get_conn, choices, apply_trade, kp="te_"):
         with st.expander("최근 매매 기록 {}건".format(len(df))):
             show = df[["trade_date", "name", "side", "qty", "price", "currency", "reason", "followed", "source"]].rename(columns={"trade_date": "날짜", "name": "종목", "side": "구분", "qty": "수량", "price": "단가", "currency": "통화", "reason": "이유", "followed": "계획 대비", "source": "입력"})
             st.dataframe(show, use_container_width=True, hide_index=True)
+    render_delete(get_conn, kp)
+
+
+def render_delete(get_conn, kp="te_"):
+    """잘못 기록한 매매 일지 줄 삭제(일지·복기에서만 빠진다)."""
+    df = load(get_conn, 30)
+    if df is None or not len(df):
+        return
+    with st.expander("매매 기록 삭제 (잘못 입력했거나 테스트로 넣은 줄)"):
+        ed = pd.DataFrame({"삭제": False, "번호": df["id"].astype(int), "날짜": df["trade_date"].astype(str).str[:10], "종목": df["name"], "구분": df["side"], "수량": df["qty"], "단가": df["price"], "이유": df["reason"]})
+        out = st.data_editor(ed, hide_index=True, use_container_width=True, key=kp + "jd_ed", disabled=[c for c in ed.columns if c != "삭제"],
+                             column_config={"삭제": st.column_config.CheckboxColumn("삭제", default=False)})
+        pick = out[out["삭제"] == True]  # noqa: E712
+        if len(pick):
+            st.warning("일지(복기 자료)에서만 지워집니다. 이미 반영된 보유 수량·평단·예수금은 자동으로 되돌아가지 않으니, 필요하면 '미국주 직접 고치기'나 '잔액 맞추기', 돈 기록 삭제로 바로잡으세요.")
+            ok = st.checkbox("{}줄을 삭제합니다".format(len(pick)), key=kp + "jd_ok")
+            if st.button("선택한 매매 기록 삭제", key=kp + "jd_del", disabled=not ok):
+                for i_ in pick["번호"].tolist():
+                    ai_agent._run(get_conn, "DELETE FROM trade_journal WHERE id=%s", (int(i_),))
+                st.session_state["_trade_flash"] = "{}줄을 삭제했습니다.".format(len(pick))
+                st.rerun()
 
 
 def summarize(get_conn, get_prices, min_days=10):

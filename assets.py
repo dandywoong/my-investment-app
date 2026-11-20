@@ -95,6 +95,7 @@ def fx_advice(get_conn, fx, cma_avail, spread):
           "recent_archive": S.load_archive(get_conn, 10)}
     prompt = ("당신은 장기 투자자의 환전 담당 보조입니다. 오늘 원화→달러 환전 타이밍을 판단합니다. 환율은 정확히 예측할 수 없으므로 맞히려 하지 말고, 지금 위치·추세·금리/달러 흐름·수급 뉴스·환전 비용(스프레드)을 근거로 "
               "'오늘 CMA 원화 중 얼마를 환전하면 합리적인가'를 정하세요. 한 번에 몰아서 하지 않고 분할을 기본으로 하며, 위치가 불리하거나 근거가 약하면 0원(보류)도 정답입니다. "
+              "[방향 규칙] 원/달러 환율이 오르면 달러가 비싸지는 것(환전 불리), 내리면 달러가 싸지는 것(환전 유리)입니다. 환율 하락 압력(수출업체 네고 물량, 연준 완화 기대, 달러 약세)은 '기다리면 더 싸질 수 있다'는 뜻이므로 환전을 미루거나 나누는 근거이고, 상승 압력(달러 강세, 금리 상승)은 '지금이 더 싸거나 앞으로 비싸질 수 있다'는 뜻이므로 지금 환전하는 근거입니다. 근거와 반대 근거의 방향을 뒤집어 쓰지 마세요. "
               "금액은 cma_krw_available_to_exchange 이하의 1만원 단위 정수. 승률·확률·수익 보장 표현 금지, 반대 근거를 반드시 쓰고, 헤드라인에 없는 사실은 추측하지 마세요. 이미 발표된 일은 결과로 쓰세요.\n"
               "자료(JSON):\n" + json.dumps(pk, ensure_ascii=False, default=str)[:14000] +
               '\n출력 JSON만: {"lean":"환전 유리|분할 환전|보류|판단 불가","recommend_krw":0,"split":[{"when":"오늘/며칠 뒤/조건 충족 시","krw":0}],"reason":"","counter":"","watch":"판단이 바뀌는 조건","confidence":"낮음|보통|높음","evidence":[{"name":"","date":""}]}')
@@ -114,6 +115,34 @@ def fx_advice(get_conn, fx, cma_avail, spread):
     except Exception:  # noqa: BLE001
         pass
     return res, None
+
+
+def _render_ledger_delete(get_conn, df, kp):
+    """잘못 입력했거나 테스트로 넣은 줄을 골라 지운다. 잔액은 남은 줄의 합계로 자동 다시 계산된다."""
+    st.markdown("**지울 줄 고르기** (왼쪽 '삭제' 칸에 체크 → 아래 확인 → 삭제 버튼)")
+    ed = pd.DataFrame({"삭제": False, "번호": df["id"].astype(int), "날짜": df["event_date"].astype(str).str[:10], "내용": df["kind"].map(lambda k: fxmod.KINDS.get(k, k)),
+                       "원화 증감": pd.to_numeric(df["krw_delta"], errors="coerce").round(0), "달러 증감($)": pd.to_numeric(df["usd_delta"], errors="coerce").round(2),
+                       "환율": pd.to_numeric(df["rate"], errors="coerce").round(1), "메모": df["memo"]})
+    out = st.data_editor(ed, hide_index=True, use_container_width=True, key=kp + "led_ed", disabled=[c for c in ed.columns if c != "삭제"],
+                         column_config={"삭제": st.column_config.CheckboxColumn("삭제", default=False)})
+    pick = out[out["삭제"] == True]  # noqa: E712
+    n = len(pick)
+    if n:
+        d_k, d_u = float(pick["원화 증감"].sum()), float(pick["달러 증감($)"].sum())
+        st.warning("{}줄을 지우면 CMA 원화가 {:+,.0f}원, 달러 예수금이 {:+.2f}$ 만큼 바뀝니다(지운 줄의 반대). 매매와 연결된 줄(매수·매도 체결)을 지워도 보유 수량·평단은 자동으로 되돌아가지 않습니다.".format(n, -d_k, -d_u))
+        ok = st.checkbox("위 내용을 확인했고 {}줄을 삭제합니다".format(n), key=kp + "led_ok")
+        if st.button("선택한 줄 삭제", key=kp + "led_del", disabled=not ok):
+            for i_ in pick["번호"].tolist():
+                ai_agent._run(get_conn, "DELETE FROM fx_events WHERE id=%s", (int(i_),))
+            st.session_state["_asset_flash"] = "{}줄을 삭제했습니다. 잔액이 다시 계산되었습니다.".format(n)
+            st.rerun()
+    with st.expander("모두 지우고 처음부터 (돈 기록 전체 삭제)"):
+        st.caption("돈 기록(입금·환전·매매 예수금 증감)을 전부 지웁니다. 보유 종목 수량·평단은 그대로입니다. 지운 뒤 '잔액 맞추기'로 실제 잔액을 넣으세요.")
+        ok2 = st.checkbox("전부 지우겠습니다", key=kp + "led_all_ok")
+        if st.button("돈 기록 전체 삭제", key=kp + "led_all", disabled=not ok2):
+            ai_agent._run(get_conn, "DELETE FROM fx_events")
+            st.session_state["_asset_flash"] = "돈 기록을 모두 지웠습니다. 잔액 맞추기로 실제 잔액을 넣어 주세요."
+            st.rerun()
 
 
 def render_money(get_conn, fx, c, kp="as_", adjust=True):
@@ -163,6 +192,14 @@ def render_money(get_conn, fx, c, kp="as_", adjust=True):
     adv = st.session_state.get("_fx_advice_ui")
     if adv:
         st.info("**환전 판단: {}** — 오늘 권장 {:,.0f}원 (신뢰도 {}) · 판단 시각 {}".format(adv.get("lean", "-"), adv.get("recommend_krw", 0), adv.get("confidence", "-"), str(adv.get("_at", ""))[:16].replace("T", " ") + " UTC"))
+        _v = fxmod.fx_view()
+        if _v:
+            _ai_buy = adv.get("recommend_krw", 0) > 0
+            _rule_ok = _v.get("level") in ("양호", "매우 양호")
+            _rule_bad = _v.get("level") in ("낮음", "매우 낮음")
+            st.caption("앱 규칙 점검(AI와 별개의 기계적 기준): 환율 등급 '{}' — {}".format(_v.get("level"), " / ".join(_v.get("notes") or [])))
+            if (_ai_buy and _rule_bad) or ((not _ai_buy) and _rule_ok):
+                st.warning("AI 판단과 앱 규칙 등급이 서로 다른 방향입니다. 한쪽만 믿지 말고 근거를 비교해 보세요.")
         st.write("**근거** — " + str(adv.get("reason", "")))
         st.write("**반대 근거** — " + str(adv.get("counter", "")))
         for s_ in adv.get("split") or []:
@@ -199,14 +236,12 @@ def render_money(get_conn, fx, c, kp="as_", adjust=True):
                     _ins(get_conn, date.today(), "adjust", wk - cma, wu - usd, None, "잔액 맞추기")
                     st.session_state["_asset_flash"] = "잔액을 CMA {:,.0f}원 · ${:,.2f}로 맞췄습니다.".format(wk, wu)
                     st.rerun()
-    with st.expander("돈 기록 내역 (원장 — 최근 30건)"):
-        df = ledger_df(get_conn, 30)
+    with st.expander("돈 기록 내역 · 삭제 (원장 — 최근 60건)"):
+        df = ledger_df(get_conn, 60)
         if df is None or df.empty:
             st.caption("아직 기록이 없습니다.")
         else:
-            show = pd.DataFrame({"날짜": df["event_date"].astype(str).str[:10], "내용": df["kind"].map(lambda k: fxmod.KINDS.get(k, k)), "원화 증감": pd.to_numeric(df["krw_delta"], errors="coerce").round(0),
-                                 "달러 증감($)": pd.to_numeric(df["usd_delta"], errors="coerce").round(2), "환율": pd.to_numeric(df["rate"], errors="coerce").round(1), "메모": df["memo"]})
-            st.dataframe(show, use_container_width=True, hide_index=True)
+            _render_ledger_delete(get_conn, df, kp)
             st.caption("잔액 = 이 줄들의 합계입니다. 입금은 CMA 원화, 환전은 원화 감소+달러 증가, 매매는 해당 통화 증감으로 쌓입니다.")
 
 

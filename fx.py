@@ -147,6 +147,8 @@ def plan(al, rate, cma_avail, usd_cash, spread_pct, view=None, ai_fx=None, goal_
     need_usd = us_usd - use_usd_cash
     sp = spread_pct / 100.0
     ex_need = need_usd * rate / (1 - sp) if need_usd > 0 else 0.0
+    if 0 < ex_need < 3000:  # 몇백 원 부족하다고 환전하지 않는다: 매수액을 보유 달러에 맞춰 줄인다
+        ex_need = 0.0
     ex_need = min(ex_need, max(0.0, cma_avail - kr))
     extra, why = 0.0, ""
     if view and not view.get("stale") and goal_gap_krw > 0:
@@ -187,8 +189,10 @@ def render_plan(get_conn, p, pool, tag="plan", with_form=True):
         lines.append("부족한 달러를 채우려고 {:,.0f}원 환전(스프레드 반영)".format(p["exchange_for_buy_krw"]))
     if p["exchange_extra_krw"] > 0:
         lines.append("환율 위치가 '{}'라 목표 달성에 필요한 달러를 미리 쌓으려고 {:,.0f}원을 추가 환전 — {}".format(p["fx_level"], p["exchange_extra_krw"], p["extra_why"]))
-    elif p["fx_level"]:
-        lines.append("환율 위치 '{}' — 오늘 필요한 만큼만 환전합니다(추가 환전 없음).".format(p["fx_level"]))
+    else:
+        adv_ = st.session_state.get("_fx_advice_ui")
+        lines.append("이 계획의 환전은 '오늘 매수에 달러가 모자랄 때'만 안내합니다. 미리 달러를 쌓을지는 위 '내 돈 ②환전 판단'에서 따로 정합니다{}.".format(
+            " (가장 최근 환전 판단: {} / 권장 {:,.0f}원)".format(adv_.get("lean", "-"), adv_.get("recommend_krw", 0)) if adv_ else ""))
     if p.get("us_scale", 1.0) < 0.9999:
         lines.append("환전 비용(스프레드) 때문에 환전으로 받는 달러가 계획보다 적어 미국 매수액을 {:.2f}%로 줄였습니다(매수 ≤ 보유 달러 + 환전 순수령 달러 검사).".format(p["us_scale"] * 100))
     if p["exchange_total_krw"]:
