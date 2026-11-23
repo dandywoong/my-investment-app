@@ -1510,17 +1510,16 @@ def render_agent_page(get_conn, holdings, get_prices, load_flows, get_fundamenta
     items, fx_, fx_use, cfg_, cash_df, cash_map, risk, stress_d, moods = (ctx[k] for k in ("items", "fx_", "fx_use", "cfg_", "cash_df", "cash_map", "risk", "stress_d", "moods"))
     hub_ = _hub_from(ctx)
     conf_ = None
+    with st.expander("시장 상황과 내 위험 — 스트레스 지수 · 종목/자산 비중 그래프", expanded=True):
+        try:
+            market.render_overview(items, risk, stress_d.get("한국"), stress_d.get("미국"), fx_, get_conn, cfg_, _save_cfg, get_prices)
+        except Exception as e:  # noqa: BLE001
+            st.error("시장·위험 그래프를 표시하지 못했습니다: " + str(e)[:150])
     try:
         conf_ = agent.render(get_conn, items, risk, stress_d, fx_use, cfg_, cash_map, _save_cfg, _load_cfg, hub_, get_prices, _apply_trade)
     except Exception as e:  # noqa: BLE001
         st.error("AI 투자 에이전트를 표시하지 못했습니다: " + str(e)[:150])
     st.divider()
-    with st.expander("시장·집중 위험 수치 (앱이 계산한 자료 — 에이전트도 같은 자료를 읽습니다)"):
-        # ---- 시장 상황과 내 위험 (맨 위) ----
-        try:
-            market.render_overview(items, risk, stress_d.get("한국"), stress_d.get("미국"), fx_, get_conn, cfg_, _save_cfg, get_prices)
-        except Exception as e:  # noqa: BLE001
-            st.caption("시장·위험 요약을 표시하지 못했습니다: " + str(e)[:100])
     P_ = {}
     with st.expander("규칙 기반 계산 (참고·수동 — 에이전트 제안과 비교용)"):
         st.caption("앱의 점수 규칙만으로 계산한 배분입니다. AI 전략을 확정하면 그 국내·미국 금액이 여기에 자동 입력됩니다.")

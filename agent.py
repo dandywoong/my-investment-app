@@ -272,6 +272,11 @@ def _base_packet(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, 
         pass
     packet["archive"] = {"note": "앱이 접속할 때마다 쌓은 과거 기록(날짜별 지수 숫자 시작/마지막, 브리핑·계획 요약). 오늘 자료와 비교해 흐름을 보되 과거 문장의 사실을 현재 사실로 쓰지 마세요.", "days": S.load_archive(get_conn)}
     packet["cash_pool"] = pool_info
+    try:
+        import guardrail
+        packet["my_guardrails"] = guardrail.packet(get_conn, guardrail.load(c), items, fx, c)
+    except Exception:  # noqa: BLE001
+        pass
     _bt, _bf = S.load_brief(get_conn)
     if _bf:
         packet["morning_briefing"] = {"written_at_utc": _bt, "content": {k: _bf.get(k) for k in ("headline", "market", "fx", "companies", "kr_hold_check", "us_ranking", "risks", "unknowns")}}
@@ -577,8 +582,50 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
     except Exception:  # noqa: BLE001
         pass
     st.markdown("### AI 투자 에이전트")
-    st.caption("접속하면 AI가 먼저 시장·뉴스·내 보유를 조사해 브리핑을 만들고, 입금액을 넣으면 그 브리핑을 근거로 환전·투자·남길 돈까지 계획합니다. 주문은 내가 하고, 체결 내용을 입력하면 모든 기록이 한 번에 저장됩니다. "
-               "AI에는 종목명·비중·수량·평단·평가금액·현금·정책 메모를 보냅니다(계좌번호·로그인·이름은 보내지 않음). 무료 API 입력은 구글 서비스 개선에 쓰일 수 있습니다.")
+    flash_ = st.session_state.pop("_plan_flash", None)
+    if flash_:
+        st.success(flash_)
+    flash2_ = st.session_state.pop("_fill_flash", None)
+    if flash2_:
+        st.success(flash2_)
+    try:  # 맨 위 한 줄: 내 전략 약속과 현재 상태
+        import guardrail
+        _g = guardrail.load(c)
+        _m = guardrail.metrics(items, fx, c)
+        guardrail.summary_line(_g, _m, guardrail.evaluate(_g, _m, guardrail._vix()))
+    except Exception:  # noqa: BLE001
+        pass
+    sid, status, strat, created = S.load_latest(get_conn)
+    t_today, t_guard, t_money, t_chat, t_set = st.tabs(["오늘 브리핑", "전략 점검", "돈·계획·매매", "대화", "설정·기억"], on_change="rerun")
+    if t_today.open:
+        _section_brief(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, get_prices)
+    if t_guard.open:
+        try:
+            import guardrail
+            guardrail.render(get_conn, items, fx, c, save_cfg)
+        except Exception as e:  # noqa: BLE001
+            st.error("전략 점검 화면을 표시하지 못했습니다: " + str(e)[:150])
+    if t_money.open:
+        _section_money(get_conn, fx, c, save_cfg)
+        _section_plan_form(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, get_prices)
+        if not strat:
+            st.info("아직 계획이 없습니다. 위에서 '계획 받기'를 누르세요.")
+        else:
+            pl_ = _section_plan(get_conn, items, fx, cfg_pk, hub, sid, status, strat, created, c)
+            if status == "confirmed" and apply_trade is not None:
+                _section_fill(get_conn, items, fx, sid, strat, pl_, apply_trade)
+            elif status == "filled":
+                st.success("이 계획의 체결이 반영되었습니다. 성과는 며칠~몇 주 뒤 '기록·복기' 탭에서 시장과 비교해 볼 수 있고, 다음 계획 때 AI가 그 결과를 읽습니다.")
+        _section_record(get_conn, items, fx, apply_trade)
+    if t_chat.open:
+        _section_chat(get_conn, items, risk, stress, fx, cfg_pk, int((strat or {}).get("_deposit", 0) or 0), cash_map, c, strat or {}, get_prices)
+    if t_set.open:
+        _section_settings(get_conn, c, save_cfg)
+    return strat if (strat and status == "confirmed") else None
+
+
+def _section_settings(get_conn, c, save_cfg):
+    """자주 안 보는 것들(정책·조사 대상·장기 기억)을 한곳에 모은다."""
     policy = c.get("policy_text") or S.DEFAULT_POLICY
     with st.expander("내 투자 정책 (큰 방향만 — 비율은 AI가 정함)"):
         with st.form("policy_text_form"):
@@ -591,27 +638,18 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
                 save_cfg(get_conn, "policy_text", S.DEFAULT_POLICY)
                 st.rerun()
     _bt0, _b0 = S.load_brief(get_conn)
-    with st.expander("오늘 AI가 고른 주목 인물·기관 (뉴스를 보고 매번 새로 선정)"):
+    with st.expander("AI가 고른 주목 인물·기관 / 기본 조사 대상"):
         _f0 = (_b0 or {}).get("_focus") or []
-        if _f0:
-            for f_ in _f0:
-                st.markdown("**{}** — {}".format(f_.get("name", ""), f_.get("why", "")))
-            st.caption("선정 시각: " + _kst(_bt0) + ". 이 선정에 따라 후속 검색어도 자동으로 만들어 추가 조사합니다.")
-        else:
+        for f_ in _f0:
+            st.markdown("**{}** — {}".format(f_.get("name", ""), f_.get("why", "")))
+        if not _f0:
             st.caption("아직 없습니다(브리핑을 새로 만들면 채워집니다).")
-    with st.expander("기본 조사 대상 목록 (고정 출발점 — 위 자동 선정이 매번 보완)"):
+        st.caption("고정 출발점:")
         for k_, v_ in S.SOURCES.items():
             st.markdown("**{}** — {}".format(k_, ", ".join(v_)))
-    pf_ = st.session_state.pop("_plan_flash", None)
-    if pf_:
-        st.success(pf_)
-    flash = st.session_state.pop("_fill_flash", None)
-    if flash:
-        st.success(flash)
-    _section_brief(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, get_prices)
     with st.expander("에이전트 아카이브 (날마다 쌓이는 장기 기억)"):
         _arc = S.load_archive(get_conn)
-        st.caption("접속할 때마다 지수·환율·금리 숫자와 브리핑·계획의 핵심을 저장합니다. AI가 바빠도 숫자 기록은 계속 쌓이고, 계획·브리핑·대화 때 에이전트가 이 기록을 읽습니다. 지금 {}일치.".format(len(_arc)))
+        st.caption("접속할 때마다 지수·환율·금리 숫자와 브리핑·계획·점검 기록의 핵심을 저장합니다. 계획·브리핑·대화 때 에이전트가 이 기록을 읽습니다. 지금 {}일치.".format(len(_arc)))
         _rows = []
         for d_ in reversed(_arc):
             n_ = d_.get("numbers_last") or {}
@@ -620,20 +658,3 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
                           "VIX": (n_.get("VIX(공포지수)") or {}).get("last"), "그날의 요약": v_.get("headline"), "분위기": v_.get("mood")})
         if _rows:
             st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
-    st.divider()
-    st.caption("↑ 위는 시장·기업 자료(접속하면 자동 갱신), ↓ 아래는 내 돈을 넣고 배분하는 곳입니다. 배분은 위 브리핑을 근거로 합니다.")
-    _section_money(get_conn, fx, c, save_cfg)
-    sid, status, strat, created = S.load_latest(get_conn)
-    _section_plan_form(get_conn, items, risk, stress, fx, cfg_pk, cash_map, c, strat, get_prices)
-    if not strat:
-        st.info("아직 계획이 없습니다. 위에서 '계획 받기'를 누르세요.")
-        _section_record(get_conn, items, fx, apply_trade)
-        return None
-    pl_ = _section_plan(get_conn, items, fx, cfg_pk, hub, sid, status, strat, created, c)
-    if status == "confirmed" and apply_trade is not None:
-        _section_fill(get_conn, items, fx, sid, strat, pl_, apply_trade)
-    elif status == "filled":
-        st.success("이 계획의 체결이 반영되었습니다. 성과는 며칠~몇 주 뒤 아래 '기록·성적표'에서 시장과 비교해 볼 수 있고, 다음 계획 때 AI가 그 결과를 읽습니다.")
-    _section_record(get_conn, items, fx, apply_trade)
-    _section_chat(get_conn, items, risk, stress, fx, cfg_pk, int(strat.get("_deposit", 0) or 0), cash_map, c, strat, get_prices)
-    return strat if status == "confirmed" else None
