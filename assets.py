@@ -117,42 +117,89 @@ def fx_advice(get_conn, fx, cma_avail, spread):
     return res, None
 
 
+def _norm(kind, krw, usd, rate):
+    """종류에 맞게 부호를 바로잡고, 빠진 달러·환율은 계산해 채운다(입력하는 사람은 양수로 편하게 적어도 된다)."""
+    krw, usd = float(krw or 0), float(usd or 0)
+    rate = None if (rate is None or pd.isna(rate) or float(rate) <= 0) else float(rate)
+    if kind == "deposit":
+        krw, usd = abs(krw), 0.0
+    elif kind == "fx_done":
+        krw, usd = -abs(krw), abs(usd)
+        if usd == 0 and rate:
+            usd = round(abs(krw) / rate, 2)
+        if rate is None and usd:
+            rate = abs(krw) / usd
+    elif kind == "usd_buy":
+        usd, krw = -abs(usd), 0.0
+    elif kind == "usd_in":
+        usd, krw = abs(usd), 0.0
+    elif kind == "kr_buy":
+        krw, usd = -abs(krw), 0.0
+    elif kind == "kr_in":
+        krw, usd = abs(krw), 0.0
+    return krw, usd, rate
+
+
 def _render_ledger_delete(get_conn, df, kp):
-    """줄마다 수정·삭제. 잔액은 남은 줄의 합계로 자동 다시 계산된다."""
-    st.markdown("**고치거나 지울 줄** — 날짜·금액·환율·메모 칸을 직접 고치고 '수정 저장', 지울 줄은 '삭제'에 체크")
-    st.caption("부호 규칙: 입금은 원화 +, 환전은 원화 −(쓴 돈)와 달러 +(받은 돈), 미국 매수 체결은 달러 −, 국내 매수 체결은 원화 −. 환전 줄은 원화나 환율만 고쳐도 달러가 자동으로 다시 계산됩니다.")
-    base = pd.DataFrame({"삭제": False, "번호": df["id"].astype(int), "날짜": df["event_date"].astype(str).str[:10], "내용": df["kind"].map(lambda k: fxmod.KINDS.get(k, k)),
-                         "원화 증감": pd.to_numeric(df["krw_delta"], errors="coerce").round(0), "달러 증감($)": pd.to_numeric(df["usd_delta"], errors="coerce").round(2),
-                         "환율": pd.to_numeric(df["rate"], errors="coerce").round(2), "메모": df["memo"].fillna("")})
-    kinds = dict(zip(df["id"].astype(int), df["kind"]))
-    out = st.data_editor(base, hide_index=True, use_container_width=True, key=kp + "led_ed", disabled=["번호", "내용"],
-                         column_config={"삭제": st.column_config.CheckboxColumn("삭제", default=False), "원화 증감": st.column_config.NumberColumn(format="%.0f"),
-                                        "달러 증감($)": st.column_config.NumberColumn(format="%.2f"), "환율": st.column_config.NumberColumn(format="%.2f")})
-    edits = []
-    for k in range(len(base)):
-        a, b = base.iloc[k], out.iloc[k]
-        if bool(b["삭제"]):
+    """돈 장부를 엑셀처럼: 칸을 눌러 고치고, 맨 아래 빈 줄(또는 표 위 +)로 새 줄을 추가하고, '삭제'에 체크해 지운다. 저장은 한 번에."""
+    labels = list(fxmod.KINDS.values())
+    k2l, l2k = fxmod.KINDS, {v: k for k, v in fxmod.KINDS.items()}
+    st.markdown("**돈 기록 장부 — 표에서 바로 입력 · 수정 · 삭제**")
+    st.caption("① 고치려면 칸을 눌러 값을 바꾸고 ② 새로 넣으려면 표 맨 아래 빈 줄에 날짜·종류·금액을 적고(표 위 '+'로도 가능) ③ 지우려면 '삭제'에 체크한 뒤 ④ 아래 '장부 저장'을 한 번 누르세요. "
+               "금액은 양수로 적어도 종류에 맞게 부호가 자동으로 정리됩니다(입금 +원화 / 환전 −원화·+달러 / 미국 매수 −달러). 환전은 원화와 환율만 적으면 달러가 자동 계산됩니다. 매매 체결 줄을 고쳐도 보유 수량·평단은 자동으로 바뀌지 않습니다.")
+    base = pd.DataFrame({"삭제": False, "번호": df["id"].astype(int), "날짜": pd.to_datetime(df["event_date"].astype(str).str[:10], errors="coerce").dt.date,
+                         "종류": df["kind"].map(lambda k: k2l.get(k, k)), "원화 증감": pd.to_numeric(df["krw_delta"], errors="coerce").round(0),
+                         "달러 증감($)": pd.to_numeric(df["usd_delta"], errors="coerce").round(2), "환율": pd.to_numeric(df["rate"], errors="coerce").round(2), "메모": df["memo"].fillna("")})
+    out = st.data_editor(base, hide_index=True, use_container_width=True, num_rows="dynamic", key=kp + "led_ed{}".format(st.session_state.get("_led_v", 0)), disabled=["번호"],
+                         column_config={"삭제": st.column_config.CheckboxColumn("삭제", default=False), "날짜": st.column_config.DateColumn("날짜", format="YYYY-MM-DD"),
+                                        "종류": st.column_config.SelectboxColumn("종류", options=labels, default=labels[0]),
+                                        "원화 증감": st.column_config.NumberColumn(format="%.0f"), "달러 증감($)": st.column_config.NumberColumn(format="%.2f"),
+                                        "환율": st.column_config.NumberColumn(format="%.2f")})
+    old = {int(r["번호"]): r for _, r in base.iterrows()}
+    seen, ins, upd, dele = set(), [], [], []
+    for _, r in out.iterrows():
+        rid = None if pd.isna(r.get("번호")) else int(r["번호"])
+        kind = l2k.get(str(r["종류"]), None)
+        if rid is None:  # 새 줄
+            if kind is None or (pd.isna(r["원화 증감"]) and pd.isna(r["달러 증감($)"])):
+                continue
+            if bool(r["삭제"]):
+                continue
+            d_ = r["날짜"] if not pd.isna(r["날짜"]) else date.today()
+            krw, usd, rate = _norm(kind, r["원화 증감"] if not pd.isna(r["원화 증감"]) else 0, r["달러 증감($)"] if not pd.isna(r["달러 증감($)"]) else 0, r["환율"])
+            ins.append((str(d_)[:10], kind, krw, usd, rate, str(r["메모"] or "")))
             continue
-        if any((str(a[c]) != str(b[c])) and not (pd.isna(a[c]) and pd.isna(b[c])) for c in ("날짜", "원화 증감", "달러 증감($)", "환율", "메모")):
-            krw, usd, rate = float(b["원화 증감"] or 0), float(b["달러 증감($)"] or 0), (None if pd.isna(b["환율"]) else float(b["환율"]))
-            if kinds.get(int(b["번호"])) == "fx_done" and rate and rate > 0 and (krw != a["원화 증감"] or rate != a["환율"]) and usd == a["달러 증감($)"]:
-                usd = round(abs(krw) / rate, 2)  # 환전 줄: 원화나 환율을 고치면 달러를 다시 계산
-            edits.append((int(b["번호"]), str(b["날짜"])[:10], krw, usd, rate, str(b["메모"] or "")))
-    if edits and st.button("수정 저장 ({}줄)".format(len(edits)), key=kp + "led_save", type="primary"):
-        for e_ in edits:
-            ai_agent._run(get_conn, "UPDATE fx_events SET event_date=%s, krw_delta=%s, usd_delta=%s, rate=%s, memo=%s WHERE id=%s", (e_[1], e_[2], e_[3], e_[4], e_[5], e_[0]))
-        st.session_state["_asset_flash"] = "{}줄을 수정했습니다. 잔액이 다시 계산되었습니다.".format(len(edits))
-        st.rerun()
-    pick = out[out["삭제"] == True]  # noqa: E712
-    n = len(pick)
+        seen.add(rid)
+        a = old.get(rid)
+        if bool(r["삭제"]):
+            dele.append(rid)
+            continue
+        if a is None or kind is None:
+            continue
+        if any(str(a[c]) != str(r[c]) and not (pd.isna(a[c]) and pd.isna(r[c])) for c in ("날짜", "종류", "원화 증감", "달러 증감($)", "환율", "메모")):
+            k0, u0, r0 = r["원화 증감"], r["달러 증감($)"], r["환율"]
+            if kind == "fx_done" and (pd.isna(k0) is False) and (str(a["원화 증감"]) != str(k0) or str(a["환율"]) != str(r0)) and str(a["달러 증감($)"]) == str(u0):
+                u0 = 0  # 원화나 환율만 고쳤으면 달러는 다시 계산
+            krw, usd, rate = _norm(kind, 0 if pd.isna(k0) else k0, 0 if pd.isna(u0) else u0, r0)
+            upd.append((str(r["날짜"] if not pd.isna(r["날짜"]) else date.today())[:10], kind, krw, usd, rate, str(r["메모"] or ""), rid))
+    dele += [i_ for i_ in old if i_ not in seen and i_ not in dele]  # 표에서 줄을 직접 지운 경우
+    n = len(ins) + len(upd) + len(dele)
     if n:
-        d_k, d_u = float(pick["원화 증감"].sum()), float(pick["달러 증감($)"].sum())
-        st.warning("{}줄을 지우면 CMA 원화가 {:+,.0f}원, 달러 예수금이 {:+.2f}$ 만큼 바뀝니다(지운 줄의 반대). 매매와 연결된 줄(매수·매도 체결)을 고치거나 지워도 보유 수량·평단은 자동으로 되돌아가지 않습니다(보유는 내 포트폴리오 탭에서 따로 수정).".format(n, -d_k, -d_u))
-        ok = st.checkbox("위 내용을 확인했고 {}줄을 삭제합니다".format(n), key=kp + "led_ok")
-        if st.button("선택한 줄 삭제", key=kp + "led_del", disabled=not ok):
-            for i_ in pick["번호"].tolist():
+        d_krw = sum(x[2] for x in ins) + sum(x[2] - float(old[x[6]]["원화 증감"] or 0) for x in upd) - sum(float(old[i_]["원화 증감"] or 0) for i_ in dele)
+        d_usd = sum(x[3] for x in ins) + sum(x[3] - float(old[x[6]]["달러 증감($)"] or 0) for x in upd) - sum(float(old[i_]["달러 증감($)"] or 0) for i_ in dele)
+        cma0, usd0 = fxmod.balances(get_conn)[:2]
+        st.info("저장하면: 추가 {}줄 · 수정 {}줄 · 삭제 {}줄 → CMA 원화 {:,.0f}원 → {:,.0f}원, 달러 ${:,.2f} → ${:,.2f}".format(len(ins), len(upd), len(dele), cma0, cma0 + d_krw, usd0, usd0 + d_usd))
+        if cma0 + d_krw < -0.5 or usd0 + d_usd < -0.005:
+            st.error("저장하면 잔액이 마이너스가 됩니다. 금액이나 부호를 확인하세요.")
+        if st.button("장부 저장", key=kp + "led_save", type="primary", disabled=(cma0 + d_krw < -0.5 or usd0 + d_usd < -0.005)):
+            for x in ins:
+                _ins(get_conn, date.fromisoformat(x[0]), x[1], x[2], x[3], x[4], x[5] or "직접 입력")
+            for x in upd:
+                ai_agent._run(get_conn, "UPDATE fx_events SET event_date=%s, kind=%s, krw_delta=%s, usd_delta=%s, rate=%s, memo=%s WHERE id=%s", x)
+            for i_ in dele:
                 ai_agent._run(get_conn, "DELETE FROM fx_events WHERE id=%s", (int(i_),))
-            st.session_state["_asset_flash"] = "{}줄을 삭제했습니다. 잔액이 다시 계산되었습니다.".format(n)
+            st.session_state["_asset_flash"] = "장부를 저장했습니다(추가 {} · 수정 {} · 삭제 {}). 잔액이 다시 계산되었습니다.".format(len(ins), len(upd), len(dele))
+            st.session_state["_led_v"] = st.session_state.get("_led_v", 0) + 1
             st.rerun()
     with st.expander("모두 지우고 처음부터 (돈 기록 전체 삭제)"):
         st.caption("돈 기록(입금·환전·매매 예수금 증감)을 전부 지웁니다. 보유 종목 수량·평단은 그대로입니다. 지운 뒤 '잔액 맞추기'로 실제 잔액을 넣으세요.")
@@ -254,7 +301,7 @@ def render_money(get_conn, fx, c, kp="as_", adjust=True):
                     _ins(get_conn, date.today(), "adjust", wk - cma, wu - usd, None, "잔액 맞추기")
                     st.session_state["_asset_flash"] = "잔액을 CMA {:,.0f}원 · ${:,.2f}로 맞췄습니다.".format(wk, wu)
                     st.rerun()
-    with st.expander("돈 기록 내역 · 수정 · 삭제 (원장 — 최근 60건)"):
+    with st.expander("돈 기록 장부 (바로 입력 · 수정 · 삭제 — 최근 60건)", expanded=True):
         df = ledger_df(get_conn, 60)
         if df is None or df.empty:
             st.caption("아직 기록이 없습니다.")

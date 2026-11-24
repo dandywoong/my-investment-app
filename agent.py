@@ -353,7 +353,6 @@ def _section_plan(get_conn, items, fx, cfg_pk, hub, sid, status, strat, created,
             pool_ = strat.get("_pool") or {}
             gap_ = max(0.0, float(cfg_pk.get("goal") or 0) - float(cfg_pk.get("invested") or 0))
             pl_ = fxmod.plan(al, fx, float(pool_.get("cma_available_krw", 0)), float(pool_.get("usd_cash_usd", 0)), float(pool_.get("fx_spread_pct", 0.25)), fxmod.fx_view(), strat.get("_ai_fx"), 0)
-            fxmod.render_plan(get_conn, pl_, dep, "p%s" % sid, with_form=False)
         elif dep <= 0:
             st.info("배분할 수 있는 돈이 없습니다(CMA·달러 예수금 0원). 위 '내 돈'에서 잔액을 맞추거나 입금액을 넣고 다시 계획을 받으세요.")
     except Exception as e:  # noqa: BLE001
@@ -361,10 +360,9 @@ def _section_plan(get_conn, items, fx, cfg_pk, hub, sid, status, strat, created,
     ex = S.execution_rows(strat, items, fx, (pl_ or {}).get("us_scale", 1.0))
     if ex:
         df = pd.DataFrame(ex)
-        main = [k for k in ("순위", "종목", "행동", "금액(원)", "금액(USD)", "수량", "현재가", "지정가 계획(국내)", "앱 규칙 판단(심리)", "근거") if k in df.columns]
-        st.dataframe(df[main], use_container_width=True, hide_index=True,
-                     column_config={"금액(원)": st.column_config.NumberColumn("금액(원)", format="%d"), "금액(USD)": st.column_config.NumberColumn("금액(USD)", format="$%.2f"),
-                                    "근거": st.column_config.TextColumn("근거", width="large")})
+        main = [k for k in ("순위", "종목", "행동", "현재가", "지정가 계획(국내)", "앱 규칙 판단(심리)", "근거") if k in df.columns]
+        st.caption("아래는 AI가 매긴 종목별 판단과 근거입니다. 실제 수량·금액은 아래 '4. 오늘의 실행안'에서 계산·수정합니다.")
+        st.dataframe(df[main], use_container_width=True, hide_index=True, column_config={"근거": st.column_config.TextColumn("근거", width="large")})
         with st.expander("상세 근거표 (다른 후보와의 비교 · 3~5년 시나리오 · 증거 · 반대 근거 · 판단이 바뀌는 조건)"):
             st.dataframe(df, use_container_width=True, hide_index=True)
     for nc in strat.get("new_candidates") or []:
@@ -551,7 +549,7 @@ def _section_chat(get_conn, items, risk, stress, fx, cfg_pk, dep, cash_map, c, s
 # ------------------------------------------------------------------ 진입점
 def _section_record(get_conn, items, fx, apply_trade):
     import assets
-    st.markdown("#### 4. 매매 기록 · 내 보유")
+    st.markdown("#### 5. 계획 밖 매매 기록 · 내 보유")
     st.caption("플랜대로(또는 다르게) 매매했다면 체결 결과를 기록하세요. 저장하면 아래 보유 수량·평단, 계좌별 예수금(미국=달러, 국내=원화)이 바로 바뀌고, 이유는 에이전트가 읽고 복기합니다.")
     if apply_trade is not None:
         try:
@@ -612,10 +610,8 @@ def render(get_conn, items, risk, stress, fx, cfg, cash_map, save_cfg, load_cfg,
             st.info("아직 계획이 없습니다. 위에서 '계획 받기'를 누르세요.")
         else:
             pl_ = _section_plan(get_conn, items, fx, cfg_pk, hub, sid, status, strat, created, c)
-            if status == "confirmed" and apply_trade is not None:
-                _section_fill(get_conn, items, fx, sid, strat, pl_, apply_trade)
-            elif status == "filled":
-                st.success("이 계획의 체결이 반영되었습니다. 성과는 며칠~몇 주 뒤 '기록·복기' 탭에서 시장과 비교해 볼 수 있고, 다음 계획 때 AI가 그 결과를 읽습니다.")
+            import flow
+            flow.render(get_conn, items, fx, c, sid, status, strat, pl_, apply_trade, _set_status, _ev)
         _section_record(get_conn, items, fx, apply_trade)
     if t_chat.open:
         _section_chat(get_conn, items, risk, stress, fx, cfg_pk, int((strat or {}).get("_deposit", 0) or 0), cash_map, c, strat or {}, get_prices)
